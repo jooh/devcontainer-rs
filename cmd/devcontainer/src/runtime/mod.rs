@@ -84,6 +84,14 @@ pub fn run_up(args: &[String]) -> Result<Value, String> {
     let _ = mounts::cli_mount_values(args)?;
     let effective_resolved =
         effective_up_resolved_config(args, context::load_required_config(args)?)?;
+    let effective_resolved =
+        match container::probe_up_container_id_labels(&effective_resolved, args)? {
+            Some(id_labels) => effective_up_resolved_config(
+                args,
+                context::load_required_config_with_id_labels(args, id_labels)?,
+            )?,
+            None => effective_resolved,
+        };
     lifecycle::run_initialize_command(
         args,
         &effective_resolved.configuration,

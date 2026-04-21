@@ -33,6 +33,54 @@ pub(crate) fn ensure_up_container(
     ensure_engine_up_container(resolved, args, image_name, remote_workspace_folder)
 }
 
+pub(crate) fn probe_up_container_id_labels(
+    resolved: &ResolvedConfig,
+    args: &[String],
+) -> Result<Option<HashMap<String, String>>, String> {
+    if common::has_flag(args, "--remove-existing-container") {
+        return Ok(None);
+    }
+
+    if compose::uses_compose_config(&resolved.configuration) {
+        if let Some(container_id) = compose::resolve_container_id(resolved, args)? {
+            return inspect_matched_default_id_labels(
+                args,
+                &container_id,
+                Some(resolved.workspace_folder.as_path()),
+                Some(resolved.config_file.as_path()),
+            );
+        }
+        if let Some(container_id) = compose::resolve_container_id_including_stopped(resolved, args)?
+        {
+            return inspect_matched_default_id_labels(
+                args,
+                &container_id,
+                Some(resolved.workspace_folder.as_path()),
+                Some(resolved.config_file.as_path()),
+            );
+        }
+        return Ok(None);
+    }
+
+    if let Some(target) = find_target_container(
+        args,
+        Some(resolved.workspace_folder.as_path()),
+        Some(resolved.config_file.as_path()),
+        false,
+    )? {
+        return Ok(target.id_labels);
+    }
+    if let Some(target) = find_target_container(
+        args,
+        Some(resolved.workspace_folder.as_path()),
+        Some(resolved.config_file.as_path()),
+        true,
+    )? {
+        return Ok(target.id_labels);
+    }
+    Ok(None)
+}
+
 fn ensure_compose_up_container(
     resolved: &ResolvedConfig,
     args: &[String],
@@ -153,6 +201,16 @@ fn refresh_compose_container(
     compose::up_service(resolved, args, remote_workspace_folder, image_name, true)?;
     let updated_container_id = compose::resolve_container_id(resolved, args)?
         .ok_or_else(|| "Dev container not found.".to_string())?;
+    let matched_id_labels = if updated_container_id == previous_container_id {
+        inspect_matched_default_id_labels(
+            args,
+            &updated_container_id,
+            Some(resolved.workspace_folder.as_path()),
+            Some(resolved.config_file.as_path()),
+        )?
+    } else {
+        None
+    };
     Ok(UpContainer {
         lifecycle_mode: if updated_container_id == previous_container_id {
             unchanged_mode
@@ -160,7 +218,7 @@ fn refresh_compose_container(
             LifecycleMode::UpCreated
         },
         container_id: updated_container_id,
-        matched_id_labels: None,
+        matched_id_labels,
     })
 }
 
@@ -185,9 +243,11 @@ pub(crate) fn resolve_target_container_match(
     config_file: Option<&Path>,
 ) -> Result<ResolvedTargetContainer, String> {
     if let Some(container_id) = common::parse_option_value(args, "--container-id") {
+        let id_labels =
+            inspect_matched_default_id_labels(args, &container_id, workspace_folder, config_file)?;
         return Ok(ResolvedTargetContainer {
             container_id,
-            id_labels: None,
+            id_labels,
         });
     }
 
@@ -203,6 +263,7 @@ fn find_target_container(
     config_file: Option<&Path>,
     include_stopped: bool,
 ) -> Result<Option<ResolvedTargetContainer>, String> {
+    let has_explicit_id_labels = !common::parse_option_values(args, "--id-label").is_empty();
     let labels = target_container_labels(args, workspace_folder, config_file);
     if labels.is_empty() {
         return Err(
@@ -211,13 +272,19 @@ fn find_target_container(
         );
     }
 
-    if let Some(container_id) = query_target_container(args, &labels, include_stopped)? {
-        return Ok(Some(container_id));
+    if let Some(mut target) = query_target_container(args, &labels, include_stopped)? {
+        if !has_explicit_id_labels {
+            target.id_labels = inspect_matched_default_id_labels(
+                args,
+                &target.container_id,
+                workspace_folder,
+                config_file,
+            )?;
+        }
+        return Ok(Some(target));
     }
 
-    if !common::parse_option_values(args, "--id-label").is_empty()
-        || std::env::consts::OS != "windows"
-    {
+    if has_explicit_id_labels || std::env::consts::OS != "windows" {
         return Ok(None);
     }
 
@@ -358,6 +425,26 @@ fn inspect_container_labels(
         }))
 }
 
+fn inspect_matched_default_id_labels(
+    args: &[String],
+    container_id: &str,
+    workspace_folder: Option<&Path>,
+    config_file: Option<&Path>,
+) -> Result<Option<HashMap<String, String>>, String> {
+    let Some(workspace_folder) = workspace_folder else {
+        return Ok(None);
+    };
+    let Some(labels) = inspect_container_labels(args, container_id)? else {
+        return Ok(None);
+    };
+    Ok(matched_default_id_labels_for_platform(
+        std::env::consts::OS,
+        &labels,
+        workspace_folder,
+        config_file,
+    ))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DefaultLabelMatch {
     Current,
@@ -371,9 +458,27 @@ fn normalized_default_label_match(
     workspace_key: &str,
     config_key: &str,
 ) -> Option<DefaultLabelMatch> {
+    default_label_match_for_platform(
+        "windows",
+        labels,
+        normalized_workspace,
+        normalized_config,
+        workspace_key,
+        config_key,
+    )
+}
+
+fn default_label_match_for_platform(
+    platform: &str,
+    labels: &HashMap<String, String>,
+    normalized_workspace: &str,
+    normalized_config: Option<&str>,
+    workspace_key: &str,
+    config_key: &str,
+) -> Option<DefaultLabelMatch> {
     let workspace_value = labels
         .get(workspace_key)
-        .map(|value| common::normalize_devcontainer_label_path_for_platform("windows", value))?;
+        .map(|value| common::normalize_devcontainer_label_path_for_platform(platform, value))?;
     if workspace_value != normalized_workspace {
         return None;
     }
@@ -382,7 +487,7 @@ fn normalized_default_label_match(
         normalized_config,
         labels
             .get(config_key)
-            .map(|value| common::normalize_devcontainer_label_path_for_platform("windows", value)),
+            .map(|value| common::normalize_devcontainer_label_path_for_platform(platform, value)),
     ) {
         (Some(target_config), Some(container_config)) if container_config == target_config => {
             Some(DefaultLabelMatch::Current)
@@ -404,6 +509,39 @@ fn legacy_default_id_labels(
             HashMap::from([(workspace_key.to_string(), workspace_value.to_string())])
         })
         .unwrap_or_default()
+}
+
+fn matched_default_id_labels_for_platform(
+    platform: &str,
+    labels: &HashMap<String, String>,
+    workspace_folder: &Path,
+    config_file: Option<&Path>,
+) -> Option<HashMap<String, String>> {
+    let normalized_workspace = common::normalize_devcontainer_label_path_for_platform(
+        platform,
+        &workspace_folder.display().to_string(),
+    );
+    let normalized_config = config_file.map(|config_file| {
+        common::normalize_devcontainer_label_path_for_platform(
+            platform,
+            &config_file.display().to_string(),
+        )
+    });
+    match default_label_match_for_platform(
+        platform,
+        labels,
+        normalized_workspace.as_str(),
+        normalized_config.as_deref(),
+        common::DEVCONTAINER_LOCAL_FOLDER_LABEL,
+        common::DEVCONTAINER_CONFIG_FILE_LABEL,
+    ) {
+        Some(DefaultLabelMatch::Legacy) => Some(legacy_default_id_labels(
+            labels,
+            common::DEVCONTAINER_LOCAL_FOLDER_LABEL,
+            common::DEVCONTAINER_CONFIG_FILE_LABEL,
+        )),
+        _ => None,
+    }
 }
 
 fn target_container_labels(
@@ -430,8 +568,12 @@ fn target_container_labels(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::path::Path;
 
-    use super::{legacy_default_id_labels, normalized_default_label_match, DefaultLabelMatch};
+    use super::{
+        legacy_default_id_labels, matched_default_id_labels_for_platform,
+        normalized_default_label_match, DefaultLabelMatch,
+    };
     use crate::commands::common;
 
     #[test]
@@ -495,6 +637,77 @@ mod tests {
                 common::DEVCONTAINER_LOCAL_FOLDER_LABEL.to_string(),
                 "C:\\CodeBlocks\\remill".to_string(),
             )])
+        );
+    }
+
+    #[test]
+    fn matched_default_id_labels_for_platform_preserves_legacy_windows_workspace_only_labels() {
+        let mut labels = HashMap::new();
+        labels.insert(
+            common::DEVCONTAINER_LOCAL_FOLDER_LABEL.to_string(),
+            "C:\\CodeBlocks\\remill".to_string(),
+        );
+
+        assert_eq!(
+            matched_default_id_labels_for_platform(
+                "windows",
+                &labels,
+                Path::new("C:/CodeBlocks/remill"),
+                Some(Path::new(
+                    "C:/CodeBlocks/remill/.devcontainer/devcontainer.json"
+                )),
+            ),
+            Some(HashMap::from([(
+                common::DEVCONTAINER_LOCAL_FOLDER_LABEL.to_string(),
+                "C:\\CodeBlocks\\remill".to_string(),
+            )]))
+        );
+    }
+
+    #[test]
+    fn matched_default_id_labels_for_platform_ignores_current_label_sets() {
+        let mut labels = HashMap::new();
+        labels.insert(
+            common::DEVCONTAINER_LOCAL_FOLDER_LABEL.to_string(),
+            "c:\\CodeBlocks\\remill".to_string(),
+        );
+        labels.insert(
+            common::DEVCONTAINER_CONFIG_FILE_LABEL.to_string(),
+            "c:\\CodeBlocks\\remill\\.devcontainer\\devcontainer.json".to_string(),
+        );
+
+        assert_eq!(
+            matched_default_id_labels_for_platform(
+                "windows",
+                &labels,
+                Path::new("C:/CodeBlocks/remill"),
+                Some(Path::new(
+                    "C:/CodeBlocks/remill/.devcontainer/devcontainer.json"
+                )),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn matched_default_id_labels_for_platform_preserves_legacy_posix_workspace_only_labels() {
+        let mut labels = HashMap::new();
+        labels.insert(
+            common::DEVCONTAINER_LOCAL_FOLDER_LABEL.to_string(),
+            "/tmp/remill".to_string(),
+        );
+
+        assert_eq!(
+            matched_default_id_labels_for_platform(
+                "macos",
+                &labels,
+                Path::new("/tmp/remill"),
+                Some(Path::new("/tmp/remill/.devcontainer/devcontainer.json")),
+            ),
+            Some(HashMap::from([(
+                common::DEVCONTAINER_LOCAL_FOLDER_LABEL.to_string(),
+                "/tmp/remill".to_string(),
+            )]))
         );
     }
 }
