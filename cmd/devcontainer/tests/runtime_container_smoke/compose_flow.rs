@@ -1,8 +1,30 @@
 //! Runtime container smoke tests for compose-backed up flows.
 
+use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
+
+use devcontainer::config::{substitute_local_context, ConfigContext};
+use serde_json::json;
 
 use crate::support::runtime_harness::{write_devcontainer_config, RuntimeHarness};
+
+const DEVCONTAINER_LOCAL_FOLDER_LABEL: &str = "devcontainer.local_folder";
+
+fn devcontainer_id_for_labels(workspace: &Path, labels: HashMap<String, String>) -> String {
+    substitute_local_context(
+        &json!("${devcontainerId}"),
+        &ConfigContext {
+            workspace_folder: workspace.to_path_buf(),
+            env: HashMap::new(),
+            container_workspace_folder: None,
+            id_labels: labels,
+        },
+    )
+    .as_str()
+    .expect("devcontainer id")
+    .to_string()
+}
 
 fn generated_override_contents(harness: &RuntimeHarness) -> String {
     let log = harness.read_compose_file_log();
@@ -296,6 +318,68 @@ fn exec_accepts_custom_compose_binary_for_compose_workspaces() {
     assert!(invocations.contains(
         "exec --workdir /workspace --user vscode fake-compose-container-id /bin/echo hello-from-custom-compose"
     ));
+}
+
+#[test]
+fn up_reused_compose_service_preserves_legacy_devcontainer_id() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    fs::write(
+        workspace.join(".devcontainer").join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"dockerComposeFile\": \"docker-compose.yml\",\n  \"service\": \"app\",\n  \"workspaceFolder\": \"/workspace\",\n  \"postAttachCommand\": \"echo ${devcontainerId}\"\n}\n",
+    );
+    let workspace = workspace.canonicalize().expect("workspace path");
+    let legacy_id = devcontainer_id_for_labels(
+        &workspace,
+        HashMap::from([(
+            DEVCONTAINER_LOCAL_FOLDER_LABEL.to_string(),
+            workspace.display().to_string(),
+        )]),
+    );
+    let inspect_path = harness.root.join("inspect.json");
+    fs::write(
+        &inspect_path,
+        json!([{
+            "Config": {
+                "Labels": {
+                    DEVCONTAINER_LOCAL_FOLDER_LABEL: workspace.display().to_string()
+                }
+            },
+            "Mounts": []
+        }])
+        .to_string(),
+    )
+    .expect("inspect json");
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+        ],
+        &[
+            ("FAKE_PODMAN_COMPOSE_PS_OUTPUT", "existing-compose-id"),
+            (
+                "FAKE_PODMAN_INSPECT_FILE",
+                inspect_path.to_string_lossy().as_ref(),
+            ),
+        ],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let payload = harness.parse_stdout_json(&output);
+    assert_eq!(payload["containerId"], "existing-compose-id");
+    let exec_log = harness.read_exec_log();
+    assert!(exec_log.contains(&format!("/bin/sh -lc echo {legacy_id}")));
 }
 
 #[test]
