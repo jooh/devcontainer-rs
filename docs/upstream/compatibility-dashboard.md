@@ -1,6 +1,6 @@
 # Native Compatibility Dashboard
 
-- Pinned upstream commit: `39685cf1aa58b5b11e90085bd32562fad61f4103`
+- Pinned upstream commit: `2d81ee3c9ed96a7312c18c7513a17933f8f66d41`
 - Pinned spec commit: `c95ffeed1d059abfe9ffbe79762dc2fa4e7c2421`
 - Command matrix source: `docs/upstream/command-matrix.json`
 - Native parity inventory: `docs/upstream/parity-inventory.md`

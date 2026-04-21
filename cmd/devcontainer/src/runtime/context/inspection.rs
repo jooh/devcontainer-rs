@@ -88,9 +88,15 @@ fn inspect_workspace_mount(
 ) -> Option<String> {
     let mounts = details.get("Mounts").and_then(Value::as_array)?;
     if let Some(local_workspace_folder) = local_workspace_folder {
-        let local_workspace_folder = local_workspace_folder.display().to_string();
+        let local_workspace_folder = common::normalize_devcontainer_label_path(
+            &local_workspace_folder.display().to_string(),
+        );
         if let Some(destination) = mounts.iter().find_map(|mount| {
-            (mount.get("Source").and_then(Value::as_str) == Some(local_workspace_folder.as_str()))
+            let source = mount
+                .get("Source")
+                .and_then(Value::as_str)
+                .map(common::normalize_devcontainer_label_path);
+            (source.as_deref() == Some(local_workspace_folder.as_str()))
                 .then(|| mount.get("Destination").and_then(Value::as_str))
                 .flatten()
         }) {

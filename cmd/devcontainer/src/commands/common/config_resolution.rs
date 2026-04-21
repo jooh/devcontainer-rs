@@ -10,7 +10,8 @@ use serde_json::Value;
 use crate::config::{self, ConfigContext};
 use crate::runtime::mounts::mount_option_target;
 
-use super::args::{parse_option_value, parse_option_values, validate_option_values};
+use super::args::{parse_option_value, validate_option_values};
+use super::labels::id_label_map;
 
 pub(crate) fn resolve_read_configuration_path(
     args: &[String],
@@ -70,15 +71,31 @@ fn infer_workspace_folder_from_config(config_path: &Path) -> PathBuf {
 }
 
 pub(crate) fn load_resolved_config(args: &[String]) -> Result<(PathBuf, PathBuf, Value), String> {
+    load_resolved_config_with_label_override(args, None)
+}
+
+pub(crate) fn load_resolved_config_with_id_labels(
+    args: &[String],
+    id_labels: HashMap<String, String>,
+) -> Result<(PathBuf, PathBuf, Value), String> {
+    load_resolved_config_with_label_override(args, Some(id_labels))
+}
+
+fn load_resolved_config_with_label_override(
+    args: &[String],
+    id_labels: Option<HashMap<String, String>>,
+) -> Result<(PathBuf, PathBuf, Value), String> {
     let (workspace_folder, config_file) = resolve_read_configuration_path(args)?;
     let config_source = resolve_override_config_path(args)?.unwrap_or_else(|| config_file.clone());
     let raw = fs::read_to_string(&config_source).map_err(|error| error.to_string())?;
     let parsed = config::parse_jsonc_value(&raw)?;
+    let id_labels =
+        id_labels.unwrap_or_else(|| id_label_map(args, &workspace_folder, &config_file));
     let base_context = ConfigContext {
         workspace_folder: workspace_folder.clone(),
         env: env::vars().collect(),
         container_workspace_folder: None,
-        id_labels: id_label_map(args, &workspace_folder, &config_file),
+        id_labels: id_labels.clone(),
     };
     let container_workspace_folder = parsed
         .get("workspaceFolder")
@@ -123,7 +140,7 @@ pub(crate) fn load_resolved_config(args: &[String]) -> Result<(PathBuf, PathBuf,
             workspace_folder: base_context.workspace_folder.clone(),
             env: base_context.env,
             container_workspace_folder,
-            id_labels: base_context.id_labels,
+            id_labels,
         },
     );
     Ok((workspace_folder, config_file, substituted))
@@ -150,28 +167,48 @@ pub(crate) fn resolve_override_config_path(args: &[String]) -> Result<Option<Pat
     Ok(Some(fs::canonicalize(&resolved).unwrap_or(resolved)))
 }
 
-pub(crate) fn id_label_map(
-    args: &[String],
-    workspace_folder: &Path,
-    config_file: &Path,
-) -> HashMap<String, String> {
-    let mut labels = parse_option_values(args, "--id-label")
-        .into_iter()
-        .filter_map(|entry| {
-            entry
-                .split_once('=')
-                .map(|(key, value)| (key.to_string(), value.to_string()))
-        })
-        .collect::<HashMap<_, _>>();
-    if labels.is_empty() {
-        labels.insert(
-            "devcontainer.local_folder".to_string(),
-            workspace_folder.display().to_string(),
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::fs;
+
+    use crate::commands::common::DEVCONTAINER_LOCAL_FOLDER_LABEL;
+    use crate::test_support::unique_temp_dir;
+
+    use super::{load_resolved_config, load_resolved_config_with_id_labels};
+
+    #[test]
+    fn load_resolved_config_with_id_labels_recomputes_devcontainer_id_from_override_labels() {
+        let workspace = unique_temp_dir("devcontainer-config-resolution");
+        let config_dir = workspace.join(".devcontainer");
+        let config_file = config_dir.join("devcontainer.json");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        fs::write(
+            &config_file,
+            "{\n  \"mounts\": [{\n    \"source\": \"cache-${devcontainerId}\",\n    \"target\": \"/cache\",\n    \"type\": \"volume\"\n  }],\n  \"postAttachCommand\": \"echo ${devcontainerId}\"\n}\n",
+        )
+        .expect("config write");
+
+        let args = vec![
+            "--workspace-folder".to_string(),
+            workspace.display().to_string(),
+        ];
+        let (_, _, current) = load_resolved_config(&args).expect("current config");
+        let (_, _, legacy) = load_resolved_config_with_id_labels(
+            &args,
+            HashMap::from([(
+                DEVCONTAINER_LOCAL_FOLDER_LABEL.to_string(),
+                workspace.display().to_string(),
+            )]),
+        )
+        .expect("legacy config");
+
+        assert_ne!(
+            current["mounts"][0]["source"],
+            legacy["mounts"][0]["source"]
         );
-        labels.insert(
-            "devcontainer.config_file".to_string(),
-            config_file.display().to_string(),
-        );
+        assert_ne!(current["postAttachCommand"], legacy["postAttachCommand"]);
+
+        let _ = fs::remove_dir_all(workspace);
     }
-    labels
 }

@@ -1,6 +1,6 @@
 # Compose Parity Inventory
 
-Pinned upstream CLI commit: `39685cf1aa58b5b11e90085bd32562fad61f4103`
+Pinned upstream CLI commit: `2d81ee3c9ed96a7312c18c7513a17933f8f66d41`
 
 This is a semantic parity note for the native Rust Compose path. It complements the generated command-matrix inventory in `docs/upstream/parity-inventory.md`, which only records static source references.
 

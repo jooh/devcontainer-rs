@@ -2,9 +2,9 @@
 
 Machine-readable upstream test coverage inventory for the native Rust CLI.
 
-- Upstream commit: `39685cf1aa58b5b11e90085bd32562fad61f4103`
-- Upstream tests inventoried: `34`
-- Covered: `5`
+- Upstream commit: `2d81ee3c9ed96a7312c18c7513a17933f8f66d41`
+- Upstream tests inventoried: `35`
+- Covered: `6`
 - Partial: `25`
 - Missing: `4`
 
@@ -30,7 +30,7 @@ Machine-readable upstream test coverage inventory for the native Rust CLI.
 | `upstream/src/test/container-features/featuresCLICommands.test.ts` | partial | `cmd/devcontainer/tests/cli_smoke/collections.rs`<br>`cmd/devcontainer/src/commands/collections/tests/features.rs`<br>`cmd/devcontainer/src/commands/collections/tests/feature_tests.rs`<br>`cmd/devcontainer/src/commands/collections/tests/publish.rs` | CLI coverage exists for Features commands, but published flows remain substitute-based. |
 | `upstream/src/test/container-features/generateFeaturesConfig.test.ts` | partial | `cmd/devcontainer/src/commands/configuration/tests/read.rs`<br>`cmd/devcontainer/tests/runtime_build_smoke/features.rs` | Generated feature configuration is exercised indirectly through read/build paths. |
 | `upstream/src/test/container-features/lifecycleHooks.test.ts` | partial | `cmd/devcontainer/tests/runtime_lifecycle_smoke.rs`<br>`cmd/devcontainer/tests/runtime_lifecycle_smoke/commands.rs`<br>`cmd/devcontainer/tests/runtime_lifecycle_smoke/selection.rs` | Lifecycle behavior is tested natively, but not specifically as upstream Feature-contributed hook cases. |
-| `upstream/src/test/container-features/lockfile.test.ts` | covered | `cmd/devcontainer/tests/cli_smoke/lockfile.rs`<br>`cmd/devcontainer/src/commands/configuration/tests/upgrade.rs` | Native lockfile coverage includes outdated, upgrade, dry-run, root-relative path handling, and workspace-local OCI layout mirrors for published Feature version and digest resolution. |
+| `upstream/src/test/container-features/lockfile.test.ts` | covered | `cmd/devcontainer/tests/cli_smoke/lockfile.rs`<br>`cmd/devcontainer/src/commands/configuration/tests/upgrade.rs` | Native lockfile coverage includes outdated, upgrade, dry-run, root-relative path handling, trailing-newline writes, missing frozen-lockfile errors, and workspace-local OCI layout mirrors for published Feature version and digest resolution. |
 | `upstream/src/test/container-features/registryCompatibilityOCI.test.ts` | partial | `cmd/devcontainer/src/commands/collections/tests/features.rs`<br>`cmd/devcontainer/tests/network_smoke/ghcr.rs` | Native coverage now includes OCI-manifest-shaped `features info manifest`, canonical ids, `publishedTags` output, and a dedicated anonymous GHCR manifest smoke check, but registry auth and broader live OCI pull flows are still missing. |
 | `upstream/src/test/container-templates/containerTemplatesOCI.test.ts` | partial | `cmd/devcontainer/src/commands/collections/tests/templates.rs`<br>`cmd/devcontainer/tests/cli_smoke/collections.rs` | Native coverage now includes workspace-local OCI metadata lookup and archive-backed template apply flows, but live registry template fetch behavior is still missing. |
 | `upstream/src/test/container-templates/templatesCLICommands.test.ts` | partial | `cmd/devcontainer/tests/cli_smoke/collections.rs`<br>`cmd/devcontainer/src/commands/collections/tests/templates.rs`<br>`cmd/devcontainer/src/commands/collections/tests/publish.rs` | Template CLI commands now cover workspace-local OCI metadata and apply flows, but published-template behavior is still partial without live registry fetches. |
@@ -41,7 +41,8 @@ Machine-readable upstream test coverage inventory for the native Rust CLI.
 | `upstream/src/test/dotfiles.test.ts` | covered | `cmd/devcontainer/tests/runtime_lifecycle_smoke/dotfiles.rs` | Native dotfiles coverage includes ordering, reinstall markers, and personalization stop behavior. |
 | `upstream/src/test/getEntPasswd.test.ts` | missing | none | No native passwd-entry parsing or lookup tests exist. |
 | `upstream/src/test/getHomeFolder.test.ts` | missing | none | No native home-folder resolution test suite exists. |
-| `upstream/src/test/imageMetadata.test.ts` | partial | `cmd/devcontainer/tests/runtime_exec_smoke.rs`<br>`cmd/devcontainer/tests/runtime_configuration_smoke.rs`<br>`cmd/devcontainer/tests/runtime_container_smoke/basic.rs`<br>`cmd/devcontainer/tests/runtime_build_smoke/features.rs`<br>`cmd/devcontainer/src/runtime/metadata.rs` | Metadata persistence and merge behavior are covered, but upstream image metadata matrices are broader. |
+| `upstream/src/test/imageMetadata.test.ts` | partial | `cmd/devcontainer/tests/runtime_exec_smoke.rs`<br>`cmd/devcontainer/tests/runtime_configuration_smoke.rs`<br>`cmd/devcontainer/tests/runtime_container_smoke/basic.rs`<br>`cmd/devcontainer/tests/runtime_build_smoke/features.rs`<br>`cmd/devcontainer/src/runtime/metadata.rs` | Metadata persistence and merge behavior are covered, including array-only label serialization for single metadata entries, but upstream image metadata matrices are broader. |
+| `upstream/src/test/labelPathNormalization.test.ts` | covered | `cmd/devcontainer/src/commands/common/labels.rs`<br>`cmd/devcontainer/src/runtime/container/discovery.rs` | Native unit coverage now exercises Windows label normalization plus legacy workspace-only matching for default devcontainer labels. |
 | `upstream/src/test/updateUID.test.ts` | covered | `cmd/devcontainer/src/runtime/container/uid_update/tests.rs` | Native UID-update coverage includes image inspection, platform preservation, local tags, and podman behavior. |
 | `upstream/src/test/utils.test.ts` | missing | none | No single native utility suite maps to upstream spec utility coverage. |
 | `upstream/src/test/variableSubstitution.test.ts` | partial | `cmd/devcontainer/src/config.rs`<br>`cmd/devcontainer/tests/cli_smoke/read_configuration.rs` | Native substitution coverage exists, but the supported substitution surface is still narrower than upstream. |

@@ -17,19 +17,15 @@ pub(super) fn start_container(
     image_name: &str,
     remote_workspace_folder: &str,
 ) -> Result<String, String> {
+    let default_labels =
+        common::default_devcontainer_id_labels(&resolved.workspace_folder, &resolved.config_file);
     let mut engine_args = vec![
         "run".to_string(),
         "-d".to_string(),
         "--label".to_string(),
-        format!(
-            "devcontainer.local_folder={}",
-            resolved.workspace_folder.display()
-        ),
+        default_labels[0].clone(),
         "--label".to_string(),
-        format!(
-            "devcontainer.config_file={}",
-            resolved.config_file.display()
-        ),
+        default_labels[1].clone(),
         "--label".to_string(),
         format!(
             "devcontainer.metadata={}",

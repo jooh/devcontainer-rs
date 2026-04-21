@@ -65,17 +65,9 @@ pub(super) fn compose_metadata_override_file(
         remote_workspace_folder,
         common::runtime_options(args).omit_config_remote_env_from_metadata,
     )?;
-    let mut labels = vec![
-        format!(
-            "devcontainer.local_folder={}",
-            resolved.workspace_folder.display()
-        ),
-        format!(
-            "devcontainer.config_file={}",
-            resolved.config_file.display()
-        ),
-        format!("devcontainer.metadata={metadata}"),
-    ];
+    let mut labels =
+        common::default_devcontainer_id_labels(&resolved.workspace_folder, &resolved.config_file);
+    labels.push(format!("devcontainer.metadata={metadata}"));
     labels.extend(common::parse_option_values(args, "--id-label"));
     if labels.is_empty() {
         return Ok(None);

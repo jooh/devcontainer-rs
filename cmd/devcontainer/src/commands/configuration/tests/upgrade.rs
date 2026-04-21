@@ -7,6 +7,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::support::unique_temp_dir;
+use crate::commands::configuration::ensure_native_lockfile;
 use crate::commands::configuration::upgrade::{
     build_outdated_payload, feature_id_without_version, lockfile_path, run_upgrade_lockfile,
 };
@@ -185,6 +186,122 @@ fn upgrade_lockfile_reads_workspace_oci_layout_digests() {
         lockfile.features["ghcr.io/acme/features/published-feature:1"].depends_on,
         Some(vec!["ghcr.io/acme/features/dependency".to_string()])
     );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn ensure_native_lockfile_uses_shared_lockfile_format() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    let config_file = root.join(".devcontainer.json");
+
+    ensure_native_lockfile(
+        &[
+            "--workspace-folder".to_string(),
+            root.display().to_string(),
+            "--experimental-lockfile".to_string(),
+        ],
+        &config_file,
+        &json!({
+            "image": "debian:bookworm",
+            "features": {
+                "ghcr.io/devcontainers/features/github-cli": {}
+            }
+        }),
+    )
+    .expect("lockfile write");
+
+    let lockfile = fs::read_to_string(root.join(".devcontainer-lock.json")).expect("lockfile");
+    assert!(!lockfile.ends_with('\n'));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn upgrade_lockfile_uses_shared_lockfile_format() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    fs::write(
+        root.join(".devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/devcontainers/features/github-cli\": {}\n  }\n}\n",
+    )
+    .expect("failed to write config");
+
+    run_upgrade_lockfile(&["--workspace-folder".to_string(), root.display().to_string()])
+        .expect("lockfile payload");
+
+    let lockfile = fs::read_to_string(root.join(".devcontainer-lock.json")).expect("lockfile");
+    assert!(!lockfile.ends_with('\n'));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn ensure_native_lockfile_reports_missing_frozen_lockfile() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    let config_file = root.join(".devcontainer.json");
+
+    let error = ensure_native_lockfile(
+        &[
+            "--workspace-folder".to_string(),
+            root.display().to_string(),
+            "--experimental-frozen-lockfile".to_string(),
+        ],
+        &config_file,
+        &json!({
+            "image": "debian:bookworm",
+            "features": {
+                "ghcr.io/devcontainers/features/github-cli": {}
+            }
+        }),
+    )
+    .expect_err("missing frozen lockfile error");
+
+    assert_eq!(error, "Lockfile does not exist.");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn ensure_native_lockfile_accepts_semantically_identical_existing_json() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    let config_file = root.join(".devcontainer.json");
+    ensure_native_lockfile(
+        &[
+            "--workspace-folder".to_string(),
+            root.display().to_string(),
+            "--experimental-lockfile".to_string(),
+        ],
+        &config_file,
+        &json!({
+            "image": "debian:bookworm",
+            "features": {
+                "ghcr.io/devcontainers/features/github-cli": {}
+            }
+        }),
+    )
+    .expect("lockfile seed");
+    let lockfile_path = root.join(".devcontainer-lock.json");
+    let lockfile = fs::read_to_string(&lockfile_path).expect("lockfile");
+    let reformatted = lockfile.trim_end_matches('\n').to_string();
+    fs::write(&lockfile_path, reformatted).expect("lockfile rewrite");
+
+    ensure_native_lockfile(
+        &[
+            "--workspace-folder".to_string(),
+            root.display().to_string(),
+            "--experimental-frozen-lockfile".to_string(),
+        ],
+        &config_file,
+        &json!({
+            "image": "debian:bookworm",
+            "features": {
+                "ghcr.io/devcontainers/features/github-cli": {}
+            }
+        }),
+    )
+    .expect("lockfile match");
+
     let _ = fs::remove_dir_all(root);
 }
 

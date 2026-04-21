@@ -1,9 +1,30 @@
 //! Smoke tests for lifecycle command execution across up, set-up, and run-user-commands flows.
 
 use serde_json::json;
+use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
+
+use devcontainer::config::{substitute_local_context, ConfigContext};
 
 use crate::support::runtime_harness::{write_devcontainer_config, RuntimeHarness};
+
+const DEVCONTAINER_LOCAL_FOLDER_LABEL: &str = "devcontainer.local_folder";
+
+fn devcontainer_id_for_labels(workspace: &Path, labels: HashMap<String, String>) -> String {
+    substitute_local_context(
+        &json!("${devcontainerId}"),
+        &ConfigContext {
+            workspace_folder: workspace.to_path_buf(),
+            env: HashMap::new(),
+            container_workspace_folder: None,
+            id_labels: labels,
+        },
+    )
+    .as_str()
+    .expect("devcontainer id")
+    .to_string()
+}
 
 #[test]
 fn run_user_commands_resolves_container_ids_from_headered_ps_output() {
@@ -325,4 +346,58 @@ fn object_lifecycle_commands_are_executed() {
         .contains("exec --workdir /workspaces/workspace fake-container-id /bin/sh -lc echo first"));
     assert!(invocations
         .contains("exec --workdir /workspaces/workspace fake-container-id printf %s second value"));
+}
+
+#[test]
+fn run_user_commands_with_container_id_preserves_legacy_devcontainer_id_labels() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    let config_path = write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"alpine:3.20\",\n  \"postAttachCommand\": \"echo ${devcontainerId}\"\n}\n",
+    );
+    let workspace = workspace.canonicalize().expect("workspace path");
+    let legacy_id = devcontainer_id_for_labels(
+        &workspace,
+        HashMap::from([(
+            DEVCONTAINER_LOCAL_FOLDER_LABEL.to_string(),
+            workspace.display().to_string(),
+        )]),
+    );
+    let inspect_path = harness.root.join("inspect.json");
+    fs::write(
+        &inspect_path,
+        json!([{
+            "Config": {
+                "Labels": {
+                    DEVCONTAINER_LOCAL_FOLDER_LABEL: workspace.display().to_string()
+                }
+            },
+            "Mounts": []
+        }])
+        .to_string(),
+    )
+    .expect("inspect json");
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "run-user-commands",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--container-id",
+            "fake-container-id",
+            "--config",
+            config_path.to_string_lossy().as_ref(),
+        ],
+        &[(
+            "FAKE_PODMAN_INSPECT_FILE",
+            inspect_path.to_string_lossy().as_ref(),
+        )],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let exec_log = harness.read_exec_log();
+    assert!(exec_log.contains(&format!("/bin/sh -lc echo {legacy_id}")));
 }

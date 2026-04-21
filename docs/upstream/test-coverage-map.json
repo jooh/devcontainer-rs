@@ -1,5 +1,5 @@
 {
-	"upstreamCommit": "39685cf1aa58b5b11e90085bd32562fad61f4103",
+	"upstreamCommit": "2d81ee3c9ed96a7312c18c7513a17933f8f66d41",
 	"suites": [
 		{
 			"upstreamTest": "upstream/src/test/cli.build.test.ts",
@@ -182,7 +182,7 @@
 				"cmd/devcontainer/tests/cli_smoke/lockfile.rs",
 				"cmd/devcontainer/src/commands/configuration/tests/upgrade.rs"
 			],
-			"notes": "Native lockfile coverage includes outdated, upgrade, dry-run, root-relative path handling, and workspace-local OCI layout mirrors for published Feature version and digest resolution."
+			"notes": "Native lockfile coverage includes outdated, upgrade, dry-run, root-relative path handling, trailing-newline writes, missing frozen-lockfile errors, and workspace-local OCI layout mirrors for published Feature version and digest resolution."
 		},
 		{
 			"upstreamTest": "upstream/src/test/container-features/registryCompatibilityOCI.test.ts",
@@ -276,7 +276,16 @@
 				"cmd/devcontainer/tests/runtime_build_smoke/features.rs",
 				"cmd/devcontainer/src/runtime/metadata.rs"
 			],
-			"notes": "Metadata persistence and merge behavior are covered, but upstream image metadata matrices are broader."
+			"notes": "Metadata persistence and merge behavior are covered, including array-only label serialization for single metadata entries, but upstream image metadata matrices are broader."
+		},
+		{
+			"upstreamTest": "upstream/src/test/labelPathNormalization.test.ts",
+			"status": "covered",
+			"nativeTests": [
+				"cmd/devcontainer/src/commands/common/labels.rs",
+				"cmd/devcontainer/src/runtime/container/discovery.rs"
+			],
+			"notes": "Native unit coverage now exercises Windows label normalization plus legacy workspace-only matching for default devcontainer labels."
 		},
 		{
 			"upstreamTest": "upstream/src/test/updateUID.test.ts",

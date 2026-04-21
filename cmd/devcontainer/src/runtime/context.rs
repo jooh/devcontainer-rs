@@ -3,6 +3,7 @@
 mod inspection;
 mod workspace;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde_json::Value;
@@ -47,6 +48,19 @@ pub(crate) fn load_required_config(args: &[String]) -> Result<ResolvedConfig, St
     })
 }
 
+pub(crate) fn load_required_config_with_id_labels(
+    args: &[String],
+    id_labels: HashMap<String, String>,
+) -> Result<ResolvedConfig, String> {
+    let (workspace_folder, config_file, configuration) =
+        common::load_resolved_config_with_id_labels(args, id_labels)?;
+    Ok(ResolvedConfig {
+        workspace_folder,
+        config_file,
+        configuration,
+    })
+}
+
 pub(crate) fn load_optional_config(args: &[String]) -> Result<Option<ResolvedConfig>, String> {
     let explicit_config = common::parse_option_value(args, "--config");
     match load_required_config(args) {
@@ -83,7 +97,10 @@ pub(crate) fn resolve_existing_container_context(
     } else {
         workspace_folder_from_args(args)?
     };
-    let container_id = container::resolve_target_container(
+    let container::ResolvedTargetContainer {
+        container_id,
+        id_labels,
+    } = container::resolve_target_container_match(
         args,
         resolved
             .as_ref()
@@ -91,6 +108,10 @@ pub(crate) fn resolve_existing_container_context(
             .or(workspace_folder.as_deref()),
         resolved.as_ref().map(|value| value.config_file.as_path()),
     )?;
+    let resolved = match (resolved, id_labels) {
+        (Some(_), Some(id_labels)) => Some(load_required_config_with_id_labels(args, id_labels)?),
+        (resolved, _) => resolved,
+    };
     let inspected = if resolved.is_none() {
         Some(inspect_container_context(args, &container_id)?)
     } else {

@@ -85,7 +85,10 @@ pub(super) fn ensure_native_lockfile(
     let path = lockfile_path(config_file);
     if common::has_flag(args, "--experimental-frozen-lockfile") {
         let existing = read_lockfile(path.clone())?;
-        if existing.as_ref() != Some(&generated) {
+        let Some(existing) = existing else {
+            return Err("Lockfile does not exist.".to_string());
+        };
+        if existing != generated {
             return Err(format!(
                 "Lockfile at {} is out of date for the current feature configuration",
                 path.display()
@@ -93,13 +96,14 @@ pub(super) fn ensure_native_lockfile(
         }
     }
     if common::has_flag(args, "--experimental-lockfile") {
-        fs::write(
-            &path,
-            serde_json::to_string_pretty(&generated).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
+        let lockfile = serialized_lockfile(&generated)?;
+        fs::write(&path, lockfile).map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn serialized_lockfile(lockfile: &Lockfile) -> Result<String, String> {
+    serde_json::to_string_pretty(lockfile).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -238,11 +242,8 @@ fn run_upgrade_lockfile_with_logger(
         if let Some(logger) = logger {
             logger.info(format!("Writing lockfile: '{}'", lockfile_path.display()));
         }
-        fs::write(
-            &lockfile_path,
-            serde_json::to_string_pretty(&generated).map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
+        fs::write(&lockfile_path, serialized_lockfile(&generated)?)
+            .map_err(|error| error.to_string())?;
         if let Some(logger) = logger {
             logger.debug(format!(
                 "Lockfile write complete: '{}'",

@@ -723,8 +723,7 @@ fn compose_feature_build_enforces_frozen_lockfile() {
     )
     .expect_err("expected frozen lockfile enforcement");
 
-    assert!(error.contains("Lockfile at"));
-    assert!(error.contains("is out of date for the current feature configuration"));
+    assert_eq!(error, "Lockfile does not exist.");
 
     let _ = fs::remove_dir_all(root);
 }

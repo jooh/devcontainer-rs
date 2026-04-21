@@ -22,6 +22,32 @@ pub enum ExecResult {
     Streaming(i32),
 }
 
+fn effective_up_resolved_config(
+    args: &[String],
+    resolved: context::ResolvedConfig,
+) -> Result<context::ResolvedConfig, String> {
+    let feature_support = configuration::resolve_feature_support(
+        args,
+        &resolved.workspace_folder,
+        &resolved.config_file,
+        &resolved.configuration,
+    )?;
+    let effective_configuration = feature_support
+        .as_ref()
+        .map(|resolved_features| {
+            configuration::apply_feature_metadata(
+                &resolved.configuration,
+                &resolved_features.metadata_entries,
+            )
+        })
+        .unwrap_or_else(|| resolved.configuration.clone());
+    Ok(context::ResolvedConfig {
+        workspace_folder: resolved.workspace_folder,
+        config_file: resolved.config_file,
+        configuration: effective_configuration,
+    })
+}
+
 pub fn run_build(args: &[String]) -> Result<Value, String> {
     let resolved = context::load_required_config(args)?;
     let feature_support = configuration::resolve_feature_support(
@@ -56,27 +82,16 @@ pub fn run_build(args: &[String]) -> Result<Value, String> {
 
 pub fn run_up(args: &[String]) -> Result<Value, String> {
     let _ = mounts::cli_mount_values(args)?;
-    let resolved = context::load_required_config(args)?;
-    let feature_support = configuration::resolve_feature_support(
-        args,
-        &resolved.workspace_folder,
-        &resolved.config_file,
-        &resolved.configuration,
-    )?;
-    let effective_configuration = feature_support
-        .as_ref()
-        .map(|resolved_features| {
-            configuration::apply_feature_metadata(
-                &resolved.configuration,
-                &resolved_features.metadata_entries,
-            )
-        })
-        .unwrap_or_else(|| resolved.configuration.clone());
-    let effective_resolved = context::ResolvedConfig {
-        workspace_folder: resolved.workspace_folder.clone(),
-        config_file: resolved.config_file.clone(),
-        configuration: effective_configuration.clone(),
-    };
+    let effective_resolved =
+        effective_up_resolved_config(args, context::load_required_config(args)?)?;
+    let effective_resolved =
+        match container::probe_up_container_id_labels(&effective_resolved, args)? {
+            Some(id_labels) => effective_up_resolved_config(
+                args,
+                context::load_required_config_with_id_labels(args, id_labels)?,
+            )?,
+            None => effective_resolved,
+        };
     lifecycle::run_initialize_command(
         args,
         &effective_resolved.configuration,
@@ -94,10 +109,19 @@ pub fn run_up(args: &[String]) -> Result<Value, String> {
         &image_name,
         &remote_workspace_folder,
     )?;
+    let lifecycle_resolved = match up_container.matched_id_labels.clone() {
+        Some(id_labels) => effective_up_resolved_config(
+            args,
+            context::load_required_config_with_id_labels(args, id_labels)?,
+        )?,
+        None => effective_resolved,
+    };
+    let remote_workspace_folder =
+        context::remote_workspace_folder_for_args(&lifecycle_resolved, args);
     lifecycle::run_lifecycle_commands(
         &up_container.container_id,
         args,
-        &effective_resolved.configuration,
+        &lifecycle_resolved.configuration,
         &remote_workspace_folder,
         up_container.lifecycle_mode,
     )?;
@@ -107,12 +131,12 @@ pub fn run_up(args: &[String]) -> Result<Value, String> {
         "command": "up",
         "containerId": up_container.container_id,
         "composeProjectName": compose_project_name,
-        "remoteUser": context::remote_user(&effective_resolved.configuration),
+        "remoteUser": context::remote_user(&lifecycle_resolved.configuration),
         "remoteWorkspaceFolder": remote_workspace_folder,
-        "configuration": if common::has_flag(args, "--include-configuration") { effective_resolved.configuration.clone() } else { Value::Null },
-        "mergedConfiguration": if common::has_flag(args, "--include-merged-configuration") { effective_resolved.configuration.clone() } else { Value::Null },
-        "workspaceFolder": effective_resolved.workspace_folder,
-        "configFile": effective_resolved.config_file,
+        "configuration": if common::has_flag(args, "--include-configuration") { lifecycle_resolved.configuration.clone() } else { Value::Null },
+        "mergedConfiguration": if common::has_flag(args, "--include-merged-configuration") { lifecycle_resolved.configuration.clone() } else { Value::Null },
+        "workspaceFolder": lifecycle_resolved.workspace_folder,
+        "configFile": lifecycle_resolved.config_file,
     }))
 }
 

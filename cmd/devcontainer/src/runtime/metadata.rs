@@ -72,7 +72,7 @@ pub(crate) fn serialized_container_metadata(
     metadata
         .entry("workspaceFolder".to_string())
         .or_insert_with(|| Value::String(remote_workspace_folder.to_string()));
-    serde_json::to_string(&Value::Object(metadata))
+    serde_json::to_string(&Value::Array(vec![Value::Object(metadata)]))
         .map_err(|error| format!("Failed to serialize container metadata: {error}"))
 }
 
@@ -186,8 +186,27 @@ mod tests {
         )
         .expect("metadata");
         let parsed: Value = serde_json::from_str(&metadata).expect("metadata json");
+        let entries = parsed.as_array().expect("metadata array");
 
-        assert_eq!(parsed["remoteUser"], "vscode");
-        assert!(parsed.get("remoteEnv").is_none(), "{parsed}");
+        assert_eq!(entries[0]["remoteUser"], "vscode");
+        assert!(entries[0].get("remoteEnv").is_none(), "{parsed}");
+    }
+
+    #[test]
+    fn serialized_container_metadata_wraps_single_metadata_entry_in_array() {
+        let metadata = serialized_container_metadata(
+            &json!({
+                "remoteUser": "vscode"
+            }),
+            "/workspace",
+            false,
+        )
+        .expect("metadata");
+        let parsed: Value = serde_json::from_str(&metadata).expect("metadata json");
+        let entries = parsed.as_array().expect("metadata array");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["remoteUser"], "vscode");
+        assert_eq!(entries[0]["workspaceFolder"], "/workspace");
     }
 }
