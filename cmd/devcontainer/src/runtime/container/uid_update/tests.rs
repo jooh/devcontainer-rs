@@ -256,6 +256,48 @@ fn prepare_up_image_prefixes_local_podman_base_images_with_localhost() {
 }
 
 #[test]
+fn prepare_up_image_retries_image_inspect_without_variant_template_for_podman() {
+    let fixture = FakeEngineFixture::new();
+    fixture.write("image-inspect-with-variant.exit", "1\n");
+    fixture.write(
+        "image-inspect-with-variant.stderr",
+        "Error: template: inspect:2:30: executing \"inspect\" at <.Variant>: can't evaluate field Variant in type interface {}\n",
+    );
+    fixture.write(
+        "image-inspect-without-variant.stdout",
+        &image_inspect_output("node", Some("linux/amd64")),
+    );
+
+    let workspace = fixture.root.join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    let resolved = resolved_config(
+        json!({
+            "remoteUser": "vscode"
+        }),
+        &workspace,
+    );
+
+    let updated_image = prepare_up_image_for_platform(
+        &resolved,
+        &fixture.args_with_podman_name(),
+        "ghcr.io/example/app:latest",
+        true,
+    )
+    .expect("prepare up image");
+
+    assert!(updated_image.ends_with("-uid"));
+    let invocations = fixture.invocations();
+    assert!(invocations.contains(&format!(
+        "image inspect --format {} ghcr.io/example/app:latest",
+        super::UID_UPDATE_IMAGE_INSPECT_FORMAT
+    )));
+    assert!(invocations.contains(&format!(
+        "image inspect --format {} ghcr.io/example/app:latest",
+        super::UID_UPDATE_IMAGE_INSPECT_FORMAT_NO_VARIANT
+    )));
+}
+
+#[test]
 fn prepare_up_image_uses_compose_service_user_for_uid_update_selection() {
     let fixture = FakeEngineFixture::new();
     fixture.write(
@@ -333,6 +375,27 @@ case "$COMMAND" in
     shift || true
             case "$SUBCOMMAND" in
               inspect)
+                if [ "${*}" != "${*#*'.Variant'*}" ]; then
+                  if [ -f "$ROOT/image-inspect-with-variant.stdout" ]; then
+                    cat "$ROOT/image-inspect-with-variant.stdout"
+                  fi
+                  if [ -f "$ROOT/image-inspect-with-variant.stderr" ]; then
+                    cat "$ROOT/image-inspect-with-variant.stderr" >&2
+                  fi
+                  if [ -f "$ROOT/image-inspect-with-variant.exit" ]; then
+                    exit "$(tr -d '\n' < "$ROOT/image-inspect-with-variant.exit")"
+                  fi
+                else
+                  if [ -f "$ROOT/image-inspect-without-variant.stdout" ]; then
+                    cat "$ROOT/image-inspect-without-variant.stdout"
+                  fi
+                  if [ -f "$ROOT/image-inspect-without-variant.stderr" ]; then
+                    cat "$ROOT/image-inspect-without-variant.stderr" >&2
+                  fi
+                  if [ -f "$ROOT/image-inspect-without-variant.exit" ]; then
+                    exit "$(tr -d '\n' < "$ROOT/image-inspect-without-variant.exit")"
+                  fi
+                fi
                 if [ -f "$ROOT/pulled" ]; then
                   if [ -f "$ROOT/image-inspect-after-pull.stdout" ]; then
                     cat "$ROOT/image-inspect-after-pull.stdout"
