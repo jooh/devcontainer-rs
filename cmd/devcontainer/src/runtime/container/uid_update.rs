@@ -16,6 +16,8 @@ use super::super::paths::unique_temp_path;
 
 const UID_UPDATE_IMAGE_INSPECT_FORMAT: &str =
     "{{.Config.User}}\n{{.Os}}/{{.Architecture}}{{if .Variant}}/{{.Variant}}{{end}}";
+const UID_UPDATE_IMAGE_INSPECT_FORMAT_NO_VARIANT: &str =
+    "{{.Config.User}}\n{{.Os}}/{{.Architecture}}";
 
 #[derive(Debug, Eq, PartialEq)]
 struct UidUpdateDetails {
@@ -263,13 +265,44 @@ fn inspect_image_details_for_uid_update_once(
     )?;
     if result.status_code != 0 {
         let error = engine::stderr_or_stdout(&result);
+        if is_missing_variant_template_error(&error) {
+            return inspect_image_details_without_variant(args, image_name);
+        }
         if is_missing_local_image_inspect_error(&error) {
             return Ok(None);
         }
         return Err(error);
     }
 
-    let mut lines = result.stdout.lines();
+    parse_image_inspect_details(&result.stdout)
+}
+
+fn inspect_image_details_without_variant(
+    args: &[String],
+    image_name: &str,
+) -> Result<Option<ImageInspectDetails>, String> {
+    let result = engine::run_engine(
+        args,
+        vec![
+            "image".to_string(),
+            "inspect".to_string(),
+            "--format".to_string(),
+            UID_UPDATE_IMAGE_INSPECT_FORMAT_NO_VARIANT.to_string(),
+            image_name.to_string(),
+        ],
+    )?;
+    if result.status_code != 0 {
+        let error = engine::stderr_or_stdout(&result);
+        if is_missing_local_image_inspect_error(&error) {
+            return Ok(None);
+        }
+        return Err(error);
+    }
+    parse_image_inspect_details(&result.stdout)
+}
+
+fn parse_image_inspect_details(stdout: &str) -> Result<Option<ImageInspectDetails>, String> {
+    let mut lines = stdout.lines();
     let user = lines
         .next()
         .map(str::trim)
@@ -296,6 +329,11 @@ fn pull_image_for_uid_update(args: &[String], image_name: &str) -> Result<(), St
 fn is_missing_local_image_inspect_error(error: &str) -> bool {
     let error = error.to_ascii_lowercase();
     error.contains("no such image") || error.contains("image not known")
+}
+
+fn is_missing_variant_template_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("can't evaluate field variant")
 }
 
 fn uid_update_image_name(workspace_folder: &Path, image_name: &str) -> String {
