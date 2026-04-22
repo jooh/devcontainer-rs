@@ -65,6 +65,22 @@ fn compose_project_name_defaults_to_workspace_devcontainer() {
 }
 
 #[test]
+fn compose_project_name_defaults_to_compose_working_dir_basename() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    let compose_file = root.join("docker-compose.yml");
+    fs::create_dir_all(&root).expect("compose dir");
+    fs::write(&compose_file, "services:\n  app:\n    image: alpine:3.20\n").expect("compose");
+
+    let project_name = compose_project_name(&[compose_file]).expect("project name");
+
+    assert_eq!(
+        project_name,
+        root.file_name().unwrap().to_string_lossy().to_lowercase()
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn compose_name_from_file_reads_top_level_name() {
     let root = unique_temp_dir("devcontainer-compose-test");
     let compose_file = root.join("docker-compose.yml");
