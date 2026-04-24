@@ -55,6 +55,14 @@ make acceptance-fixtures-check
 
 The Node-based checks do not require installing project dependencies; they use built-in Node modules only. Node 20+ is still required to run them.
 
+Install surfaces:
+
+```bash
+npx devcontainer-rs --version
+npx @devcontainer-rs/cli --version
+uv tool install devcontainer-rs
+```
+
 Generated command reference:
 
 ```bash

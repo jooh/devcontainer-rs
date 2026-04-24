@@ -12,6 +12,8 @@
 	schema-drift-check \
 	parity-harness \
 	no-node-runtime \
+	npm-wrapper-check \
+	npm-package-smoke \
 	check-parity-inventory \
 	check-cli-metadata \
 	check-todo-args \
@@ -21,7 +23,7 @@
 RUST_MANIFEST := cmd/devcontainer/Cargo.toml
 RELEASE_BINARY := ./cmd/devcontainer/target/release/devcontainer
 
-tests: rust-fmt rust-clippy rust-check rust-tests build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check command-matrix-drift-check schema-drift-check parity-harness no-node-runtime check-parity-inventory check-cli-metadata check-todo-args check-compatibility-dashboard upstream-compatibility
+tests: rust-fmt rust-clippy rust-check rust-tests build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check command-matrix-drift-check schema-drift-check parity-harness no-node-runtime npm-wrapper-check npm-package-smoke check-parity-inventory check-cli-metadata check-todo-args check-compatibility-dashboard upstream-compatibility
 
 rust-fmt:
 	cargo fmt --manifest-path $(RUST_MANIFEST) --all -- --check
@@ -61,6 +63,12 @@ parity-harness:
 
 no-node-runtime:
 	node build/check-no-node-runtime.js
+
+npm-wrapper-check:
+	node --test build/test-npm-wrapper.js
+
+npm-package-smoke:
+	node build/check-npm-packages.js
 
 check-parity-inventory:
 	node build/generate-parity-inventory.js --check
