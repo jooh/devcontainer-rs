@@ -5,6 +5,7 @@
 	rust-tests \
 	build-release \
 	standalone-artifact-smoke \
+	pypi-wheel-smoke \
 	native-only-startup-contract \
 	acceptance-fixtures-check \
 	command-matrix-drift-check \
@@ -20,7 +21,7 @@
 RUST_MANIFEST := cmd/devcontainer/Cargo.toml
 RELEASE_BINARY := ./cmd/devcontainer/target/release/devcontainer
 
-tests: rust-fmt rust-clippy rust-check rust-tests build-release standalone-artifact-smoke native-only-startup-contract acceptance-fixtures-check command-matrix-drift-check schema-drift-check parity-harness no-node-runtime check-parity-inventory check-cli-metadata check-todo-args check-compatibility-dashboard upstream-compatibility
+tests: rust-fmt rust-clippy rust-check rust-tests build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check command-matrix-drift-check schema-drift-check parity-harness no-node-runtime check-parity-inventory check-cli-metadata check-todo-args check-compatibility-dashboard upstream-compatibility
 
 rust-fmt:
 	cargo fmt --manifest-path $(RUST_MANIFEST) --all -- --check
@@ -39,6 +40,9 @@ build-release:
 
 standalone-artifact-smoke: build-release
 	./scripts/standalone/smoke.sh $(RELEASE_BINARY)
+
+pypi-wheel-smoke:
+	./scripts/standalone/pypi-wheel-smoke.sh
 
 native-only-startup-contract:
 	node build/check-native-only.js

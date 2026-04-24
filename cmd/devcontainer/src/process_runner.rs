@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ProcessLogLevel {
@@ -29,18 +31,8 @@ pub struct ProcessResult {
 
 pub fn run_process(request: &ProcessRequest) -> Result<ProcessResult, io::Error> {
     log_request(request);
-    let mut command = Command::new(&request.program);
-    command.args(&request.args);
 
-    if let Some(cwd) = &request.cwd {
-        command.current_dir(cwd);
-    }
-
-    if !request.env.is_empty() {
-        command.envs(&request.env);
-    }
-
-    let output = command.output()?;
+    let output = retry_executable_file_busy(|| build_command(request).output())?;
     let result = ProcessResult {
         status_code: output.status.code().unwrap_or(1),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -52,6 +44,13 @@ pub fn run_process(request: &ProcessRequest) -> Result<ProcessResult, io::Error>
 
 pub fn run_process_streaming(request: &ProcessRequest) -> Result<i32, io::Error> {
     log_request(request);
+    let status = retry_executable_file_busy(|| build_command(request).status())?;
+    let status_code = status.code().unwrap_or(1);
+    log_result(request, status_code);
+    Ok(status_code)
+}
+
+fn build_command(request: &ProcessRequest) -> Command {
     let mut command = Command::new(&request.program);
     command.args(&request.args);
 
@@ -63,10 +62,28 @@ pub fn run_process_streaming(request: &ProcessRequest) -> Result<i32, io::Error>
         command.envs(&request.env);
     }
 
-    let status = command.status()?;
-    let status_code = status.code().unwrap_or(1);
-    log_result(request, status_code);
-    Ok(status_code)
+    command
+}
+
+fn retry_executable_file_busy<T>(
+    mut run: impl FnMut() -> Result<T, io::Error>,
+) -> Result<T, io::Error> {
+    const MAX_ATTEMPTS: u32 = 4;
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        match run() {
+            Err(error) if is_executable_file_busy(&error) && attempt < MAX_ATTEMPTS => {
+                thread::sleep(Duration::from_millis(10 * u64::from(attempt)));
+            }
+            result => return result,
+        }
+    }
+
+    unreachable!("retry loop always returns from the final attempt")
+}
+
+fn is_executable_file_busy(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(26)
 }
 
 fn log_request(request: &ProcessRequest) {
@@ -173,6 +190,22 @@ mod tests {
         .expect("expected streaming process to run");
 
         assert_eq!(status, 0);
+    }
+
+    #[test]
+    fn executable_file_busy_process_spawn_is_retried() {
+        let mut attempts = 0;
+        let result = super::retry_executable_file_busy(|| {
+            attempts += 1;
+            if attempts < 3 {
+                return Err(std::io::Error::from_raw_os_error(26));
+            }
+            Ok("started")
+        })
+        .expect("retry should eventually succeed");
+
+        assert_eq!(result, "started");
+        assert_eq!(attempts, 3);
     }
 
     #[test]
