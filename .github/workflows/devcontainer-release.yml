@@ -58,21 +58,25 @@ jobs:
             rust_target: x86_64-unknown-linux-gnu
             archive_name: devcontainer-${{ needs.prepare.outputs.version }}-linux-x64.tar.gz
             checksum_cmd: sha256sum
+            pypi_wheel_builder: manylinux
           - target: linux-x64-musl
             runner: ubuntu-latest
             rust_target: x86_64-unknown-linux-musl
             archive_name: devcontainer-${{ needs.prepare.outputs.version }}-linux-x64-musl.tar.gz
             checksum_cmd: sha256sum
+            pypi_wheel_builder: host
           - target: darwin-x64
             runner: macos-15-intel
             rust_target: x86_64-apple-darwin
             archive_name: devcontainer-${{ needs.prepare.outputs.version }}-darwin-x64.tar.gz
             checksum_cmd: shasum -a 256
+            pypi_wheel_builder: host
           - target: darwin-arm64
             runner: macos-15
             rust_target: aarch64-apple-darwin
             archive_name: devcontainer-${{ needs.prepare.outputs.version }}-darwin-arm64.tar.gz
             checksum_cmd: shasum -a 256
+            pypi_wheel_builder: host
     runs-on: ${{ matrix.runner }}
     env:
       CARGO_TOML_PATH: cmd/devcontainer/Cargo.toml
@@ -121,6 +125,30 @@ jobs:
           tar -C "$CRATE_DIR/target/${{ matrix.rust_target }}/release" -czf "$artifact_name" devcontainer
           ${{ matrix.checksum_cmd }} "$artifact_name" > "${artifact_name}.sha256"
 
+      - name: Build PyPI wheel (manylinux)
+        if: matrix.pypi_wheel_builder == 'manylinux'
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          target: ${{ matrix.rust_target }}
+          manylinux: 2014
+          args: --release --out dist/wheels --compatibility pypi
+
+      - name: Setup uv
+        if: matrix.pypi_wheel_builder == 'host'
+        uses: astral-sh/setup-uv@v6
+
+      - name: Build PyPI wheel (host)
+        if: matrix.pypi_wheel_builder == 'host'
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv tool run --from maturin maturin build \
+            --release \
+            --target '${{ matrix.rust_target }}' \
+            --out dist/wheels \
+            --compatibility pypi
+
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
@@ -128,6 +156,7 @@ jobs:
           path: |
             ${{ matrix.archive_name }}
             ${{ matrix.archive_name }}.sha256
+            dist/wheels/*.whl
 
   release:
     needs: [prepare, build]
@@ -150,10 +179,49 @@ jobs:
           set -euo pipefail
           version='${{ needs.prepare.outputs.version }}'
           tag='${{ needs.prepare.outputs.tag }}'
+          mapfile -t release_files < <(find artifacts -type f | sort)
+
+          if [[ "${#release_files[@]}" -eq 0 ]]; then
+            echo "no release artifacts found" >&2
+            exit 1
+          fi
 
           gh release create "$tag" \
             --target "$GITHUB_SHA" \
             --fail-on-no-commits \
             --title "devcontainer v${version}" \
             --notes "Automated release for devcontainer v${version}." \
-            artifacts/*
+            "${release_files[@]}"
+
+  pypi:
+    needs: [prepare, build, release]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish wheels to PyPI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t wheels < <(find dist -type f -name '*.whl' | sort)
+
+          if [[ "${#wheels[@]}" -eq 0 ]]; then
+            echo "no PyPI wheels found" >&2
+            exit 1
+          fi
+
+          uv publish "${wheels[@]}"

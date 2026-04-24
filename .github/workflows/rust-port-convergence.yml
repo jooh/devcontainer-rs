@@ -29,6 +29,9 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
@@ -49,6 +52,9 @@ jobs:
 
       - name: Standalone artifact smoke
         run: ./scripts/standalone/smoke.sh ./cmd/devcontainer/target/release/devcontainer
+
+      - name: PyPI wheel smoke
+        run: make pypi-wheel-smoke
 
       - name: Rust coverage
         run: cargo llvm-cov --manifest-path cmd/devcontainer/Cargo.toml --lcov --output-path cmd/devcontainer/target/coverage.lcov
