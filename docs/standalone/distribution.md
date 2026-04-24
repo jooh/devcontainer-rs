@@ -10,6 +10,7 @@
   - `devcontainer-rs` for `npx devcontainer-rs`
   - `@devcontainer-rs/cli` for `npx @devcontainer-rs/cli`
 - npm also publishes scoped native packages under `@devcontainer-rs/devcontainer-*` for the supported target matrix.
+- npm publication uses npm Trusted Publishers from `.github/workflows/devcontainer-release.yml`; the workflow does not use a long-lived `NPM_TOKEN`.
 - PyPI publishes the same native CLI as the `devcontainer-rs` package. Installing it exposes the `devcontainer` executable on `PATH`.
 
 ## npm install flow
@@ -56,4 +57,5 @@ The initial PyPI wheel set matches the standalone release targets:
 - The repository no longer ships or maintains the old bundled-Node installer path.
 - Release automation does not currently sign artifacts or notarize macOS builds.
 - PyPI publication requires a PyPI Trusted Publisher configured for `.github/workflows/devcontainer-release.yml` and the `pypi` GitHub environment.
+- npm publication requires npm Trusted Publisher entries for each npm package, pointing at the same `.github/workflows/devcontainer-release.yml` workflow.
 - Compatibility tooling in `package.json` is not part of the runtime distribution path.

@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   prepare:
@@ -165,6 +165,8 @@ jobs:
   release:
     needs: [prepare, build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -233,17 +235,60 @@ jobs:
   npm:
     needs: [prepare, build, release]
     runs-on: ubuntu-latest
-    env:
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '20.x'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
+
+      - name: Verify trusted publishing toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version
+          npm --version
+          node - <<'EOF'
+          const { execFileSync } = require("node:child_process");
+
+          function parse(version) {
+            return version.trim().replace(/^v/, "").split(".").map(Number);
+          }
+
+          function isAtLeast(actual, minimum) {
+            const width = Math.max(actual.length, minimum.length);
+            for (let index = 0; index < width; index += 1) {
+              const actualPart = actual[index] ?? 0;
+              const minimumPart = minimum[index] ?? 0;
+              if (actualPart > minimumPart) {
+                return true;
+              }
+              if (actualPart < minimumPart) {
+                return false;
+              }
+            }
+            return true;
+          }
+
+          const minimumNodeVersion = [22, 14, 0];
+          const minimumNpmVersion = [11, 5, 1];
+          const nodeVersion = process.versions.node;
+          const npmVersion = execFileSync("npm", ["--version"], { encoding: "utf8" }).trim();
+
+          if (!isAtLeast(parse(nodeVersion), minimumNodeVersion)) {
+            throw new Error(`trusted publishing requires Node >= ${minimumNodeVersion.join(".")}; found ${nodeVersion}`);
+          }
+
+          if (!isAtLeast(parse(npmVersion), minimumNpmVersion)) {
+            throw new Error(`trusted publishing requires npm >= ${minimumNpmVersion.join(".")}; found ${npmVersion}`);
+          }
+          EOF
 
       - name: Download release archives
         uses: actions/download-artifact@v4
