@@ -127,7 +127,7 @@ jobs:
           smoke_dir="$(mktemp -d)"
           trap 'rm -rf "$smoke_dir"' EXIT
           tar -xzf "$archive_path" -C "$smoke_dir"
-          ./scripts/standalone/smoke.sh "$smoke_dir/devcontainer"
+          ./scripts/standalone/smoke.sh "$smoke_dir/devcontainer-${{ matrix.rust_target }}/devcontainer"
 
       - name: Build PyPI wheel (manylinux)
         if: matrix.pypi_wheel_builder == 'manylinux'

@@ -11,12 +11,28 @@ const workflowPath = path.join(
 );
 
 const workflow = fs.readFileSync(workflowPath, "utf8");
+const buildJobMatch = workflow.match(/^  build:\n([\s\S]+?)^  release:/m);
 const npmJobMatch = workflow.match(/^  npm:\n([\s\S]+)$/m);
 
+assert.ok(
+  buildJobMatch,
+  "expected build release job in devcontainer-release workflow",
+);
 assert.ok(npmJobMatch, "expected npm release job in devcontainer-release workflow");
 
+const buildJob = buildJobMatch[0];
 const npmJob = npmJobMatch[0];
 
+assert.match(
+  buildJob,
+  /tar -xzf "\$archive_path" -C "\$smoke_dir"\n\s+\.\/scripts\/standalone\/smoke\.sh "\$smoke_dir\/devcontainer-\$\{\{ matrix\.rust_target \}\}\/devcontainer"/,
+  "cargo-dist smoke should run the binary inside the extracted top-level archive directory",
+);
+assert.doesNotMatch(
+  buildJob,
+  /\.\/scripts\/standalone\/smoke\.sh "\$smoke_dir\/devcontainer"/,
+  "cargo-dist smoke should not assume the binary is extracted directly at the temp root",
+);
 assert.doesNotMatch(
   workflow,
   /\bNPM_TOKEN\b/,

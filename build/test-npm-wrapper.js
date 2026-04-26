@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  detectLibc,
   resolveBinaryPackage,
   resolveInstalledBinary,
 } = require("../npm/launcher");
@@ -55,6 +56,31 @@ test("maps linux x64 musl to the musl native package", () => {
     resolved.packageName,
     "@devcontainer-rs/devcontainer-linux-x64-musl",
   );
+});
+
+test("detects musl when ldd reports on stderr and exits non-zero", () => {
+  const detected = detectLibc({
+    platform: "linux",
+    env: {},
+    report: {
+      getReport() {
+        return { header: {} };
+      },
+    },
+    execFileSync(command, args) {
+      if (command === "getconf" && args[0] === "GNU_LIBC_VERSION") {
+        throw new Error("not glibc");
+      }
+      if (command === "ldd" && args[0] === "--version") {
+        const error = new Error("musl ldd writes version to stderr");
+        error.stderr = "musl libc (x86_64)\nVersion 1.2.5\n";
+        throw error;
+      }
+      throw new Error(`unexpected command: ${command}`);
+    },
+  });
+
+  assert.equal(detected, "musl");
 });
 
 test("rejects unsupported platforms with a helpful error", () => {

@@ -4,6 +4,26 @@ const { execFileSync, spawn } = require("node:child_process");
 
 const runtimeConfig = require("./runtime-config");
 
+function outputText(value) {
+  if (!value) {
+    return "";
+  }
+  if (Buffer.isBuffer(value)) {
+    return value.toString("utf8");
+  }
+  return String(value);
+}
+
+function parseLibcOutput(output) {
+  if (/musl/i.test(output)) {
+    return "musl";
+  }
+  if (/glibc|gnu libc|gnu c library/i.test(output)) {
+    return "gnu";
+  }
+  return null;
+}
+
 function detectLibc(system = {}) {
   if ((system.platform || process.platform) !== "linux") {
     return null;
@@ -13,11 +33,12 @@ function detectLibc(system = {}) {
     return system.libc;
   }
 
-  if (process.env.DEVCONTAINER_RS_LIBC) {
-    return process.env.DEVCONTAINER_RS_LIBC;
+  const env = system.env || process.env;
+  if (env.DEVCONTAINER_RS_LIBC) {
+    return env.DEVCONTAINER_RS_LIBC;
   }
 
-  const report = process.report;
+  const report = system.report || process.report;
   if (report && typeof report.getReport === "function") {
     const glibcVersion = report.getReport()?.header?.glibcVersionRuntime;
     if (glibcVersion) {
@@ -25,31 +46,36 @@ function detectLibc(system = {}) {
     }
   }
 
+  const runCommand = system.execFileSync || execFileSync;
   try {
-    const output = execFileSync("getconf", ["GNU_LIBC_VERSION"], {
+    const output = runCommand("getconf", ["GNU_LIBC_VERSION"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     });
-    if (/glibc/i.test(output)) {
-      return "gnu";
+    const libc = parseLibcOutput(output);
+    if (libc) {
+      return libc;
     }
   } catch (_error) {
     // fall through to ldd parsing
   }
 
   try {
-    const output = execFileSync("ldd", ["--version"], {
+    const output = runCommand("ldd", ["--version"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
-    if (/musl/i.test(output)) {
-      return "musl";
+    const libc = parseLibcOutput(output);
+    if (libc) {
+      return libc;
     }
-    if (/glibc|gnu libc|gnu c library/i.test(output)) {
-      return "gnu";
+  } catch (error) {
+    const libc = parseLibcOutput(
+      `${outputText(error.stdout)}\n${outputText(error.stderr)}`,
+    );
+    if (libc) {
+      return libc;
     }
-  } catch (_error) {
-    // fall through to the default below
   }
 
   return "gnu";
