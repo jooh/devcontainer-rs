@@ -305,18 +305,14 @@ jobs:
             --artifacts-dir artifacts \
             --output-dir dist/npm
 
-      - name: Publish native npm packages
+      - name: Publish npm packages
         shell: bash
         run: |
           set -euo pipefail
-          npm publish --access public dist/npm/devcontainer-rs-devcontainer-darwin-x64
-          npm publish --access public dist/npm/devcontainer-rs-devcontainer-darwin-arm64
-          npm publish --access public dist/npm/devcontainer-rs-devcontainer-linux-x64-gnu
-          npm publish --access public dist/npm/devcontainer-rs-devcontainer-linux-x64-musl
-
-      - name: Publish wrapper npm packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm publish --access public dist/npm/devcontainer-rs
-          npm publish --access public dist/npm/devcontainer-rs-cli
+          node build/publish-npm-packages.js \
+            dist/npm/devcontainer-rs-devcontainer-darwin-x64 \
+            dist/npm/devcontainer-rs-devcontainer-darwin-arm64 \
+            dist/npm/devcontainer-rs-devcontainer-linux-x64-gnu \
+            dist/npm/devcontainer-rs-devcontainer-linux-x64-musl \
+            dist/npm/devcontainer-rs \
+            dist/npm/devcontainer-rs-cli

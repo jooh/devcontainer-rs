@@ -52,3 +52,13 @@ assert.match(
   /registry-url:\s*'https:\/\/registry\.npmjs\.org'/,
   "npm publish job should target the public npm registry",
 );
+assert.match(
+  npmJob,
+  /node build\/publish-npm-packages\.js /,
+  "npm publish job should use the repo-owned idempotent npm publish helper",
+);
+assert.doesNotMatch(
+  npmJob,
+  /\bnpm publish --access public\b/,
+  "npm publish job should not inline raw npm publish commands",
+);
