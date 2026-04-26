@@ -1,6 +1,7 @@
 # devcontainer-rs
 
 [![PyPI](https://img.shields.io/pypi/v/devcontainer-rs.svg)](https://pypi.org/project/devcontainer-rs/)
+[![npm](https://img.shields.io/npm/v/devcontainer-rs.svg)](https://www.npmjs.com/package/devcontainer-rs)
 
 This repository hosts a native Rust implementation of the Dev Containers CLI, with compatibility tracked against the pinned upstream TypeScript sources in `upstream/` and the pinned specification assets in `spec/`.
 
