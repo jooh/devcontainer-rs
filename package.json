@@ -16,7 +16,7 @@
 	},
 	"scripts": {
 		"test": "npm run check",
-		"check": "node build/check-upstream-submodule.js && node build/check-upstream-compatibility.js && node build/generate-command-matrix.js --check && node build/generate-cli-reference.js --check && node build/generate-parity-inventory.js --check && node build/generate-cli-metadata.js --check && node build/generate-todo-args.js --check && node build/generate-compatibility-dashboard.js --check && node build/check-upstream-test-coverage.js && node build/check-spec-drift.js && node build/check-parity-harness.js && node build/check-native-only.js && node build/check-no-node-runtime.js && node build/check-repo-branding.js && node build/check-devcontainer-config.js",
+		"check": "node build/check-upstream-submodule.js && node build/check-upstream-compatibility.js && node build/generate-command-matrix.js --check && node build/generate-cli-reference.js --check && node build/generate-parity-inventory.js --check && node build/generate-cli-metadata.js --check && node build/generate-todo-args.js --check && node build/generate-compatibility-dashboard.js --check && node build/check-upstream-test-coverage.js && node build/check-spec-drift.js && node build/check-parity-harness.js && node build/check-native-only.js && node build/check-no-node-runtime.js && node --test build/test-npm-wrapper.js && node --test build/test-publish-npm-packages.js && node --test build/test-npm-package-smoke.js && node build/check-npm-packages.js && node build/check-npm-publish-workflow.js && node build/check-repo-branding.js && node build/check-devcontainer-config.js",
 		"install-git-hooks": "./scripts/install-git-hooks.sh",
 		"generate-command-matrix": "node build/generate-command-matrix.js",
 		"generate-cli-reference": "node build/generate-cli-reference.js",
@@ -25,6 +25,7 @@
 		"generate-todo-args": "node build/generate-todo-args.js",
 		"generate-compatibility-dashboard": "node build/generate-compatibility-dashboard.js",
 		"generate-upstream-test-coverage": "node build/generate-upstream-test-coverage.js",
+		"prepare-npm-packages": "node build/prepare-npm-packages.js",
 		"check-command-matrix": "node build/generate-command-matrix.js --check",
 		"check-cli-reference": "node build/generate-cli-reference.js --check",
 		"check-parity-inventory": "node build/generate-parity-inventory.js --check",
@@ -36,9 +37,13 @@
 		"check-repo-branding": "node build/check-repo-branding.js",
 		"check-parity-harness": "node build/check-parity-harness.js",
 		"check-no-node-runtime": "node build/check-no-node-runtime.js",
+		"check-npm-wrapper": "node --test build/test-npm-wrapper.js",
+		"check-publish-npm-packages": "node --test build/test-publish-npm-packages.js",
+		"check-npm-packages": "node --test build/test-npm-package-smoke.js && node build/check-npm-packages.js",
 		"check-spec-drift": "node build/check-spec-drift.js",
 		"check-native-only": "node build/check-native-only.js",
 		"check-upstream-submodule": "node build/check-upstream-submodule.js",
-		"check-upstream-compatibility": "node build/check-upstream-compatibility.js"
+		"check-upstream-compatibility": "node build/check-upstream-compatibility.js",
+		"check-npm-publish-workflow": "node build/check-npm-publish-workflow.js"
 	}
 }

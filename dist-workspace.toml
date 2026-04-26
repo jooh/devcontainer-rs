@@ -1,0 +1,15 @@
+[workspace]
+members = ["cargo:cmd/devcontainer"]
+
+[dist]
+cargo-dist-version = "0.31.0"
+ci = ["github"]
+hosting = ["github"]
+installers = []
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+]
+unix-archive = ".tar.gz"

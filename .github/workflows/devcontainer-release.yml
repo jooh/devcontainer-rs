@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   prepare:
@@ -56,31 +56,24 @@ jobs:
           - target: linux-x64
             runner: ubuntu-latest
             rust_target: x86_64-unknown-linux-gnu
-            archive_name: devcontainer-${{ needs.prepare.outputs.version }}-linux-x64.tar.gz
-            checksum_cmd: sha256sum
             pypi_wheel_builder: manylinux
           - target: linux-x64-musl
             runner: ubuntu-latest
             rust_target: x86_64-unknown-linux-musl
-            archive_name: devcontainer-${{ needs.prepare.outputs.version }}-linux-x64-musl.tar.gz
-            checksum_cmd: sha256sum
             pypi_wheel_builder: host
           - target: darwin-x64
             runner: macos-15-intel
             rust_target: x86_64-apple-darwin
-            archive_name: devcontainer-${{ needs.prepare.outputs.version }}-darwin-x64.tar.gz
-            checksum_cmd: shasum -a 256
             pypi_wheel_builder: host
           - target: darwin-arm64
             runner: macos-15
             rust_target: aarch64-apple-darwin
-            archive_name: devcontainer-${{ needs.prepare.outputs.version }}-darwin-arm64.tar.gz
-            checksum_cmd: shasum -a 256
             pypi_wheel_builder: host
     runs-on: ${{ matrix.runner }}
     env:
       CARGO_TOML_PATH: cmd/devcontainer/Cargo.toml
-      CRATE_DIR: cmd/devcontainer
+      DIST_VERSION: 0.31.0
+      DIST_ARTIFACT_DIR: target/distrib
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -98,6 +91,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes musl-tools
 
+      - name: Install cargo-dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-dist --locked --version "$DIST_VERSION"
+
       - name: Set Cargo version
         shell: bash
         run: |
@@ -105,25 +104,30 @@ jobs:
           version='${{ needs.prepare.outputs.version }}'
           perl -0pi -e 's/^version\s*=\s*"[0-9]+\.[0-9]+\.[0-9]+"/version = "'"$version"'"/m' "$CARGO_TOML_PATH"
 
-      - name: Build release binary
+      - name: Build dist artifacts
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release --target '${{ matrix.rust_target }}' --manifest-path "$CARGO_TOML_PATH"
+          ~/.cargo/bin/dist build \
+            --artifacts=local \
+            --target '${{ matrix.rust_target }}' \
+            --tag '${{ needs.prepare.outputs.tag }}' \
+            --allow-dirty
 
       - name: Standalone smoke
         shell: bash
         run: |
           set -euo pipefail
-          ./scripts/standalone/smoke.sh "$CRATE_DIR/target/${{ matrix.rust_target }}/release/devcontainer"
+          archive_path="$DIST_ARTIFACT_DIR/devcontainer-${{ matrix.rust_target }}.tar.gz"
+          if [[ ! -f "$archive_path" ]]; then
+            echo "missing dist archive: $archive_path" >&2
+            exit 1
+          fi
 
-      - name: Package release artifact
-        shell: bash
-        run: |
-          set -euo pipefail
-          artifact_name='${{ matrix.archive_name }}'
-          tar -C "$CRATE_DIR/target/${{ matrix.rust_target }}/release" -czf "$artifact_name" devcontainer
-          ${{ matrix.checksum_cmd }} "$artifact_name" > "${artifact_name}.sha256"
+          smoke_dir="$(mktemp -d)"
+          trap 'rm -rf "$smoke_dir"' EXIT
+          tar -xzf "$archive_path" -C "$smoke_dir"
+          ./scripts/standalone/smoke.sh "$smoke_dir/devcontainer-${{ matrix.rust_target }}/devcontainer"
 
       - name: Build PyPI wheel (manylinux)
         if: matrix.pypi_wheel_builder == 'manylinux'
@@ -154,13 +158,15 @@ jobs:
         with:
           name: ${{ matrix.target }}
           path: |
-            ${{ matrix.archive_name }}
-            ${{ matrix.archive_name }}.sha256
+            ${{ env.DIST_ARTIFACT_DIR }}/devcontainer-${{ matrix.rust_target }}.tar.gz
+            ${{ env.DIST_ARTIFACT_DIR }}/devcontainer-${{ matrix.rust_target }}.tar.gz.sha256
             dist/wheels/*.whl
 
   release:
     needs: [prepare, build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -225,3 +231,88 @@ jobs:
           fi
 
           uv publish "${wheels[@]}"
+
+  npm:
+    needs: [prepare, build, release]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Verify trusted publishing toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version
+          npm --version
+          node - <<'EOF'
+          const { execFileSync } = require("node:child_process");
+
+          function parse(version) {
+            return version.trim().replace(/^v/, "").split(".").map(Number);
+          }
+
+          function isAtLeast(actual, minimum) {
+            const width = Math.max(actual.length, minimum.length);
+            for (let index = 0; index < width; index += 1) {
+              const actualPart = actual[index] ?? 0;
+              const minimumPart = minimum[index] ?? 0;
+              if (actualPart > minimumPart) {
+                return true;
+              }
+              if (actualPart < minimumPart) {
+                return false;
+              }
+            }
+            return true;
+          }
+
+          const minimumNodeVersion = [22, 14, 0];
+          const minimumNpmVersion = [11, 5, 1];
+          const nodeVersion = process.versions.node;
+          const npmVersion = execFileSync("npm", ["--version"], { encoding: "utf8" }).trim();
+
+          if (!isAtLeast(parse(nodeVersion), minimumNodeVersion)) {
+            throw new Error(`trusted publishing requires Node >= ${minimumNodeVersion.join(".")}; found ${nodeVersion}`);
+          }
+
+          if (!isAtLeast(parse(npmVersion), minimumNpmVersion)) {
+            throw new Error(`trusted publishing requires npm >= ${minimumNpmVersion.join(".")}; found ${npmVersion}`);
+          }
+          EOF
+
+      - name: Download release archives
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Prepare npm packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          node build/prepare-npm-packages.js \
+            --version '${{ needs.prepare.outputs.version }}' \
+            --artifacts-dir artifacts \
+            --output-dir dist/npm
+
+      - name: Publish npm packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          node build/publish-npm-packages.js \
+            dist/npm/devcontainer-rs-devcontainer-darwin-x64 \
+            dist/npm/devcontainer-rs-devcontainer-darwin-arm64 \
+            dist/npm/devcontainer-rs-devcontainer-linux-x64-gnu \
+            dist/npm/devcontainer-rs-devcontainer-linux-x64-musl \
+            dist/npm/devcontainer-rs \
+            dist/npm/devcontainer-rs-cli
