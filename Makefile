@@ -73,6 +73,7 @@ npm-publish-script-check:
 	node --test build/test-publish-npm-packages.js
 
 npm-package-smoke:
+	node --test build/test-npm-package-smoke.js
 	node build/check-npm-packages.js
 
 npm-publish-workflow-check:

@@ -5,6 +5,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
 const { prepareNpmPackages } = require("./prepare-npm-packages");
+const { resolveBinaryPackage } = require("../npm/launcher");
 const runtimeConfig = require("../npm/runtime-config");
 
 const VERSION = "1.2.3";
@@ -93,17 +94,8 @@ function installAndRun(tempDir, dependencies, command, expectedOutput) {
   assert.equal(output, expectedOutput);
 }
 
-function detectHostTarget() {
-  if (process.platform === "darwin" && process.arch === "arm64") {
-    return runtimeConfig.supportedTargets["darwin-arm64"];
-  }
-  if (process.platform === "darwin" && process.arch === "x64") {
-    return runtimeConfig.supportedTargets["darwin-x64"];
-  }
-  if (process.platform === "linux" && process.arch === "x64") {
-    return runtimeConfig.supportedTargets["linux-x64-gnu"];
-  }
-  throw new Error(`unsupported test host: ${process.platform}/${process.arch}`);
+function detectHostTarget(system = {}) {
+  return resolveBinaryPackage(system);
 }
 
 function main() {
@@ -174,4 +166,10 @@ function main() {
   assert.equal(directBinaryOutput, `devcontainer ${VERSION} ${hostTarget.target}`);
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  detectHostTarget,
+};
