@@ -12,6 +12,7 @@
 - npm also publishes scoped native packages under `@devcontainer-rs/devcontainer-*` for the supported target matrix.
 - npm publication uses npm Trusted Publishers from `.github/workflows/devcontainer-release.yml`; the workflow does not use a long-lived `NPM_TOKEN`.
 - PyPI publishes the same native CLI as the `devcontainer-rs` package. Installing it exposes the `devcontainer` executable on `PATH`.
+- Homebrew publishes the `devcontainer-rs` formula to `jooh/devcontainer-rs-tap`. The formula installs the same native `devcontainer` executable from GitHub Release archives.
 
 ## npm install flow
 
@@ -42,6 +43,17 @@ The initial PyPI wheel set matches the standalone release targets:
 - macOS x64
 - macOS arm64
 
+## Homebrew install flow
+
+Homebrew is distributed through a tap because the Homebrew core formula named `devcontainer` already tracks the upstream Node.js implementation:
+
+```bash
+brew install jooh/devcontainer-rs-tap/devcontainer-rs
+devcontainer --version
+```
+
+Release automation renders `Formula/devcontainer-rs.rb` after GitHub Release assets are published, then commits and pushes the formula update to the tap repository. The workflow requires a `HOMEBREW_TAP_TOKEN` secret with write access to `jooh/devcontainer-rs-tap`.
+
 ## Local build flow
 
 - `scripts/standalone/build.sh <target>` builds the Rust release binary and places it under `dist/standalone/`.
@@ -51,6 +63,7 @@ The initial PyPI wheel set matches the standalone release targets:
 - `node build/prepare-npm-packages.js --artifacts-dir target/distrib --output-dir dist/npm` stages the publishable npm wrapper/native packages from dist outputs.
 - `make npm-package-smoke` verifies the wrapper/native tarballs with local `npm pack` installs and command execution.
 - `make pypi-wheel-smoke` builds a local wheel with `uv`, installs it into an isolated environment, and runs the standalone smoke against the installed `devcontainer` executable.
+- `make homebrew-formula-check` verifies the formula renderer and `make homebrew-publish-workflow-check` verifies the release workflow wiring for the tap update.
 
 ## Current limitations
 
@@ -58,4 +71,5 @@ The initial PyPI wheel set matches the standalone release targets:
 - Release automation does not currently sign artifacts or notarize macOS builds.
 - PyPI publication requires a PyPI Trusted Publisher configured for `.github/workflows/devcontainer-release.yml` and the `pypi` GitHub environment.
 - npm publication requires npm Trusted Publisher entries for each npm package, pointing at the same `.github/workflows/devcontainer-release.yml` workflow.
+- Homebrew publication requires `HOMEBREW_TAP_TOKEN`; without it the release job creates GitHub/PyPI/npm artifacts but the tap update fails.
 - Compatibility tooling in `package.json` is not part of the runtime distribution path.

@@ -5,3 +5,6 @@
 [submodule "spec"]
 	path = spec
 	url = https://github.com/devcontainers/spec
+[submodule "tap"]
+	path = tap
+	url = https://github.com/jooh/devcontainer-rs-tap

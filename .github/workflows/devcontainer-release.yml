@@ -199,6 +199,65 @@ jobs:
             --notes "Automated release for devcontainer v${version}." \
             "${release_files[@]}"
 
+  homebrew:
+    needs: [prepare, build, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release checksums
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Verify tap token
+        shell: bash
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${HOMEBREW_TAP_TOKEN:-}" ]]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is required to publish the Homebrew tap"
+            exit 1
+          fi
+
+      - name: Checkout tap
+        uses: actions/checkout@v4
+        with:
+          repository: jooh/devcontainer-rs-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Render Homebrew formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          node build/render-homebrew-formula.js \
+            --version '${{ needs.prepare.outputs.version }}' \
+            --tag '${{ needs.prepare.outputs.tag }}' \
+            --artifacts-dir artifacts \
+            --output tap/Formula/devcontainer-rs.rb
+
+      - name: Commit and push tap update
+        shell: bash
+        working-directory: tap
+        run: |
+          set -euo pipefail
+          version='${{ needs.prepare.outputs.version }}'
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/devcontainer-rs.rb
+          if git diff --cached --quiet; then
+            echo "Homebrew formula already up to date"
+            exit 0
+          fi
+          git commit -m "Update devcontainer-rs to v${version}"
+          git push origin HEAD:main
+
   pypi:
     needs: [prepare, build, release]
     runs-on: ubuntu-latest
