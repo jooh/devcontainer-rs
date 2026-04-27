@@ -38,8 +38,8 @@ assert.match(
 );
 assert.match(
   homebrewJob,
-  /repository:\s+jooh\/homebrew-devcontainer-rs-tap\b/,
-  "Homebrew publish should check out Homebrew's default repository for the jooh/devcontainer-rs-tap shorthand",
+  /repository:\s+jooh\/homebrew-devcontainer-rs\b/,
+  "Homebrew publish should check out Homebrew's default repository for the jooh/devcontainer-rs shorthand",
 );
 assert.match(
   homebrewJob,

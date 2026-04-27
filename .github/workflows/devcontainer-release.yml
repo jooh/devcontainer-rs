@@ -228,7 +228,7 @@ jobs:
       - name: Checkout tap
         uses: actions/checkout@v4
         with:
-          repository: jooh/homebrew-devcontainer-rs-tap
+          repository: jooh/homebrew-devcontainer-rs
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
 
