@@ -7,6 +7,12 @@ This repository hosts a native Rust implementation of the Dev Containers CLI, wi
 
 The shipped runtime is the Rust binary in `cmd/devcontainer`. Node is kept only for lightweight compatibility tooling such as upstream/spec drift checks, generated compatibility inventories, and the parity smoke harness.
 
+## Why
+
+The main point of all this is to distribute a fat binary that implements dev containers without bringing in the whole node stack. In enterprise contexts this can be helpful.
+
+Eventually we may also *extend* the upstream devcontainers/cli with additional functionality.
+
 ## Repository layout
 
 - `cmd/devcontainer/`: native Rust CLI crate.
