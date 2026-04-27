@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/devcontainer-rs.svg)](https://pypi.org/project/devcontainer-rs/)
 [![npm](https://img.shields.io/npm/v/devcontainer-rs.svg)](https://www.npmjs.com/package/devcontainer-rs)
-[![Homebrew](https://img.shields.io/badge/Homebrew-tap-informational?logo=homebrew)](https://github.com/jooh/devcontainer-rs-tap)
+[![Homebrew](https://img.shields.io/badge/Homebrew-tap-informational?logo=homebrew)](https://github.com/jooh/homebrew-devcontainer-rs-tap)
 
 This repository hosts a native Rust implementation of the Dev Containers CLI, with compatibility tracked against the pinned upstream TypeScript sources in `upstream/` and the pinned specification assets in `spec/`.
 
