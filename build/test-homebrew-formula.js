@@ -58,6 +58,19 @@ test("reads cargo-dist sha256 files from the release artifact directory", () => 
   assert.equal(readSha256(tempDir, target), "d".repeat(64));
 });
 
+test("reads cargo-dist sha256 files from nested downloaded artifacts", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "devcontainer-rs-shas-"));
+  const target = RELEASE_TARGETS.darwinArm64.triple;
+  const checksumDir = path.join(tempDir, "target", "distrib");
+  fs.mkdirSync(checksumDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(checksumDir, `devcontainer-${target}.tar.gz.sha256`),
+    `${"e".repeat(64)}  devcontainer-${target}.tar.gz\n`,
+  );
+
+  assert.equal(readSha256(tempDir, target), "e".repeat(64));
+});
+
 test("exports the tap formula path", () => {
   assert.equal(HOMEBREW_FORMULA_PATH, path.join("Formula", "devcontainer-rs.rb"));
 });

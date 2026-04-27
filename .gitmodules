@@ -7,4 +7,4 @@
 	url = https://github.com/devcontainers/spec
 [submodule "tap"]
 	path = tap
-	url = https://github.com/jooh/devcontainer-rs-tap
+	url = https://github.com/jooh/homebrew-devcontainer-rs-tap

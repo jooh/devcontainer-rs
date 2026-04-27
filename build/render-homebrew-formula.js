@@ -58,13 +58,39 @@ function usage() {
     "Options:",
     "  --version        Release version without the tag prefix, for example 1.2.3",
     "  --tag            Release tag; defaults to devcontainer-v<version>",
-    "  --artifacts-dir  Directory containing cargo-dist .tar.gz.sha256 files",
+    "  --artifacts-dir  Directory containing cargo-dist .tar.gz.sha256 files, searched recursively",
     "  --output         Formula path to write, usually tap/Formula/devcontainer-rs.rb",
   ].join("\n");
 }
 
+function findChecksumFile(artifactsDir, filename) {
+  const directPath = path.join(artifactsDir, filename);
+  if (fs.existsSync(directPath)) {
+    return directPath;
+  }
+
+  const pending = [artifactsDir];
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    const entries = fs.readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
+      left.name.localeCompare(right.name),
+    );
+
+    for (const entry of entries) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(entryPath);
+      } else if (entry.isFile() && entry.name === filename) {
+        return entryPath;
+      }
+    }
+  }
+
+  throw new Error(`missing checksum file ${filename} under ${artifactsDir}`);
+}
+
 function readSha256(artifactsDir, triple) {
-  const shaPath = path.join(artifactsDir, `${archiveName(triple)}.sha256`);
+  const shaPath = findChecksumFile(artifactsDir, `${archiveName(triple)}.sha256`);
   const content = fs.readFileSync(shaPath, "utf8").trim();
   const match = content.match(/^([a-f0-9]{64})\b/i);
   if (!match) {

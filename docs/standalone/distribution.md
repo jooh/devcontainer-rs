@@ -12,7 +12,7 @@
 - npm also publishes scoped native packages under `@devcontainer-rs/devcontainer-*` for the supported target matrix.
 - npm publication uses npm Trusted Publishers from `.github/workflows/devcontainer-release.yml`; the workflow does not use a long-lived `NPM_TOKEN`.
 - PyPI publishes the same native CLI as the `devcontainer-rs` package. Installing it exposes the `devcontainer` executable on `PATH`.
-- Homebrew publishes the `devcontainer-rs` formula to `jooh/devcontainer-rs-tap`. The formula installs the same native `devcontainer` executable from GitHub Release archives.
+- Homebrew publishes the `devcontainer-rs` formula to the `jooh/devcontainer-rs-tap` tap, backed by the `jooh/homebrew-devcontainer-rs-tap` repository. The formula installs the same native `devcontainer` executable from GitHub Release archives.
 
 ## npm install flow
 
@@ -52,7 +52,7 @@ brew install jooh/devcontainer-rs-tap/devcontainer-rs
 devcontainer --version
 ```
 
-Release automation renders `Formula/devcontainer-rs.rb` after GitHub Release assets are published, then commits and pushes the formula update to the tap repository. The workflow requires a `HOMEBREW_TAP_TOKEN` secret with write access to `jooh/devcontainer-rs-tap`.
+Release automation renders `Formula/devcontainer-rs.rb` after GitHub Release assets are published, then commits and pushes the formula update to the tap repository. The workflow requires a `HOMEBREW_TAP_TOKEN` secret with write access to `jooh/homebrew-devcontainer-rs-tap`.
 
 ## Local build flow
 
