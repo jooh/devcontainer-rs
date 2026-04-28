@@ -24,7 +24,7 @@ assert.doesNotMatch(
 );
 assert.doesNotMatch(
   workflow,
-  /repository:\s+jooh\/homebrew-devcontainer-rs\b/,
+  /repository:\s+jooh\/homebrew-tap\b/,
   "source release workflow should not check out the tap repository",
 );
 assert.doesNotMatch(
@@ -40,7 +40,7 @@ assert.match(
 );
 assert.match(
   distributionDocs,
-  /jooh\/homebrew-devcontainer-rs/,
+  /jooh\/homebrew-tap/,
   "distribution docs should name the backing tap repository",
 );
 assert.doesNotMatch(
@@ -55,7 +55,7 @@ assert.match(
 );
 assert.match(
   gitmodules,
-  /url = https:\/\/github\.com\/jooh\/homebrew-devcontainer-rs\b/,
+  /url = https:\/\/github\.com\/jooh\/homebrew-tap\b/,
   "tap submodule should point at Homebrew's default repository for jooh/devcontainer-rs",
 );
 

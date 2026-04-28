@@ -12,7 +12,7 @@
 - npm also publishes scoped native packages under `@devcontainer-rs/devcontainer-*` for the supported target matrix.
 - npm publication uses npm Trusted Publishers from `.github/workflows/devcontainer-release.yml`; the workflow does not use a long-lived `NPM_TOKEN`.
 - PyPI publishes the same native CLI as the `devcontainer-rs` package. Installing it exposes the `devcontainer` executable on `PATH`.
-- Homebrew publishes the `devcontainer-rs` formula to the `jooh/devcontainer-rs` tap, backed by the `jooh/homebrew-devcontainer-rs` repository. The formula installs the same native `devcontainer` executable from GitHub Release archives.
+- Homebrew publishes the `devcontainer-rs` formula to the `jooh/devcontainer-rs` tap, backed by the `jooh/homebrew-tap` repository. The formula installs the same native `devcontainer` executable from GitHub Release archives.
 
 ## npm install flow
 
@@ -52,9 +52,9 @@ brew install jooh/devcontainer-rs/devcontainer-rs
 devcontainer --version
 ```
 
-The tap repository owns formula publishing. Its scheduled/manual workflow reads the latest public `jooh/devcontainer-rs` release, renders `Formula/devcontainer-rs.rb`, and commits the change back to `jooh/homebrew-devcontainer-rs` with that repository's short-lived `GITHUB_TOKEN`.
+The tap repository owns formula publishing. Its scheduled/manual workflow reads the latest public `jooh/devcontainer-rs` release, renders `Formula/devcontainer-rs.rb`, and commits the change back to `jooh/homebrew-tap` with that repository's short-lived `GITHUB_TOKEN`.
 
-Homebrew maps the backing repository `jooh/homebrew-devcontainer-rs` to the tap shorthand `jooh/devcontainer-rs`. The source release workflow only publishes release assets; it does not need write access to the tap.
+Homebrew maps the backing repository `jooh/homebrew-tap` to the tap shorthand `jooh/devcontainer-rs`. The source release workflow only publishes release assets; it does not need write access to the tap.
 
 ## Local build flow
 
