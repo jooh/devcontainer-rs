@@ -19,7 +19,6 @@ fn interactive_exec_attaches_stdin() {
             fake_podman.as_str(),
             "--container-id",
             "fake-container-id",
-            "--interactive",
             "/bin/cat",
         ],
         &[("FAKE_PODMAN_REQUIRE_INTERACTIVE", "1")],
@@ -91,7 +90,7 @@ fn exec_with_container_id_uses_metadata_for_context() {
     let invocations = harness.read_invocations();
     assert!(invocations.contains("inspect fake-container-id"));
     assert!(invocations.contains(
-        "exec --workdir /container/project --user vscode -e TEST_REMOTE_ENV=from-metadata fake-container-id /bin/echo hello-from-metadata"
+        "exec -i --workdir /container/project --user vscode -e TEST_REMOTE_ENV=from-metadata fake-container-id /bin/echo hello-from-metadata"
     ));
 }
 
@@ -140,7 +139,7 @@ fn up_persists_metadata_for_followup_exec_with_container_id() {
     assert!(invocations.contains("--label devcontainer.metadata="));
     assert!(invocations.contains("inspect fake-container-id"));
     assert!(invocations.contains(
-        "exec --workdir /persisted-workspace --user vscode -e TEST_REMOTE_ENV=from-config fake-container-id /bin/echo hello-from-persisted-metadata"
+        "exec -i --workdir /persisted-workspace --user vscode -e TEST_REMOTE_ENV=from-config fake-container-id /bin/echo hello-from-persisted-metadata"
     ));
 }
 
@@ -195,7 +194,7 @@ fn compose_up_persists_metadata_for_followup_exec_with_container_id() {
     assert!(invocations.contains("inspect fake-compose-container-id"));
     assert!(invocations.contains("compose --project-name workspace_devcontainer -f "));
     assert!(invocations.contains(
-        "exec --workdir /persisted-compose-workspace --user vscode -e TEST_REMOTE_ENV=from-compose-config fake-compose-container-id /bin/echo hello-from-compose-metadata"
+        "exec -i --workdir /persisted-compose-workspace --user vscode -e TEST_REMOTE_ENV=from-compose-config fake-compose-container-id /bin/echo hello-from-compose-metadata"
     ));
 }
 
@@ -246,7 +245,7 @@ fn up_can_omit_config_remote_env_from_persisted_metadata() {
     assert!(invocations.contains("--label devcontainer.metadata="));
     assert!(!invocations.contains("TEST_REMOTE_ENV=from-config"));
     assert!(invocations.contains(
-        "exec --workdir /persisted-workspace --user vscode fake-container-id /bin/sh -lc printf %s \"${TEST_REMOTE_ENV-}\""
+        "exec -i --workdir /persisted-workspace --user vscode fake-container-id /bin/sh -lc printf %s \"${TEST_REMOTE_ENV-}\""
     ));
 }
 

@@ -108,7 +108,7 @@ fn up_starts_compose_services_and_exec_uses_compose_container_lookup() {
     assert!(!invocations.contains(" up -d app"));
     assert!(invocations.contains(" ps -q app"));
     assert!(invocations.contains(
-        "exec --workdir /workspace --user vscode fake-compose-container-id /bin/echo hello-from-compose"
+        "exec -i --workdir /workspace --user vscode fake-compose-container-id /bin/echo hello-from-compose"
     ));
 
     let exec_log = harness.read_exec_log();
@@ -316,7 +316,7 @@ fn exec_accepts_custom_compose_binary_for_compose_workspaces() {
     assert!(invocations.contains("compose --project-name workspace_devcontainer -f "));
     assert!(invocations.contains(" ps -q app"));
     assert!(invocations.contains(
-        "exec --workdir /workspace --user vscode fake-compose-container-id /bin/echo hello-from-custom-compose"
+        "exec -i --workdir /workspace --user vscode fake-compose-container-id /bin/echo hello-from-custom-compose"
     ));
 }
 

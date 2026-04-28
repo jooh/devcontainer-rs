@@ -46,7 +46,7 @@ fn exec_with_config_uses_the_config_workspace_for_lookup_and_workdir() {
         expected_workspace.display()
     )));
     assert!(invocations.contains(
-        "exec --workdir /workspaces/workspace fake-container-id /bin/echo hello-from-config"
+        "exec -i --workdir /workspaces/workspace fake-container-id /bin/echo hello-from-config"
     ));
 }
 
@@ -104,7 +104,7 @@ fn nested_config_exec_uses_workspace_root_and_config_label() {
         expected_config.display()
     )));
     assert!(invocations.contains(
-        "exec --workdir /workspaces/workspace fake-container-id /bin/echo hello-from-nested-config"
+        "exec -i --workdir /workspaces/workspace fake-container-id /bin/echo hello-from-nested-config"
     ));
 }
 
@@ -159,7 +159,7 @@ fn exec_from_workspace_directory_loads_local_config() {
         expected_config.display()
     )));
     assert!(invocations.contains(
-        "exec --workdir /configured-workspace --user vscode -e TEST_REMOTE_ENV=from-config fake-container-id /bin/echo hello-from-workspace"
+        "exec -i --workdir /configured-workspace --user vscode -e TEST_REMOTE_ENV=from-config fake-container-id /bin/echo hello-from-workspace"
     ));
 }
 
@@ -217,6 +217,6 @@ fn exec_with_override_config_uses_override_contents_and_workspace_config_labels(
         expected_config.display()
     )));
     assert!(invocations.contains(
-        "exec --workdir /override-workspace --user vscode fake-container-id /bin/echo hello-from-override"
+        "exec -i --workdir /override-workspace --user vscode fake-container-id /bin/echo hello-from-override"
     ));
 }

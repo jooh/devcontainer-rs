@@ -58,7 +58,7 @@ fn up_starts_a_container_and_exec_runs_inside_it() {
     assert!(invocations.contains("--mount type=bind,source="));
     assert!(invocations.contains(",target=/workspace"));
     assert!(invocations
-        .contains("exec --workdir /workspace fake-container-id /bin/echo hello-from-container"));
+        .contains("exec -i --workdir /workspace fake-container-id /bin/echo hello-from-container"));
 
     let exec_log = harness.read_exec_log();
     assert!(exec_log.contains("/bin/sh -lc echo ready"));
