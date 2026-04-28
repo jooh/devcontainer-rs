@@ -129,7 +129,7 @@ If a pinned submodule revision changes, update the matching generated baseline f
 ## Contributor notes
 
 - Architecture, command flow, and runtime module ownership: `docs/architecture.md`
-- Generated command reference: `docs/cli/command-reference.md`
+- Generated upstream command reference: `docs/upstream/command-reference.md`
 - Generated parity inventory: `docs/upstream/parity-inventory.md`
 - Native distribution and release notes: `docs/standalone/distribution.md`
 - Runtime and compatibility guardrails: `docs/standalone/cutover.md`

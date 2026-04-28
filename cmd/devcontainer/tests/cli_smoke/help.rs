@@ -55,7 +55,7 @@ fn top_level_help_matches_public_cli_surface() {
     assert!(stdout.contains("Options:"), "{stdout}");
     assert!(stdout.contains("--version"), "{stdout}");
     assert!(
-        !stdout.contains("docs/cli/command-reference.md"),
+        !stdout.contains("docs/upstream/command-reference.md"),
         "{stdout}"
     );
     assert!(!stdout.contains("parity-inventory"), "{stdout}");

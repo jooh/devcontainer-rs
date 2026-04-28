@@ -11,7 +11,7 @@ const path = require('path');
 const { generateCommandMatrix } = require('./generate-command-matrix');
 
 const repositoryRoot = path.join(__dirname, '..');
-const outputPath = path.join(repositoryRoot, 'docs', 'cli', 'command-reference.md');
+const outputPath = path.join(repositoryRoot, 'docs', 'upstream', 'command-reference.md');
 
 function renderOptions(options) {
 	if (!options.length) {
@@ -37,9 +37,9 @@ function renderReference(matrix) {
 	const groupedSubcommands = Object.entries(matrix.subcommandsByGroup);
 
 	return [
-		'# CLI Command Reference',
+		'# Upstream CLI Command Reference',
 		'',
-		'Generated from the pinned upstream CLI command matrix.',
+		'Generated from the pinned upstream CLI command matrix. This is a compatibility baseline, not a native behavior reference.',
 		'',
 		`- Upstream commit: \`${matrix.upstreamCommit}\``,
 		`- Source: \`${matrix.sourcePath}\``,
@@ -82,10 +82,10 @@ if (require.main === module) {
 	const reference = renderReference(matrix);
 	if (process.argv.includes('--check')) {
 		if (!compareToCommitted(reference)) {
-			console.error('Committed CLI reference is out of date. Run node build/generate-cli-reference.js');
+			console.error('Committed upstream CLI reference is out of date. Run node build/generate-cli-reference.js');
 			process.exit(1);
 		}
-		console.log('[cli-reference] committed reference matches pinned upstream command matrix.');
+		console.log('[cli-reference] committed upstream reference matches pinned upstream command matrix.');
 	} else {
 		writeReference(reference);
 		console.log(`[cli-reference] wrote ${path.relative(repositoryRoot, outputPath)}`);
