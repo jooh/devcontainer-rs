@@ -83,7 +83,7 @@ fn lifecycle_flow_runs_across_up_exec_run_user_commands_and_set_up() {
     let invocations = harness.read_invocations();
     assert!(invocations.contains("run "));
     assert!(invocations.contains(
-        "exec --workdir /workspace fake-container-id /bin/echo hello-from-lifecycle-flow"
+        "exec -i --workdir /workspace fake-container-id /bin/echo hello-from-lifecycle-flow"
     ));
     assert!(invocations.contains("ps -q "));
 

@@ -6,6 +6,25 @@ use serde_json::Value;
 
 use super::context::{combined_remote_env, configured_user};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ExecStdio {
+    stdin_is_terminal: bool,
+    stdout_is_terminal: bool,
+}
+
+impl ExecStdio {
+    pub(crate) fn current() -> Self {
+        Self {
+            stdin_is_terminal: std::io::stdin().is_terminal(),
+            stdout_is_terminal: std::io::stdout().is_terminal(),
+        }
+    }
+
+    fn should_allocate_tty(self) -> bool {
+        self.stdin_is_terminal && self.stdout_is_terminal
+    }
+}
+
 pub(crate) fn exec_command_and_args(args: &[String]) -> Result<Vec<String>, String> {
     let mut index = 0;
     while index < args.len() {
@@ -36,15 +55,13 @@ pub(crate) fn exec_command_and_args(args: &[String]) -> Result<Vec<String>, Stri
         }
         if matches!(
             arg.as_str(),
-            "--interactive"
-                | "--mount-workspace-git-root"
+            "--mount-workspace-git-root"
                 | "--mount-git-worktree-common-dir"
                 | "--skip-feature-auto-mapping"
         ) {
-            index += if arg != "--interactive"
-                && args
-                    .get(index + 1)
-                    .is_some_and(|next| is_explicit_bool_literal(next))
+            index += if args
+                .get(index + 1)
+                .is_some_and(|next| is_explicit_bool_literal(next))
             {
                 2
             } else {
@@ -78,14 +95,12 @@ pub(crate) fn exec_engine_args(
     remote_workspace_folder: &str,
     container_id: &str,
     command_args: Vec<String>,
-    interactive: bool,
+    stdio: ExecStdio,
 ) -> Result<Vec<String>, String> {
     let mut engine_args = vec!["exec".to_string()];
-    if interactive {
-        engine_args.push("-i".to_string());
-        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-            engine_args.push("-t".to_string());
-        }
+    engine_args.push("-i".to_string());
+    if stdio.should_allocate_tty() {
+        engine_args.push("-t".to_string());
     }
     engine_args.push("--workdir".to_string());
     engine_args.push(remote_workspace_folder.to_string());
@@ -106,7 +121,7 @@ pub(crate) fn exec_engine_args(
 mod tests {
     use serde_json::json;
 
-    use super::{exec_command_and_args, exec_engine_args};
+    use super::{exec_command_and_args, exec_engine_args, ExecStdio};
 
     #[test]
     fn exec_command_and_args_rejects_unknown_options() {
@@ -118,6 +133,18 @@ mod tests {
         .expect_err("expected unsupported option");
 
         assert_eq!(error, "Unsupported exec option: --mystery");
+    }
+
+    #[test]
+    fn exec_command_and_args_rejects_interactive_option() {
+        let error = exec_command_and_args(&[
+            "--interactive".to_string(),
+            "/bin/echo".to_string(),
+            "hello".to_string(),
+        ])
+        .expect_err("expected unsupported option");
+
+        assert_eq!(error, "Unsupported exec option: --interactive");
     }
 
     #[test]
@@ -133,11 +160,16 @@ mod tests {
             "/workspace",
             "container-id",
             vec!["/bin/echo".to_string(), "hello".to_string()],
-            false,
+            ExecStdio {
+                stdin_is_terminal: false,
+                stdout_is_terminal: false,
+            },
         )
         .expect("engine args");
 
         assert_eq!(args[0], "exec");
+        assert_eq!(args[1], "-i");
+        assert!(!args.contains(&"-t".to_string()));
         assert!(args.contains(&"--workdir".to_string()));
         assert!(args.contains(&"/workspace".to_string()));
         assert!(args.contains(&"--user".to_string()));
@@ -146,6 +178,69 @@ mod tests {
         assert!(args.contains(&"/bin/echo".to_string()));
         assert!(args.iter().any(|arg| arg == "CONFIG_ENV=config"));
         assert!(args.iter().any(|arg| arg == "CLI_ENV=cli"));
+    }
+
+    #[test]
+    fn exec_engine_args_attach_stdin_by_default() {
+        let args = minimal_exec_engine_args(ExecStdio {
+            stdin_is_terminal: false,
+            stdout_is_terminal: false,
+        });
+
+        assert_eq!(args[0], "exec");
+        assert_eq!(args[1], "-i");
+    }
+
+    #[test]
+    fn exec_engine_args_allocate_tty_only_when_stdin_and_stdout_are_terminals() {
+        let cases = [
+            (
+                ExecStdio {
+                    stdin_is_terminal: false,
+                    stdout_is_terminal: false,
+                },
+                false,
+            ),
+            (
+                ExecStdio {
+                    stdin_is_terminal: true,
+                    stdout_is_terminal: false,
+                },
+                false,
+            ),
+            (
+                ExecStdio {
+                    stdin_is_terminal: false,
+                    stdout_is_terminal: true,
+                },
+                false,
+            ),
+            (
+                ExecStdio {
+                    stdin_is_terminal: true,
+                    stdout_is_terminal: true,
+                },
+                true,
+            ),
+        ];
+
+        for (stdio, expect_tty) in cases {
+            let args = minimal_exec_engine_args(stdio);
+
+            assert_eq!(args.contains(&"-t".to_string()), expect_tty);
+        }
+    }
+
+    fn minimal_exec_engine_args(stdio: ExecStdio) -> Vec<String> {
+        exec_engine_args(
+            &[],
+            &json!({}),
+            "/workspace",
+            "container-id",
+            vec!["/bin/echo".to_string(), "hello".to_string()],
+            stdio,
+        )
+        .expect("engine args")
     }
 
     #[test]

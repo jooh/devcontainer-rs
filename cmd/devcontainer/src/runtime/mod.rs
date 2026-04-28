@@ -15,12 +15,6 @@ use serde_json::{json, Value};
 
 use crate::commands::common;
 use crate::commands::configuration;
-use crate::process_runner::ProcessResult;
-
-pub enum ExecResult {
-    Captured(ProcessResult),
-    Streaming(i32),
-}
 
 fn effective_up_resolved_config(
     args: &[String],
@@ -178,22 +172,17 @@ pub fn run_user_commands(args: &[String]) -> Result<Value, String> {
     }))
 }
 
-pub fn run_exec(args: &[String]) -> Result<ExecResult, String> {
+pub fn run_exec(args: &[String]) -> Result<i32, String> {
     let command_args = exec::exec_command_and_args(args)?;
     let context = context::resolve_existing_container_context(args)?;
-    let interactive = common::has_flag(args, "--interactive");
     let engine_args = exec::exec_engine_args(
         args,
         &context.configuration,
         &context.remote_workspace_folder,
         &context.container_id,
         command_args,
-        interactive,
+        exec::ExecStdio::current(),
     )?;
 
-    if interactive {
-        engine::run_engine_streaming(args, engine_args).map(ExecResult::Streaming)
-    } else {
-        engine::run_engine(args, engine_args).map(ExecResult::Captured)
-    }
+    engine::run_engine_streaming(args, engine_args)
 }
