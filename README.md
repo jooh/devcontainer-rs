@@ -24,6 +24,9 @@ brew install jooh/devcontainer-rs/devcontainer-rs
 devcontainer --version
 ```
 
+Homebrew resolves `jooh/devcontainer-rs` from the tap repository
+`jooh/homebrew-devcontainer-rs`.
+
 ## Why
 
 The main point of all this is to distribute a fat binary that implements dev containers without bringing in the whole node stack. In enterprise contexts this can be helpful.
