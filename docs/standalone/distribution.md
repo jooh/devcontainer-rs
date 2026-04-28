@@ -12,7 +12,7 @@
 - npm also publishes scoped native packages under `@devcontainer-rs/devcontainer-*` for the supported target matrix.
 - npm publication uses npm Trusted Publishers from `.github/workflows/devcontainer-release.yml`; the workflow does not use a long-lived `NPM_TOKEN`.
 - PyPI publishes the same native CLI as the `devcontainer-rs` package. Installing it exposes the `devcontainer` executable on `PATH`.
-- Homebrew publishes the `devcontainer-rs` formula to the `jooh/devcontainer-rs-tap` tap, backed by the `jooh/homebrew-devcontainer-rs-tap` repository. The formula installs the same native `devcontainer` executable from GitHub Release archives.
+- Homebrew publishes the `devcontainer-rs` formula to the `jooh/devcontainer-rs` tap, backed by the `jooh/homebrew-tap` repository. The formula installs the same native `devcontainer` executable from GitHub Release archives.
 
 ## npm install flow
 
@@ -48,11 +48,13 @@ The initial PyPI wheel set matches the standalone release targets:
 Homebrew is distributed through a tap because the Homebrew core formula named `devcontainer` already tracks the upstream Node.js implementation:
 
 ```bash
-brew install jooh/devcontainer-rs-tap/devcontainer-rs
+brew install jooh/devcontainer-rs/devcontainer-rs
 devcontainer --version
 ```
 
-Release automation renders `Formula/devcontainer-rs.rb` after GitHub Release assets are published, then commits and pushes the formula update to the tap repository. The workflow requires a `HOMEBREW_TAP_TOKEN` secret with write access to `jooh/homebrew-devcontainer-rs-tap`.
+The tap repository owns formula publishing. Its scheduled/manual workflow reads the latest public `jooh/devcontainer-rs` release, renders `Formula/devcontainer-rs.rb`, and commits the change back to `jooh/homebrew-tap` with that repository's short-lived `GITHUB_TOKEN`.
+
+Homebrew maps the backing repository `jooh/homebrew-tap` to the tap shorthand `jooh/devcontainer-rs`. The source release workflow only publishes release assets; it does not need write access to the tap.
 
 ## Local build flow
 
@@ -63,7 +65,7 @@ Release automation renders `Formula/devcontainer-rs.rb` after GitHub Release ass
 - `node build/prepare-npm-packages.js --artifacts-dir target/distrib --output-dir dist/npm` stages the publishable npm wrapper/native packages from dist outputs.
 - `make npm-package-smoke` verifies the wrapper/native tarballs with local `npm pack` installs and command execution.
 - `make pypi-wheel-smoke` builds a local wheel with `uv`, installs it into an isolated environment, and runs the standalone smoke against the installed `devcontainer` executable.
-- `make homebrew-formula-check` verifies the formula renderer and `make homebrew-publish-workflow-check` verifies the release workflow wiring for the tap update.
+- `make homebrew-distribution-check` verifies that this repository delegates formula publishing to the tap. The tap-owned formula renderer and workflow checks live under `tap/`.
 
 ## Current limitations
 
@@ -71,5 +73,5 @@ Release automation renders `Formula/devcontainer-rs.rb` after GitHub Release ass
 - Release automation does not currently sign artifacts or notarize macOS builds.
 - PyPI publication requires a PyPI Trusted Publisher configured for `.github/workflows/devcontainer-release.yml` and the `pypi` GitHub environment.
 - npm publication requires npm Trusted Publisher entries for each npm package, pointing at the same `.github/workflows/devcontainer-release.yml` workflow.
-- Homebrew publication requires `HOMEBREW_TAP_TOKEN`; without it the release job creates GitHub/PyPI/npm artifacts but the tap update fails.
+- Homebrew formula publication is tap-owned and scheduled, so a source release can be available on GitHub/PyPI/npm before the tap cron commits the formula update.
 - Compatibility tooling in `package.json` is not part of the runtime distribution path.

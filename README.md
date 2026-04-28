@@ -2,10 +2,30 @@
 
 [![PyPI](https://img.shields.io/pypi/v/devcontainer-rs.svg)](https://pypi.org/project/devcontainer-rs/)
 [![npm](https://img.shields.io/npm/v/devcontainer-rs.svg)](https://www.npmjs.com/package/devcontainer-rs)
+[![Homebrew](https://img.shields.io/badge/Homebrew-tap-informational?logo=homebrew)](https://github.com/jooh/homebrew-tap)
 
 This repository hosts a native Rust implementation of the Dev Containers CLI, with compatibility tracked against the pinned upstream TypeScript sources in `upstream/` and the pinned specification assets in `spec/`.
 
 The shipped runtime is the Rust binary in `cmd/devcontainer`. Node is kept only for lightweight compatibility tooling such as upstream/spec drift checks, generated compatibility inventories, and the parity smoke harness.
+
+## Install
+
+Run the CLI without adding it permanently to your environment:
+
+```bash
+uvx --from devcontainer-rs devcontainer --version
+npx @devcontainer-rs/cli --version
+```
+
+Install it with Homebrew:
+
+```bash
+brew install jooh/devcontainer-rs/devcontainer-rs
+devcontainer --version
+```
+
+Homebrew resolves `jooh/devcontainer-rs` from the tap repository
+`jooh/homebrew-tap`.
 
 ## Why
 
@@ -61,14 +81,6 @@ make acceptance-fixtures-check
 ```
 
 The Node-based checks do not require installing project dependencies; they use built-in Node modules only. Node 20+ is still required to run them.
-
-Install surfaces:
-
-```bash
-npx devcontainer-rs --version
-npx @devcontainer-rs/cli --version
-uv tool install devcontainer-rs
-```
 
 Generated command reference:
 
