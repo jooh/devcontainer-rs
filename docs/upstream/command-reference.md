@@ -1,6 +1,6 @@
-# CLI Command Reference
+# Upstream CLI Command Reference
 
-Generated from the pinned upstream CLI command matrix.
+Generated from the pinned upstream CLI command matrix. This is a compatibility baseline, not a native behavior reference.
 
 - Upstream commit: `2d81ee3c9ed96a7312c18c7513a17933f8f66d41`
 - Source: `upstream/src/spec-node/devContainersSpecCLI.ts`

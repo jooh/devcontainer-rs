@@ -1,65 +1,59 @@
-# Publishing Dev Container Templates
+# Native Template Publish Command
 
-> NOTE: You may want to first check out our [templates-starter](https://github.com/devcontainers/template-starter), which includes an example [actions workflow](https://github.com/devcontainers/action) for publishing directly out of your GitHub repo!
+`devcontainer templates publish` currently packages a single local Template into a local OCI layout. It does not push to a remote registry or use registry credentials.
 
-## Summary
+The target must be a Template root containing `devcontainer-template.json`:
 
-The CLI can be used to publish [Dev Container Template](https://containers.dev/implementors/templates/) artifacts to an OCI registry (that supports the [artifacts specification](https://oras.land/implementors/)).
-
-To see all the available options, run `devcontainer templates publish --help`.
-
-## Example
-
-Given a directory that is organized according to the [Templates distribution specification](https://containers.dev/implementors/templates-distribution/) - for example:
-
-```
-├── src
-│   ├── color
-│   │   ├── devcontainer-template.json
-│   │   └──| .devcontainer
-│   │      └── devcontainer.json
-│   ├── hello
-│   │   ├── devcontainer-template.json
-│   │   └──| .devcontainer
-│   │      ├── devcontainer.json
-│   │      └── Dockerfile
-|   ├── ...
-│   │   ├── devcontainer-template.json
-│   │   └──| .devcontainer
-│   │      └── devcontainer.json
-├── test
-│   ├── color
-│   │   └── test.sh
-│   ├── hello
-│   │   └── test.sh
-│   └──test-utils
-│      └── test-utils.sh
-...
+```bash
+devcontainer templates publish ./src/my-template \
+  --registry ghcr.io \
+  --namespace example/templates \
+  --output-dir ./template-oci-layout
 ```
 
-The following command will publish each Template above (`color,hello`) to the registry `ghcr.io` with the following namespace (prefix) `devcontainers/templates`.
+The command writes:
 
+- a compressed Template archive next to the target
+- `oci-layout`
+- `index.json`
+- `blobs/sha256/*`
+
+The JSON result includes `mode: "local-oci-layout"`, the layout path, the archive path, the manifest digest, and the tags written into the layout.
+
+## Tags
+
+For semantic versions, the native publisher writes moving major/minor/latest tags when the new version is not older than the existing tags in the same layout. For example, publishing `1.2.3` to an empty layout writes:
+
+- `1`
+- `1.2`
+- `1.2.3`
+- `latest`
+
+Non-semver versions are written as a single exact tag.
+
+## Applying a Local Layout
+
+`templates apply` can consume the layout when it is placed under the workspace path expected by the native registry helper:
+
+```text
+<workspace>/.devcontainer/oci-layouts/ghcr.io/example/templates/my-template/
 ```
-[/tmp]$  GITHUB_TOKEN="$CR_PAT" devcontainer templates publish -r ghcr.io -n devcontainers/templates ./src
+
+Then apply it with the same registry-style reference:
+
+```bash
+devcontainer templates apply \
+  --workspace-folder <workspace> \
+  --template-id ghcr.io/example/templates/my-template:latest
 ```
 
-To later apply a published Template (in the example below, the `color` template) with the CLI, the following [apply](../apply) command would be used:
+## Supported Options
 
-```
-[/tmp]$  devcontainer templates apply \
-                 -t 'ghcr.io/devcontainers/templates/color' \
-                 -a '{"favorite": "red"}'
-```
+Use long option names for scripted workflows:
 
-### Authentication Methods
+- `--registry <host>`: registry host recorded in metadata; defaults to `ghcr.io`.
+- `--namespace <name>`: namespace recorded in metadata.
+- `--output-dir <path>`: local OCI layout destination.
+- `--log-level <level>`: accepted for compatibility.
 
-> NOTE: OS-specific docker credential helpers (Docker Desktop credential helper) are not currently recognized by the CLI.  
-
-- Adding a $HOME/.docker/config.json with your credentials following [this commonly defined format](https://www.systutorials.com/docs/linux/man/5-docker-config-json/).
-   - Your `docker login` command may write this file for you depending on your operating system.
-- Using our custom env variable DEVCONTAINERS_OCI_AUTH
-    - eg: `DEVCONTAINERS_OCI_AUTH=service1|user1|token1,service2|user2|token2`
-    
-For publishing to `ghcr.io`
-- Using the `devcontainers/action` GitHub action to handle the `GITHUB_TOKEN` credential for you.
-- Providing a GITHUB_TOKEN with permission to `write:packages`.
+Short aliases may appear in generated upstream help text, but the native parser for this flow currently handles the long option names above.
