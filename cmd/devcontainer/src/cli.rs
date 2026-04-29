@@ -61,6 +61,15 @@ struct CommandHelp {
 struct CommandOption {
     name: String,
     aliases: Vec<String>,
+    description: Option<String>,
+}
+
+impl CommandOption {
+    fn takes_value(&self) -> bool {
+        self.description
+            .as_deref()
+            .is_some_and(|description| !description.contains("[boolean]"))
+    }
 }
 
 pub struct ResolvedCommandHelp<'a> {
@@ -194,16 +203,33 @@ pub(crate) fn normalize_option_aliases(command_path: &str, args: &[String]) -> V
             normalized.extend_from_slice(&args[index..]);
             break;
         }
+        let flag = arg.split_once('=').map_or(arg.as_str(), |(name, _)| name);
         let short_alias = arg
             .strip_prefix('-')
             .filter(|value| !value.starts_with('-'));
-        if let Some(option) = command.options.iter().find(|option| {
-            short_alias
+        let option = command.options.iter().find(|option| {
+            flag.strip_prefix("--")
+                .is_some_and(|name| name == option.name)
+                || short_alias
+                    .is_some_and(|alias| option.aliases.iter().any(|candidate| candidate == alias))
+        });
+        if let Some(option) = option.filter(|_| !arg.contains('=')) {
+            if short_alias
                 .is_some_and(|alias| option.aliases.iter().any(|candidate| candidate == alias))
-        }) {
-            normalized.push(format!("--{}", option.name));
+            {
+                normalized.push(format!("--{}", option.name));
+            } else {
+                normalized.push(arg.clone());
+            }
         } else {
             normalized.push(arg.clone());
+        }
+        if option.is_some_and(CommandOption::takes_value)
+            && !arg.contains('=')
+            && args.get(index + 1).is_some_and(|value| value != "--")
+        {
+            index += 1;
+            normalized.push(args[index].clone());
         }
         index += 1;
     }
@@ -316,6 +342,45 @@ mod tests {
         );
 
         assert_eq!(normalized, vec!["-p".to_string(), "project".to_string()]);
+    }
+
+    #[test]
+    fn preserves_alias_like_values_after_options_that_take_values() {
+        let normalized = normalize_option_aliases(
+            "features test",
+            &[
+                "--project-folder".to_string(),
+                ".".to_string(),
+                "--filter".to_string(),
+                "-p".to_string(),
+                "-q".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            normalized,
+            vec![
+                "--project-folder".to_string(),
+                ".".to_string(),
+                "--filter".to_string(),
+                "-p".to_string(),
+                "--quiet".to_string(),
+            ]
+        );
+
+        let normalized = normalize_option_aliases(
+            "features test",
+            &["-p".to_string(), "-q".to_string(), "-q".to_string()],
+        );
+
+        assert_eq!(
+            normalized,
+            vec![
+                "--project-folder".to_string(),
+                "-q".to_string(),
+                "--quiet".to_string(),
+            ]
+        );
     }
 
     #[test]
