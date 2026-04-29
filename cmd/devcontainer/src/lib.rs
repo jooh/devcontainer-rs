@@ -84,7 +84,13 @@ pub fn run(raw_args: Vec<String>) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    match commands::dispatch(command, command_args) {
+    let mut normalized_command_args = command_args[..resolved_help.consumed_args].to_vec();
+    normalized_command_args.extend(cli::normalize_option_aliases(
+        resolved_help.path,
+        resolved_args,
+    ));
+
+    match commands::dispatch(command, &normalized_command_args) {
         commands::DispatchResult::Complete(code) => code,
         commands::DispatchResult::UnsupportedNativePath => {
             cli::emit_log(log_format, "Unsupported native command path.");

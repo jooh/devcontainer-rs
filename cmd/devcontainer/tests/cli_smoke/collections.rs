@@ -171,6 +171,37 @@ fn templates_apply_supports_published_template_ids() {
 }
 
 #[test]
+fn templates_apply_supports_short_option_aliases() {
+    let workspace = unique_temp_dir("devcontainer-cli-smoke");
+    fs::create_dir_all(&workspace).expect("workspace");
+
+    let output = devcontainer_command(None)
+        .args([
+            "templates",
+            "apply",
+            "-w",
+            workspace.to_string_lossy().as_ref(),
+            "-t",
+            "ghcr.io/devcontainers/templates/docker-from-docker:latest",
+            "-a",
+            "{ \"installZsh\": \"false\", \"upgradePackages\": \"true\" }",
+            "-f",
+            "[{ \"id\": \"ghcr.io/devcontainers/features/azure-cli:1\", \"options\": {} }]",
+        ])
+        .output()
+        .expect("templates apply should run");
+
+    assert!(output.status.success(), "{output:?}");
+    let file = fs::read_to_string(workspace.join(".devcontainer").join("devcontainer.json"))
+        .expect("devcontainer file");
+    assert!(file.contains("\"installZsh\": \"false\""));
+    assert!(file.contains("\"upgradePackages\": \"true\""));
+    assert!(file.contains("ghcr.io/devcontainers/features/azure-cli:1"));
+
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[test]
 fn templates_apply_uses_upstream_defaults_for_published_template_ids() {
     let workspace = unique_temp_dir("devcontainer-cli-smoke");
     fs::create_dir_all(&workspace).expect("workspace");
