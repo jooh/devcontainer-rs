@@ -182,6 +182,34 @@ pub fn resolve_command_help<'a>(
     })
 }
 
+pub(crate) fn normalize_option_aliases(command_path: &str, args: &[String]) -> Vec<String> {
+    let Some(command) = command_help(command_path) else {
+        return args.to_vec();
+    };
+    let mut normalized = Vec::with_capacity(args.len());
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--" || (command.path == "exec" && !arg.starts_with('-')) {
+            normalized.extend_from_slice(&args[index..]);
+            break;
+        }
+        let short_alias = arg
+            .strip_prefix('-')
+            .filter(|value| !value.starts_with('-'));
+        if let Some(option) = command.options.iter().find(|option| {
+            short_alias
+                .is_some_and(|alias| option.aliases.iter().any(|candidate| candidate == alias))
+        }) {
+            normalized.push(format!("--{}", option.name));
+        } else {
+            normalized.push(arg.clone());
+        }
+        index += 1;
+    }
+    normalized
+}
+
 pub fn unsupported_argument_error(command_path: &str, args: &[String]) -> Option<String> {
     let command = command_help(command_path)?;
     let mut unsupported_flags = Vec::new();
@@ -221,8 +249,8 @@ pub fn unsupported_argument_error(command_path: &str, args: &[String]) -> Option
 #[cfg(test)]
 mod tests {
     use super::{
-        command_help, is_command_help_request, is_command_version_request, resolve_command_help,
-        unsupported_argument_error,
+        command_help, is_command_help_request, is_command_version_request,
+        normalize_option_aliases, resolve_command_help, unsupported_argument_error,
     };
 
     #[test]
@@ -247,6 +275,72 @@ mod tests {
 
         assert_eq!(resolved.path, "templates apply");
         assert_eq!(resolved.consumed_args, 1);
+    }
+
+    #[test]
+    fn normalizes_command_scoped_short_option_aliases() {
+        let normalized = normalize_option_aliases(
+            "templates apply",
+            &[
+                "-w".to_string(),
+                "/tmp/workspace".to_string(),
+                "-t".to_string(),
+                "ghcr.io/devcontainers/templates/docker-from-docker:latest".to_string(),
+                "-a".to_string(),
+                "{}".to_string(),
+                "-f".to_string(),
+                "[]".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            normalized,
+            vec![
+                "--workspace-folder".to_string(),
+                "/tmp/workspace".to_string(),
+                "--template-id".to_string(),
+                "ghcr.io/devcontainers/templates/docker-from-docker:latest".to_string(),
+                "--template-args".to_string(),
+                "{}".to_string(),
+                "--features".to_string(),
+                "[]".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn preserves_aliases_outside_the_resolved_command_scope() {
+        let normalized = normalize_option_aliases(
+            "templates apply",
+            &["-p".to_string(), "project".to_string()],
+        );
+
+        assert_eq!(normalized, vec!["-p".to_string(), "project".to_string()]);
+    }
+
+    #[test]
+    fn preserves_exec_command_args_after_first_non_option() {
+        let normalized = normalize_option_aliases(
+            "exec",
+            &[
+                "--workspace-folder".to_string(),
+                "/workspace".to_string(),
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo hi".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            normalized,
+            vec![
+                "--workspace-folder".to_string(),
+                "/workspace".to_string(),
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo hi".to_string(),
+            ]
+        );
     }
 
     #[test]
