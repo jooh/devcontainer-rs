@@ -14,6 +14,9 @@ use super::super::engine;
 use super::super::metadata::serialized_container_metadata;
 use super::super::mounts::mount_value_to_engine_arg;
 
+const REMOVE_CONTAINER_RETRY_ATTEMPTS: usize = 7;
+const REMOVE_CONTAINER_RETRY_DELAY: Duration = Duration::from_secs(1);
+
 pub(super) fn start_container(
     resolved: &ResolvedConfig,
     args: &[String],
@@ -154,7 +157,15 @@ pub(super) fn start_existing_container(args: &[String], container_id: &str) -> R
 }
 
 pub(super) fn remove_container(args: &[String], container_id: &str) -> Result<(), String> {
-    for attempt in 0..7 {
+    remove_container_with_retry_delay(args, container_id, REMOVE_CONTAINER_RETRY_DELAY)
+}
+
+fn remove_container_with_retry_delay(
+    args: &[String],
+    container_id: &str,
+    retry_delay: Duration,
+) -> Result<(), String> {
+    for attempt in 0..REMOVE_CONTAINER_RETRY_ATTEMPTS {
         let result = engine::run_engine(
             args,
             vec!["rm".to_string(), "-f".to_string(), container_id.to_string()],
@@ -164,10 +175,12 @@ pub(super) fn remove_container(args: &[String], container_id: &str) -> Result<()
         }
 
         let error = engine::stderr_or_stdout(&result);
-        if attempt == 6 || !container_removal_already_in_progress(&error) {
+        if attempt + 1 == REMOVE_CONTAINER_RETRY_ATTEMPTS
+            || !container_removal_already_in_progress(&error)
+        {
             return Err(error);
         }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(retry_delay);
     }
     unreachable!("bounded retry loop should return")
 }
@@ -215,13 +228,14 @@ mod tests {
     //! Unit tests for engine-run mount conversion helpers.
 
     use std::fs;
+    use std::time::Duration;
 
     use serde_json::json;
 
     use crate::runtime::mounts::mount_value_to_engine_arg;
     use crate::test_support::{unique_temp_dir, write_executable_script};
 
-    use super::remove_container;
+    use super::{remove_container_with_retry_delay, REMOVE_CONTAINER_RETRY_DELAY};
 
     #[test]
     fn mount_argument_preserves_read_only_and_alias_keys() {
@@ -288,12 +302,18 @@ exit 0
             fake_engine.display().to_string(),
         ];
 
-        remove_container(&args, "fake-container").expect("container removal");
+        remove_container_with_retry_delay(&args, "fake-container", Duration::from_millis(0))
+            .expect("container removal");
 
         assert_eq!(
             fs::read_to_string(&attempts).expect("attempts file").trim(),
             "3"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remove_container_retry_delay_matches_upstream_cleanup_window() {
+        assert!(REMOVE_CONTAINER_RETRY_DELAY >= Duration::from_secs(1));
     }
 }

@@ -241,9 +241,10 @@ fn engine_build_args(args: &[String], image_name: &str, dockerfile_path: &Path) 
         engine_args.push("--cache-to".to_string());
         engine_args.push(value.clone());
     }
-    if !cache_to_values
-        .iter()
-        .any(|value| is_buildx_cache_to_inline(Some(value)))
+    if common::runtime_options(args).buildkit.as_deref() != Some("never")
+        && !cache_to_values
+            .iter()
+            .any(|value| is_buildx_cache_to_inline(Some(value)))
     {
         engine_args.push("--build-arg".to_string());
         engine_args.push("BUILDKIT_INLINE_CACHE=1".to_string());
@@ -347,6 +348,18 @@ mod tests {
 
         assert!(contains_arg(&engine_args, "--build-arg"));
         assert!(contains_arg(&engine_args, "BUILDKIT_INLINE_CACHE=1"));
+    }
+
+    #[test]
+    fn engine_build_args_omits_inline_cache_build_arg_when_buildkit_disabled() {
+        let engine_args = engine_build_args(
+            &["--buildkit".to_string(), "never".to_string()],
+            "example/native:test",
+            Path::new("Dockerfile"),
+        );
+
+        assert!(!contains_arg(&engine_args, "--build-arg"));
+        assert!(!contains_arg(&engine_args, "BUILDKIT_INLINE_CACHE=1"));
     }
 
     #[test]
