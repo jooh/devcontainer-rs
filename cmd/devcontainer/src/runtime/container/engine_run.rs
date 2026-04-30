@@ -1,5 +1,8 @@
 //! Engine-run argument assembly and engine capability helpers for native containers.
 
+use std::thread;
+use std::time::Duration;
+
 use serde_json::Value;
 
 use crate::commands::common;
@@ -151,14 +154,26 @@ pub(super) fn start_existing_container(args: &[String], container_id: &str) -> R
 }
 
 pub(super) fn remove_container(args: &[String], container_id: &str) -> Result<(), String> {
-    let result = engine::run_engine(
-        args,
-        vec!["rm".to_string(), "-f".to_string(), container_id.to_string()],
-    )?;
-    if result.status_code != 0 {
-        return Err(engine::stderr_or_stdout(&result));
+    for attempt in 0..7 {
+        let result = engine::run_engine(
+            args,
+            vec!["rm".to_string(), "-f".to_string(), container_id.to_string()],
+        )?;
+        if result.status_code == 0 {
+            return Ok(());
+        }
+
+        let error = engine::stderr_or_stdout(&result);
+        if attempt == 6 || !container_removal_already_in_progress(&error) {
+            return Err(error);
+        }
+        thread::sleep(Duration::from_millis(100));
     }
-    Ok(())
+    unreachable!("bounded retry loop should return")
+}
+
+fn container_removal_already_in_progress(error: &str) -> bool {
+    error.to_ascii_lowercase().contains("already in progress")
 }
 
 pub(crate) fn should_add_gpu_capability(
@@ -199,9 +214,14 @@ fn detect_gpu_support(args: &[String]) -> Result<bool, String> {
 mod tests {
     //! Unit tests for engine-run mount conversion helpers.
 
+    use std::fs;
+
     use serde_json::json;
 
     use crate::runtime::mounts::mount_value_to_engine_arg;
+    use crate::test_support::{unique_temp_dir, write_executable_script};
+
+    use super::remove_container;
 
     #[test]
     fn mount_argument_preserves_read_only_and_alias_keys() {
@@ -234,5 +254,46 @@ mod tests {
             mount,
             "type=volume,source=devcontainer-cache,target=/cache,consistency=delegated,external=true"
         );
+    }
+
+    #[test]
+    fn remove_container_retries_concurrent_removal_errors() {
+        let root = unique_temp_dir("devcontainer-remove-container-test");
+        fs::create_dir_all(&root).expect("root dir");
+        let fake_engine = root.join("docker");
+        let attempts = root.join("rm-attempts");
+        write_executable_script(
+            &fake_engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+attempts="{attempts}"
+current=0
+if [ -f "$attempts" ]; then
+  current="$(cat "$attempts")"
+fi
+next=$((current + 1))
+printf '%s\n' "$next" > "$attempts"
+if [ "$1" = "rm" ] && [ "$next" -lt 3 ]; then
+  echo "Error: removal of container fake-container is already in progress" >&2
+  exit 1
+fi
+exit 0
+"#,
+                attempts = attempts.display()
+            ),
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            fake_engine.display().to_string(),
+        ];
+
+        remove_container(&args, "fake-container").expect("container removal");
+
+        assert_eq!(
+            fs::read_to_string(&attempts).expect("attempts file").trim(),
+            "3"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

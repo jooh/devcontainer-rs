@@ -229,6 +229,7 @@ fn engine_build_args(args: &[String], image_name: &str, dockerfile_path: &Path) 
         "--file".to_string(),
         dockerfile_path.display().to_string(),
     ];
+    let cache_to_values = common::parse_option_values(args, "--cache-to");
     if common::has_flag(args, "--no-cache") || common::has_flag(args, "--build-no-cache") {
         engine_args.push("--no-cache".to_string());
     }
@@ -236,9 +237,16 @@ fn engine_build_args(args: &[String], image_name: &str, dockerfile_path: &Path) 
         engine_args.push("--cache-from".to_string());
         engine_args.push(value);
     }
-    for value in common::parse_option_values(args, "--cache-to") {
+    for value in &cache_to_values {
         engine_args.push("--cache-to".to_string());
-        engine_args.push(value);
+        engine_args.push(value.clone());
+    }
+    if !cache_to_values
+        .iter()
+        .any(|value| is_buildx_cache_to_inline(Some(value)))
+    {
+        engine_args.push("--build-arg".to_string());
+        engine_args.push("BUILDKIT_INLINE_CACHE=1".to_string());
     }
     for value in common::parse_option_values(args, "--label") {
         engine_args.push("--label".to_string());
@@ -249,6 +257,30 @@ fn engine_build_args(args: &[String], image_name: &str, dockerfile_path: &Path) 
         engine_args.push(platform);
     }
     engine_args
+}
+
+fn is_buildx_cache_to_inline(buildx_cache_to: Option<&str>) -> bool {
+    let Some(buildx_cache_to) = buildx_cache_to else {
+        return false;
+    };
+    let mut value = buildx_cache_to;
+    while let Some(index) = value.to_ascii_lowercase().find("type") {
+        value = &value[index + "type".len()..];
+        let trimmed = value.trim_start();
+        let Some(after_equals) = trimmed.strip_prefix('=') else {
+            value = trimmed.get(1..).unwrap_or_default();
+            continue;
+        };
+        let target = after_equals.trim_start();
+        if target
+            .get(.."inline".len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("inline"))
+        {
+            return true;
+        }
+        value = target;
+    }
+    false
 }
 
 fn unique_feature_build_dir() -> PathBuf {
@@ -280,4 +312,94 @@ fn has_build_definition(configuration: &Value) -> bool {
     configuration
         .get("build")
         .is_some_and(|value| value.is_object())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{engine_build_args, is_buildx_cache_to_inline};
+
+    fn contains_arg(args: &[String], expected: &str) -> bool {
+        args.iter().any(|arg| arg == expected)
+    }
+
+    #[test]
+    fn is_buildx_cache_to_inline_matches_upstream_cases() {
+        assert!(!is_buildx_cache_to_inline(None));
+        assert!(!is_buildx_cache_to_inline(Some("")));
+
+        assert!(is_buildx_cache_to_inline(Some("type=inline")));
+        assert!(is_buildx_cache_to_inline(Some("type = inline")));
+        assert!(is_buildx_cache_to_inline(Some("type=INLINE")));
+        assert!(is_buildx_cache_to_inline(Some(
+            "mode=max,type=inline,compression=zstd"
+        )));
+
+        assert!(!is_buildx_cache_to_inline(Some("type=registry")));
+        assert!(!is_buildx_cache_to_inline(Some("type=local")));
+        assert!(!is_buildx_cache_to_inline(Some("inline")));
+    }
+
+    #[test]
+    fn engine_build_args_adds_inline_cache_build_arg_by_default() {
+        let engine_args = engine_build_args(&[], "example/native:test", Path::new("Dockerfile"));
+
+        assert!(contains_arg(&engine_args, "--build-arg"));
+        assert!(contains_arg(&engine_args, "BUILDKIT_INLINE_CACHE=1"));
+    }
+
+    #[test]
+    fn engine_build_args_suppresses_inline_cache_build_arg_for_inline_cache_to() {
+        let engine_args = engine_build_args(
+            &[
+                "--cache-to".to_string(),
+                "mode=max,type=inline,compression=zstd".to_string(),
+            ],
+            "example/native:test",
+            Path::new("Dockerfile"),
+        );
+
+        assert!(contains_arg(&engine_args, "--cache-to"));
+        assert!(contains_arg(
+            &engine_args,
+            "mode=max,type=inline,compression=zstd"
+        ));
+        assert!(!contains_arg(&engine_args, "BUILDKIT_INLINE_CACHE=1"));
+    }
+
+    #[test]
+    fn engine_build_args_keeps_inline_cache_build_arg_for_non_inline_cache_to() {
+        let engine_args = engine_build_args(
+            &[
+                "--cache-to".to_string(),
+                "type=registry,ref=ghcr.io/example/cache:latest".to_string(),
+            ],
+            "example/native:test",
+            Path::new("Dockerfile"),
+        );
+
+        assert!(contains_arg(&engine_args, "--cache-to"));
+        assert!(contains_arg(
+            &engine_args,
+            "type=registry,ref=ghcr.io/example/cache:latest"
+        ));
+        assert!(contains_arg(&engine_args, "BUILDKIT_INLINE_CACHE=1"));
+    }
+
+    #[test]
+    fn engine_build_args_treats_any_inline_cache_to_as_inline() {
+        let engine_args = engine_build_args(
+            &[
+                "--cache-to".to_string(),
+                "type=registry,ref=ghcr.io/example/cache:latest".to_string(),
+                "--cache-to".to_string(),
+                "type=inline".to_string(),
+            ],
+            "example/native:test",
+            Path::new("Dockerfile"),
+        );
+
+        assert!(!contains_arg(&engine_args, "BUILDKIT_INLINE_CACHE=1"));
+    }
 }
