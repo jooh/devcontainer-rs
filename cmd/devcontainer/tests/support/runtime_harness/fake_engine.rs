@@ -99,6 +99,25 @@ ${2:-}"
         exit 0
         ;;
       ps)
+        if [ "${FAKE_PODMAN_COMPOSE_PS_REJECT_SERVICE_ARGUMENT:-0}" = "1" ]; then
+          while [ "$#" -gt 0 ]; do
+            case "${1:-}" in
+              -q|--quiet)
+                shift
+                ;;
+              -f|--format)
+                shift 2
+                ;;
+              -*)
+                shift
+                ;;
+              *)
+                echo "podman-compose: error: unrecognized arguments: ${1:-}" >&2
+                exit 2
+                ;;
+            esac
+          done
+        fi
         if [ -n "${FAKE_PODMAN_COMPOSE_PS_OUTPUT_BEFORE_UP:-}" ] || [ -n "${FAKE_PODMAN_COMPOSE_PS_OUTPUT_AFTER_UP:-}" ]; then
           if [ -f "$LOG_DIR/compose-up-called" ]; then
             printf '%s\n' "${FAKE_PODMAN_COMPOSE_PS_OUTPUT_AFTER_UP:-}"
@@ -229,18 +248,28 @@ ${2:-}"
     exit 0
     ;;
   ps)
+    original_args="$*"
+    has_compose_project_label=0
+    has_compose_service_label=0
+    case " $original_args " in
+      *" --filter label=com.docker.compose.project="*) has_compose_project_label=1 ;;
+    esac
+    case " $original_args " in
+      *" --filter label=com.docker.compose.service="*) has_compose_service_label=1 ;;
+    esac
     if [ "${FAKE_PODMAN_PS_REQUIRE_ALL:-0}" = "1" ]; then
-      case " $* " in
-        *" -a "*) ;;
-        *) exit 0 ;;
-      esac
+      if [ ! -f "$LOG_DIR/compose-service-running" ]; then
+        case " $* " in
+          *" -a "*) ;;
+          *) exit 0 ;;
+        esac
+      fi
     fi
     required_labels="${FAKE_PODMAN_PS_REQUIRE_LABELS:-}"
     if [ -z "$required_labels" ] && [ -n "${FAKE_PODMAN_PS_REQUIRE_LABEL:-}" ]; then
       required_labels="${FAKE_PODMAN_PS_REQUIRE_LABEL}"
     fi
     if [ -n "$required_labels" ]; then
-      original_args="$*"
       old_ifs="${IFS- }"
       IFS='
 '
@@ -262,7 +291,21 @@ ${2:-}"
       printf '%s\n' "${FAKE_PODMAN_PS_OUTPUT}"
       exit 0
     fi
+    if [ -n "${FAKE_PODMAN_PS_OUTPUT_BEFORE_UP:-}" ] || [ -n "${FAKE_PODMAN_PS_OUTPUT_AFTER_UP:-}" ]; then
+      if [ -f "$LOG_DIR/compose-up-called" ]; then
+        printf '%s\n' "${FAKE_PODMAN_PS_OUTPUT_AFTER_UP:-}"
+      else
+        printf '%s\n' "${FAKE_PODMAN_PS_OUTPUT_BEFORE_UP:-}"
+      fi
+      exit 0
+    fi
     if [ "${FAKE_PODMAN_PS_DISABLE_DEFAULT:-0}" = "1" ]; then
+      exit 0
+    fi
+    if [ "$has_compose_project_label" = "1" ] && [ "$has_compose_service_label" = "1" ]; then
+      if [ -f "$LOG_DIR/compose-service-running" ]; then
+        echo "fake-compose-container-id"
+      fi
       exit 0
     fi
     echo "fake-container-id"

@@ -211,7 +211,7 @@ fn compose_lifecycle_commands_honor_explicit_container_id() {
             "fake-compose-container-id",
             "--include-configuration",
         ],
-        &[("FAKE_PODMAN_COMPOSE_PS_OUTPUT", "")],
+        &[],
     );
 
     assert!(set_up_output.status.success(), "{set_up_output:?}");
@@ -229,7 +229,7 @@ fn compose_lifecycle_commands_honor_explicit_container_id() {
             "--container-id",
             "fake-compose-container-id",
         ],
-        &[("FAKE_PODMAN_COMPOSE_PS_OUTPUT", "")],
+        &[],
     );
 
     assert!(

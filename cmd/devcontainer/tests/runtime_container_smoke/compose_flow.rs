@@ -50,6 +50,24 @@ fn generated_override_contents(harness: &RuntimeHarness) -> String {
     content
 }
 
+fn write_executable(path: &Path, contents: String) {
+    fs::write(path, contents).expect("executable wrapper");
+    let mut permissions = fs::metadata(path)
+        .expect("executable wrapper metadata")
+        .permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o755);
+    }
+    fs::set_permissions(path, permissions).expect("executable wrapper permissions");
+}
+
+fn compose_label_lookup_args(project_name: &str, service: &str, include_stopped: bool) -> String {
+    let all_arg = if include_stopped { " -a" } else { "" };
+    format!("ps -q{all_arg} --filter label=com.docker.compose.project={project_name} --filter label=com.docker.compose.service={service}")
+}
+
 #[test]
 fn up_starts_compose_services_and_exec_uses_compose_container_lookup() {
     let harness = RuntimeHarness::new();
@@ -106,7 +124,11 @@ fn up_starts_compose_services_and_exec_uses_compose_container_lookup() {
     assert!(invocations.contains("compose --project-name workspace_devcontainer -f "));
     assert!(invocations.contains(" up -d"));
     assert!(!invocations.contains(" up -d app"));
-    assert!(invocations.contains(" ps -q app"));
+    assert!(invocations.contains(&compose_label_lookup_args(
+        "workspace_devcontainer",
+        "app",
+        false
+    )));
     assert!(invocations.contains("exec -i --workdir /workspace --user vscode"));
     assert!(invocations.contains("-e HOME=/home/vscode"));
     assert!(invocations.contains("fake-compose-container-id /bin/echo hello-from-compose"));
@@ -239,8 +261,8 @@ fn up_re_resolves_recreated_compose_container_ids() {
             workspace.to_string_lossy().as_ref(),
         ],
         &[
-            ("FAKE_PODMAN_COMPOSE_PS_OUTPUT_BEFORE_UP", "old-compose-id"),
-            ("FAKE_PODMAN_COMPOSE_PS_OUTPUT_AFTER_UP", "new-compose-id"),
+            ("FAKE_PODMAN_PS_OUTPUT_BEFORE_UP", "old-compose-id"),
+            ("FAKE_PODMAN_PS_OUTPUT_AFTER_UP", "new-compose-id"),
         ],
     );
 
@@ -249,7 +271,11 @@ fn up_re_resolves_recreated_compose_container_ids() {
     assert_eq!(payload["containerId"], "new-compose-id");
 
     let invocations = harness.read_invocations();
-    assert!(invocations.contains(" ps -q app"));
+    assert!(invocations.contains(&compose_label_lookup_args(
+        "workspace_devcontainer",
+        "app",
+        false
+    )));
     assert!(invocations.contains("exec --workdir /workspace"));
     assert!(invocations.contains("-e HOME=/root"));
     assert!(invocations.contains("new-compose-id /bin/sh -lc echo recreated-post-create"));
@@ -293,6 +319,21 @@ fn exec_accepts_custom_compose_binary_for_compose_workspaces() {
     fs::set_permissions(&compose_wrapper, permissions).expect("compose wrapper permissions");
 
     let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let up_output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--docker-compose-path",
+            compose_wrapper.to_string_lossy().as_ref(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+        ],
+        &[],
+    );
+
+    assert!(up_output.status.success(), "{up_output:?}");
+
     let output = harness.run(
         &[
             "exec",
@@ -305,7 +346,7 @@ fn exec_accepts_custom_compose_binary_for_compose_workspaces() {
             "/bin/echo",
             "hello-from-custom-compose",
         ],
-        &[("FAKE_PODMAN_COMPOSE_PS_OUTPUT", "fake-compose-container-id")],
+        &[],
     );
 
     assert!(output.status.success(), "{output:?}");
@@ -316,10 +357,77 @@ fn exec_accepts_custom_compose_binary_for_compose_workspaces() {
 
     let invocations = harness.read_invocations();
     assert!(invocations.contains("compose --project-name workspace_devcontainer -f "));
-    assert!(invocations.contains(" ps -q app"));
+    assert!(invocations.contains(" up -d"));
+    assert!(invocations.contains(&compose_label_lookup_args(
+        "workspace_devcontainer",
+        "app",
+        false
+    )));
     assert!(invocations.contains("exec -i --workdir /workspace --user vscode"));
     assert!(invocations.contains("-e HOME=/home/vscode"));
     assert!(invocations.contains("fake-compose-container-id /bin/echo hello-from-custom-compose"));
+}
+
+#[test]
+fn exec_with_standalone_podman_compose_uses_engine_label_lookup() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    let compose_wrapper = harness.root.join("podman-compose");
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    fs::write(
+        workspace.join(".devcontainer").join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"dockerComposeFile\": \"docker-compose.yml\",\n  \"service\": \"app\",\n  \"workspaceFolder\": \"/workspace\",\n  \"remoteUser\": \"vscode\"\n}\n",
+    );
+    write_executable(
+        &compose_wrapper,
+        format!(
+            "#!/bin/sh\nexec \"{}\" compose \"$@\"\n",
+            harness.fake_podman.display()
+        ),
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "exec",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--docker-compose-path",
+            compose_wrapper.to_string_lossy().as_ref(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "/bin/echo",
+            "hello-from-podman-compose",
+        ],
+        &[
+            ("FAKE_PODMAN_COMPOSE_PS_REJECT_SERVICE_ARGUMENT", "1"),
+            (
+                "FAKE_PODMAN_PS_REQUIRE_LABELS",
+                "com.docker.compose.project=workspace_devcontainer\ncom.docker.compose.service=app",
+            ),
+            ("FAKE_PODMAN_PS_OUTPUT", "fake-compose-container-id"),
+        ],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("utf8 stdout"),
+        "hello-from-podman-compose\n"
+    );
+
+    let invocations = harness.read_invocations();
+    assert!(!invocations.contains(" ps -q app"));
+    assert!(invocations.contains(&compose_label_lookup_args(
+        "workspace_devcontainer",
+        "app",
+        false
+    )));
+    assert!(invocations.contains("fake-compose-container-id /bin/echo hello-from-podman-compose"));
 }
 
 #[test]
@@ -369,7 +477,7 @@ fn up_reused_compose_service_preserves_legacy_devcontainer_id() {
             workspace.to_string_lossy().as_ref(),
         ],
         &[
-            ("FAKE_PODMAN_COMPOSE_PS_OUTPUT", "existing-compose-id"),
+            ("FAKE_PODMAN_PS_OUTPUT", "existing-compose-id"),
             (
                 "FAKE_PODMAN_INSPECT_FILE",
                 inspect_path.to_string_lossy().as_ref(),
@@ -409,7 +517,7 @@ fn up_expect_existing_compose_container_fails_when_missing() {
             workspace.to_string_lossy().as_ref(),
             "--expect-existing-container",
         ],
-        &[("FAKE_PODMAN_COMPOSE_PS_OUTPUT", "")],
+        &[("FAKE_PODMAN_PS_OUTPUT", "")],
     );
 
     assert!(!output.status.success(), "{output:?}");
@@ -419,6 +527,49 @@ fn up_expect_existing_compose_container_fails_when_missing() {
             .trim(),
         "Dev container not found."
     );
+}
+
+#[test]
+fn up_remove_existing_compose_container_uses_engine_rm() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    fs::write(
+        workspace.join(".devcontainer").join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"dockerComposeFile\": \"docker-compose.yml\",\n  \"service\": \"app\",\n  \"workspaceFolder\": \"/workspace\"\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--remove-existing-container",
+        ],
+        &[
+            ("FAKE_PODMAN_PS_OUTPUT_BEFORE_UP", "existing-compose-id"),
+            (
+                "FAKE_PODMAN_PS_OUTPUT_AFTER_UP",
+                "fake-compose-container-id",
+            ),
+        ],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let payload = harness.parse_stdout_json(&output);
+    assert_eq!(payload["containerId"], "fake-compose-container-id");
+
+    let invocations = harness.read_invocations();
+    assert!(invocations.contains("rm -f existing-compose-id"));
+    assert!(!invocations.contains(" rm -s -f app"));
 }
 
 #[test]
@@ -446,11 +597,8 @@ fn up_resumes_stopped_compose_services_without_rerunning_create_hooks() {
             workspace.to_string_lossy().as_ref(),
         ],
         &[
-            (
-                "FAKE_PODMAN_COMPOSE_PS_OUTPUT",
-                "stopped-compose-container-id",
-            ),
-            ("FAKE_PODMAN_COMPOSE_PS_REQUIRE_ALL", "1"),
+            ("FAKE_PODMAN_PS_OUTPUT", "stopped-compose-container-id"),
+            ("FAKE_PODMAN_PS_REQUIRE_ALL", "1"),
         ],
     );
 
@@ -459,8 +607,16 @@ fn up_resumes_stopped_compose_services_without_rerunning_create_hooks() {
     assert_eq!(payload["containerId"], "stopped-compose-container-id");
 
     let invocations = harness.read_invocations();
-    assert!(invocations.contains(" ps -q app"));
-    assert!(invocations.contains(" ps -q -a app"));
+    assert!(invocations.contains(&compose_label_lookup_args(
+        "workspace_devcontainer",
+        "app",
+        false
+    )));
+    assert!(invocations.contains(&compose_label_lookup_args(
+        "workspace_devcontainer",
+        "app",
+        true
+    )));
     assert!(invocations.contains(" up -d --no-recreate"));
     assert!(!invocations.contains(" up -d app"));
 
@@ -496,7 +652,7 @@ fn up_reuses_existing_compose_container_with_no_recreate() {
             "--workspace-folder",
             workspace.to_string_lossy().as_ref(),
         ],
-        &[("FAKE_PODMAN_COMPOSE_PS_OUTPUT", "fake-compose-container-id")],
+        &[("FAKE_PODMAN_PS_OUTPUT", "fake-compose-container-id")],
     );
 
     assert!(output.status.success(), "{output:?}");
@@ -529,7 +685,7 @@ fn up_expect_existing_compose_container_uses_no_recreate() {
             workspace.to_string_lossy().as_ref(),
             "--expect-existing-container",
         ],
-        &[("FAKE_PODMAN_COMPOSE_PS_OUTPUT", "fake-compose-container-id")],
+        &[("FAKE_PODMAN_PS_OUTPUT", "fake-compose-container-id")],
     );
 
     assert!(output.status.success(), "{output:?}");
