@@ -4,6 +4,7 @@ mod build;
 pub(crate) mod compose;
 mod container;
 pub(crate) mod context;
+mod dockerfile;
 pub(crate) mod engine;
 mod exec;
 mod lifecycle;
