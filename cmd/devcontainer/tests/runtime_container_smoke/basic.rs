@@ -57,8 +57,9 @@ fn up_starts_a_container_and_exec_runs_inside_it() {
     assert!(invocations.contains("run "));
     assert!(invocations.contains("--mount type=bind,source="));
     assert!(invocations.contains(",target=/workspace"));
-    assert!(invocations
-        .contains("exec -i --workdir /workspace fake-container-id /bin/echo hello-from-container"));
+    assert!(invocations.contains("exec -i --workdir /workspace"));
+    assert!(invocations.contains("-e HOME=/root"));
+    assert!(invocations.contains("fake-container-id /bin/echo hello-from-container"));
 
     let exec_log = harness.read_exec_log();
     assert!(exec_log.contains("/bin/sh -lc echo ready"));
@@ -121,8 +122,9 @@ fn up_uses_workspace_mount_target_for_remote_workdir_when_workspace_folder_is_om
     let payload = harness.parse_stdout_json(&output);
     assert_eq!(payload["remoteWorkspaceFolder"], "/custom-target");
     let invocations = harness.read_invocations();
-    assert!(invocations
-        .contains("exec --workdir /custom-target fake-container-id /bin/sh -lc echo ready"));
+    assert!(invocations.contains("exec --workdir /custom-target"));
+    assert!(invocations.contains("-e HOME=/root"));
+    assert!(invocations.contains("fake-container-id /bin/sh -lc echo ready"));
 }
 
 #[test]
@@ -317,9 +319,9 @@ fn up_mounts_git_root_by_default_and_uses_subfolder_workdir() {
         "--mount type=bind,source={},target=/workspaces/repo",
         expected_repo_root.display()
     )));
-    assert!(invocations.contains(
-        "exec --workdir /workspaces/repo/packages/app fake-container-id /bin/sh -lc echo ready"
-    ));
+    assert!(invocations.contains("exec --workdir /workspaces/repo/packages/app"));
+    assert!(invocations.contains("-e HOME=/root"));
+    assert!(invocations.contains("fake-container-id /bin/sh -lc echo ready"));
 }
 
 #[test]

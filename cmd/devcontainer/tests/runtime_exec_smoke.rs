@@ -89,9 +89,10 @@ fn exec_with_container_id_uses_metadata_for_context() {
     );
     let invocations = harness.read_invocations();
     assert!(invocations.contains("inspect fake-container-id"));
-    assert!(invocations.contains(
-        "exec -i --workdir /container/project --user vscode -e TEST_REMOTE_ENV=from-metadata fake-container-id /bin/echo hello-from-metadata"
-    ));
+    assert!(invocations.contains("exec -i --workdir /container/project --user vscode"));
+    assert!(invocations.contains("-e TEST_REMOTE_ENV=from-metadata"));
+    assert!(invocations.contains("-e HOME=/home/vscode"));
+    assert!(invocations.contains("fake-container-id /bin/echo hello-from-metadata"));
 }
 
 #[test]
@@ -138,9 +139,10 @@ fn up_persists_metadata_for_followup_exec_with_container_id() {
     let invocations = harness.read_invocations();
     assert!(invocations.contains("--label devcontainer.metadata="));
     assert!(invocations.contains("inspect fake-container-id"));
-    assert!(invocations.contains(
-        "exec -i --workdir /persisted-workspace --user vscode -e TEST_REMOTE_ENV=from-config fake-container-id /bin/echo hello-from-persisted-metadata"
-    ));
+    assert!(invocations.contains("exec -i --workdir /persisted-workspace --user vscode"));
+    assert!(invocations.contains("-e TEST_REMOTE_ENV=from-config"));
+    assert!(invocations.contains("-e HOME=/home/vscode"));
+    assert!(invocations.contains("fake-container-id /bin/echo hello-from-persisted-metadata"));
 }
 
 #[test]
@@ -193,9 +195,10 @@ fn compose_up_persists_metadata_for_followup_exec_with_container_id() {
     let invocations = harness.read_invocations();
     assert!(invocations.contains("inspect fake-compose-container-id"));
     assert!(invocations.contains("compose --project-name workspace_devcontainer -f "));
-    assert!(invocations.contains(
-        "exec -i --workdir /persisted-compose-workspace --user vscode -e TEST_REMOTE_ENV=from-compose-config fake-compose-container-id /bin/echo hello-from-compose-metadata"
-    ));
+    assert!(invocations.contains("exec -i --workdir /persisted-compose-workspace --user vscode"));
+    assert!(invocations.contains("-e TEST_REMOTE_ENV=from-compose-config"));
+    assert!(invocations.contains("-e HOME=/home/vscode"));
+    assert!(invocations.contains("fake-compose-container-id /bin/echo hello-from-compose-metadata"));
 }
 
 #[test]
@@ -244,9 +247,9 @@ fn up_can_omit_config_remote_env_from_persisted_metadata() {
     let invocations = harness.read_invocations();
     assert!(invocations.contains("--label devcontainer.metadata="));
     assert!(!invocations.contains("TEST_REMOTE_ENV=from-config"));
-    assert!(invocations.contains(
-        "exec -i --workdir /persisted-workspace --user vscode fake-container-id /bin/sh -lc printf %s \"${TEST_REMOTE_ENV-}\""
-    ));
+    assert!(invocations.contains("exec -i --workdir /persisted-workspace --user vscode"));
+    assert!(invocations.contains("-e HOME=/home/vscode"));
+    assert!(invocations.contains("fake-container-id /bin/sh -lc printf %s \"${TEST_REMOTE_ENV-}\""));
 }
 
 #[test]
@@ -304,4 +307,119 @@ fn exec_injects_secrets_file_environment() {
     );
     let invocations = harness.read_invocations();
     assert!(invocations.contains("-e SECRET_TOKEN=from-secret-file"));
+}
+
+#[test]
+fn exec_derives_home_from_passwd_when_container_home_is_unwritable() {
+    let harness = RuntimeHarness::new();
+    let inspect_path = harness.root.join("inspect.json");
+    let metadata = serde_json::to_string(&json!({
+        "remoteUser": "vscode",
+        "remoteEnv": {
+            "TEST_REMOTE_ENV": "from-metadata"
+        }
+    }))
+    .expect("metadata");
+    fs::write(
+        &inspect_path,
+        json!([{
+            "Config": {
+                "Env": ["HOME=/root"],
+                "Labels": {
+                    "devcontainer.metadata": metadata,
+                    "devcontainer.local_folder": "/host/project"
+                }
+            },
+            "Mounts": [{
+                "Source": "/host/project",
+                "Destination": "/container/project"
+            }]
+        }])
+        .to_string(),
+    )
+    .expect("inspect json");
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "exec",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--container-id",
+            "fake-container-id",
+            "/bin/sh",
+            "-lc",
+            "printf %s \"$HOME\"",
+        ],
+        &[(
+            "FAKE_PODMAN_INSPECT_FILE",
+            inspect_path.to_string_lossy().as_ref(),
+        )],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("utf8 stdout"),
+        "/home/vscode"
+    );
+    let invocations = harness.read_invocations();
+    assert!(invocations.contains("-e HOME=/home/vscode"));
+}
+
+#[test]
+fn exec_keeps_explicit_remote_env_home() {
+    let harness = RuntimeHarness::new();
+    let inspect_path = harness.root.join("inspect.json");
+    let metadata = serde_json::to_string(&json!({
+        "remoteUser": "vscode",
+        "remoteEnv": {
+            "HOME": "/custom-home"
+        }
+    }))
+    .expect("metadata");
+    fs::write(
+        &inspect_path,
+        json!([{
+            "Config": {
+                "Env": ["HOME=/root"],
+                "Labels": {
+                    "devcontainer.metadata": metadata,
+                    "devcontainer.local_folder": "/host/project"
+                }
+            },
+            "Mounts": [{
+                "Source": "/host/project",
+                "Destination": "/container/project"
+            }]
+        }])
+        .to_string(),
+    )
+    .expect("inspect json");
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "exec",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--container-id",
+            "fake-container-id",
+            "/bin/sh",
+            "-lc",
+            "printf %s \"$HOME\"",
+        ],
+        &[(
+            "FAKE_PODMAN_INSPECT_FILE",
+            inspect_path.to_string_lossy().as_ref(),
+        )],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("utf8 stdout"),
+        "/custom-home"
+    );
+    let invocations = harness.read_invocations();
+    assert!(invocations.contains("-e HOME=/custom-home"));
+    assert!(!invocations.contains("-e HOME=/home/vscode"));
 }

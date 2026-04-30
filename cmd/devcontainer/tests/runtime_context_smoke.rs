@@ -45,9 +45,9 @@ fn exec_with_config_uses_the_config_workspace_for_lookup_and_workdir() {
         "ps -q --filter label=devcontainer.local_folder={}",
         expected_workspace.display()
     )));
-    assert!(invocations.contains(
-        "exec -i --workdir /workspaces/workspace fake-container-id /bin/echo hello-from-config"
-    ));
+    assert!(invocations.contains("exec -i --workdir /workspaces/workspace"));
+    assert!(invocations.contains("-e HOME=/root"));
+    assert!(invocations.contains("fake-container-id /bin/echo hello-from-config"));
 }
 
 #[test]
@@ -103,9 +103,9 @@ fn nested_config_exec_uses_workspace_root_and_config_label() {
         "--filter label=devcontainer.config_file={}",
         expected_config.display()
     )));
-    assert!(invocations.contains(
-        "exec -i --workdir /workspaces/workspace fake-container-id /bin/echo hello-from-nested-config"
-    ));
+    assert!(invocations.contains("exec -i --workdir /workspaces/workspace"));
+    assert!(invocations.contains("-e HOME=/root"));
+    assert!(invocations.contains("fake-container-id /bin/echo hello-from-nested-config"));
 }
 
 #[test]
@@ -158,9 +158,10 @@ fn exec_from_workspace_directory_loads_local_config() {
         "--filter label=devcontainer.config_file={}",
         expected_config.display()
     )));
-    assert!(invocations.contains(
-        "exec -i --workdir /configured-workspace --user vscode -e TEST_REMOTE_ENV=from-config fake-container-id /bin/echo hello-from-workspace"
-    ));
+    assert!(invocations.contains("exec -i --workdir /configured-workspace --user vscode"));
+    assert!(invocations.contains("-e TEST_REMOTE_ENV=from-config"));
+    assert!(invocations.contains("-e HOME=/home/vscode"));
+    assert!(invocations.contains("fake-container-id /bin/echo hello-from-workspace"));
 }
 
 #[test]
@@ -216,7 +217,7 @@ fn exec_with_override_config_uses_override_contents_and_workspace_config_labels(
         "--filter label=devcontainer.config_file={}",
         expected_config.display()
     )));
-    assert!(invocations.contains(
-        "exec -i --workdir /override-workspace --user vscode fake-container-id /bin/echo hello-from-override"
-    ));
+    assert!(invocations.contains("exec -i --workdir /override-workspace --user vscode"));
+    assert!(invocations.contains("-e HOME=/home/vscode"));
+    assert!(invocations.contains("fake-container-id /bin/echo hello-from-override"));
 }

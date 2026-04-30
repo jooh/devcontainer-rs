@@ -10,6 +10,7 @@ mod lifecycle;
 pub(crate) mod metadata;
 pub(crate) mod mounts;
 mod paths;
+mod user_resolution;
 
 use serde_json::{json, Value};
 
