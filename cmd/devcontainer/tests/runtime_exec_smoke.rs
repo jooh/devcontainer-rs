@@ -367,6 +367,62 @@ fn exec_derives_home_from_passwd_when_container_home_is_unwritable() {
 }
 
 #[test]
+fn exec_derives_home_from_container_user_when_devcontainer_user_is_unset() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"alpine:3.20\",\n  \"workspaceFolder\": \"/container/project\"\n}\n",
+    );
+    let inspect_path = harness.root.join("inspect.json");
+    fs::write(
+        &inspect_path,
+        json!([{
+            "Config": {
+                "User": "vscode",
+                "Env": ["HOME=/root"]
+            },
+            "Mounts": [{
+                "Source": "/host/project",
+                "Destination": "/container/project"
+            }]
+        }])
+        .to_string(),
+    )
+    .expect("inspect json");
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "exec",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--container-id",
+            "fake-container-id",
+            "/bin/sh",
+            "-lc",
+            "printf %s \"$HOME\"",
+        ],
+        &[(
+            "FAKE_PODMAN_INSPECT_FILE",
+            inspect_path.to_string_lossy().as_ref(),
+        )],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("utf8 stdout"),
+        "/home/vscode"
+    );
+    let invocations = harness.read_invocations();
+    assert!(invocations.contains("exec -i --workdir /container/project -e HOME=/home/vscode"));
+    assert!(!invocations.contains("--user vscode"));
+}
+
+#[test]
 fn exec_keeps_explicit_remote_env_home() {
     let harness = RuntimeHarness::new();
     let inspect_path = harness.root.join("inspect.json");

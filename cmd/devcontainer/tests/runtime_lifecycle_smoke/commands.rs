@@ -318,6 +318,42 @@ fn up_lifecycle_commands_receive_derived_home() {
 }
 
 #[test]
+fn up_lifecycle_commands_derive_home_from_container_user_when_devcontainer_user_is_unset() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"alpine:3.20\",\n  \"postCreateCommand\": \"printf %s \\\"$HOME\\\" > /workspaces/workspace/home.txt\"\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+        ],
+        &[
+            ("FAKE_PODMAN_PS_DISABLE_DEFAULT", "1"),
+            ("FAKE_PODMAN_CONTAINER_USER", "vscode"),
+            ("FAKE_PODMAN_CONTAINER_HOME", "/root"),
+        ],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(workspace.join("home.txt")).expect("home file"),
+        "/home/vscode"
+    );
+    let invocations = harness.read_invocations();
+    assert!(invocations.contains("exec --workdir /workspaces/workspace -e HOME=/home/vscode"));
+    assert!(!invocations.contains("--user vscode"));
+}
+
+#[test]
 fn lifecycle_array_commands_preserve_argument_boundaries() {
     let harness = RuntimeHarness::new();
     let workspace = harness.workspace();

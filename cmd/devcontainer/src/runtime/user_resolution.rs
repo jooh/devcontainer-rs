@@ -15,6 +15,12 @@ pub(crate) struct PasswdUser {
     pub(crate) shell: String,
 }
 
+#[derive(Debug, Default, Eq, PartialEq)]
+struct InspectedContainerDetails {
+    env: HashMap<String, String>,
+    user: Option<String>,
+}
+
 pub(crate) fn combined_remote_env_with_home(
     args: &[String],
     configuration: &Value,
@@ -79,9 +85,11 @@ fn resolve_home_folder(
     configuration: &Value,
     container_id: &str,
 ) -> Result<String, String> {
-    let user_name_or_id = passwd_lookup_user(configuration);
+    let inspected = inspected_container_details(args, container_id)?;
+    let user_name_or_id = passwd_lookup_user(configuration, inspected.user.as_deref());
     let passwd_user = get_user_from_passwd_db(args, container_id, &user_name_or_id)?;
-    let container_env = container_env(args, configuration, container_id)?;
+    let mut container_env = configuration_container_env(configuration);
+    container_env.extend(inspected.env);
     select_home_folder(
         container_env.get("HOME").map(String::as_str),
         passwd_user.as_ref(),
@@ -132,16 +140,6 @@ fn container_home_missing_or_writable(
     Ok(result.status_code == 0)
 }
 
-fn container_env(
-    args: &[String],
-    configuration: &Value,
-    container_id: &str,
-) -> Result<HashMap<String, String>, String> {
-    let mut env = configuration_container_env(configuration);
-    env.extend(inspected_container_env(args, container_id)?);
-    Ok(env)
-}
-
 fn configuration_container_env(configuration: &Value) -> HashMap<String, String> {
     configuration
         .get("containerEnv")
@@ -155,10 +153,10 @@ fn configuration_container_env(configuration: &Value) -> HashMap<String, String>
         .unwrap_or_default()
 }
 
-fn inspected_container_env(
+fn inspected_container_details(
     args: &[String],
     container_id: &str,
-) -> Result<HashMap<String, String>, String> {
+) -> Result<InspectedContainerDetails, String> {
     let result = engine::run_engine(args, vec!["inspect".to_string(), container_id.to_string()])?;
     if result.status_code != 0 {
         return Err(engine::stderr_or_stdout(&result));
@@ -166,26 +164,36 @@ fn inspected_container_env(
 
     let inspected: Value = serde_json::from_str(&result.stdout)
         .map_err(|error| format!("Invalid inspect JSON: {error}"))?;
-    let env_entries = inspected
+    let config = inspected
         .as_array()
         .and_then(|entries| entries.first())
-        .and_then(|details| details.get("Config"))
+        .and_then(|details| details.get("Config"));
+    let env_entries = config
         .and_then(|config| config.get("Env"))
         .and_then(Value::as_array);
+    let user = config
+        .and_then(|config| config.get("User"))
+        .and_then(Value::as_str)
+        .filter(|user| !user.is_empty())
+        .map(str::to_string);
 
-    Ok(env_entries
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .filter_map(|entry| {
-            let (key, value) = entry.split_once('=')?;
-            Some((key.to_string(), value.to_string()))
-        })
-        .collect())
+    Ok(InspectedContainerDetails {
+        env: env_entries
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter_map(|entry| {
+                let (key, value) = entry.split_once('=')?;
+                Some((key.to_string(), value.to_string()))
+            })
+            .collect(),
+        user,
+    })
 }
 
-fn passwd_lookup_user(configuration: &Value) -> String {
+fn passwd_lookup_user(configuration: &Value, inspected_user: Option<&str>) -> String {
     context::configured_user(configuration)
+        .or(inspected_user)
         .and_then(|user| user.split(':').next())
         .filter(|user| !user.is_empty())
         .map(|user| if user == "0" { "root" } else { user })
@@ -224,7 +232,12 @@ fn shell_single_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{get_ent_passwd_shell_command, parse_passwd_user, select_home_folder, PasswdUser};
+    use serde_json::json;
+
+    use super::{
+        get_ent_passwd_shell_command, parse_passwd_user, passwd_lookup_user, select_home_folder,
+        PasswdUser,
+    };
 
     fn vscode_user() -> PasswdUser {
         PasswdUser {
@@ -328,5 +341,23 @@ mod tests {
             select_home_folder(None, None, |_| Ok(false)).expect("root fallback"),
             "/root"
         );
+    }
+
+    #[test]
+    fn passwd_lookup_user_prefers_devcontainer_user_then_inspected_user() {
+        assert_eq!(
+            passwd_lookup_user(&json!({ "remoteUser": "node" }), Some("vscode")),
+            "node"
+        );
+        assert_eq!(
+            passwd_lookup_user(&json!({ "containerUser": "1000:1000" }), Some("vscode")),
+            "1000"
+        );
+        assert_eq!(
+            passwd_lookup_user(&json!({}), Some("vscode:1000")),
+            "vscode"
+        );
+        assert_eq!(passwd_lookup_user(&json!({}), Some("0:0")), "root");
+        assert_eq!(passwd_lookup_user(&json!({}), None), "root");
     }
 }

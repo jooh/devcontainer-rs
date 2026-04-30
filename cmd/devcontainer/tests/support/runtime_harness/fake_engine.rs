@@ -352,7 +352,9 @@ ${2:-}"
         mounts_json="$mounts_json{\"Source\":\"$escaped_source\",\"Destination\":\"$escaped_destination\"}"
       done < "$LOG_DIR/last-run-mounts"
     fi
-    printf '[{"Config":{"Labels":{%s},"Env":[%s]},"Mounts":[%s]}]' "$labels_json" "$env_json" "$mounts_json"
+    container_user="${FAKE_PODMAN_CONTAINER_USER:-}"
+    escaped_container_user="$(json_escape "$container_user")"
+    printf '[{"Config":{"Labels":{%s},"Env":[%s],"User":"%s"},"Mounts":[%s]}]' "$labels_json" "$env_json" "$escaped_container_user" "$mounts_json"
     exit 0
     ;;
   start)
