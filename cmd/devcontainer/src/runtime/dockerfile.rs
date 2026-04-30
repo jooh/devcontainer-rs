@@ -178,9 +178,7 @@ fn find_base_image(
     target: Option<&str>,
     global_buildx_platform_args: &HashMap<String, String>,
 ) -> Option<String> {
-    let mut stage = target
-        .and_then(|target| dockerfile.stages_by_label.get(target).copied())
-        .or_else(|| dockerfile.stages.len().checked_sub(1))?;
+    let mut stage = target_stage_index(dockerfile, target)?;
     let mut seen = HashSet::new();
 
     loop {
@@ -210,9 +208,7 @@ fn find_user_statement(
     global_buildx_platform_args: &HashMap<String, String>,
     target: Option<&str>,
 ) -> Option<String> {
-    let mut stage = target
-        .and_then(|target| dockerfile.stages_by_label.get(target).copied())
-        .or_else(|| dockerfile.stages.len().checked_sub(1))?;
+    let mut stage = target_stage_index(dockerfile, target)?;
     let mut seen = HashSet::new();
 
     loop {
@@ -246,6 +242,13 @@ fn find_user_statement(
         );
         let next_stage = dockerfile.stages_by_label.get(&image).copied()?;
         stage = next_stage;
+    }
+}
+
+fn target_stage_index(dockerfile: &Dockerfile, target: Option<&str>) -> Option<usize> {
+    match target {
+        Some(target) => dockerfile.stages_by_label.get(target).copied(),
+        None => dockerfile.stages.len().checked_sub(1),
     }
 }
 
@@ -949,6 +952,39 @@ FROM "${cloud:-"mcr.microsoft.com/"}azure-cli:latest"
             find_base_image(&negative_expression, &HashMap::new(), None, &HashMap::new(),)
                 .as_deref(),
             Some("mcr.microsoft.com/azure-cli:latest")
+        );
+    }
+
+    #[test]
+    fn missing_targets_do_not_fall_back_to_final_stage() {
+        let dockerfile = extract_dockerfile(
+            r#"
+FROM debian AS base
+USER base-user
+
+FROM ubuntu AS final
+USER final-user
+"#,
+        );
+
+        assert_eq!(
+            find_base_image(
+                &dockerfile,
+                &HashMap::new(),
+                Some("missing"),
+                &HashMap::new()
+            ),
+            None
+        );
+        assert_eq!(
+            find_user_statement(
+                &dockerfile,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                Some("missing"),
+            ),
+            None
         );
     }
 
