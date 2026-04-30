@@ -256,15 +256,21 @@
 		},
 		{
 			"upstreamTest": "upstream/src/test/getEntPasswd.test.ts",
-			"status": "missing",
-			"nativeTests": [],
-			"notes": "No native passwd-entry parsing or lookup tests exist."
+			"status": "covered",
+			"nativeTests": [
+				"cmd/devcontainer/src/runtime/user_resolution.rs"
+			],
+			"notes": "Native unit coverage matches passwd row parsing and upstream getent/grep command generation, including empty lookup and escaping cases."
 		},
 		{
 			"upstreamTest": "upstream/src/test/getHomeFolder.test.ts",
-			"status": "missing",
-			"nativeTests": [],
-			"notes": "No native home-folder resolution test suite exists."
+			"status": "covered",
+			"nativeTests": [
+				"cmd/devcontainer/src/runtime/user_resolution.rs",
+				"cmd/devcontainer/tests/runtime_exec_smoke.rs",
+				"cmd/devcontainer/tests/runtime_lifecycle_smoke/commands.rs"
+			],
+			"notes": "Native unit and fake-engine smoke coverage validates non-root HOME fallback, root HOME acceptance, explicit remote HOME precedence, and lifecycle/exec injection."
 		},
 		{
 			"upstreamTest": "upstream/src/test/imageMetadata.test.ts",
