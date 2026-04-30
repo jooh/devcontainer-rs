@@ -49,6 +49,95 @@ fn inspects_service_image_and_build_presence() {
 }
 
 #[test]
+fn inspects_service_build_info_for_upstream_compose_shapes() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    let compose_dir = root.join("somepath");
+    let compose_file = compose_dir.join("docker-compose.yml");
+    fs::create_dir_all(&compose_dir).expect("compose root");
+    fs::write(
+        &compose_file,
+        r#"
+services:
+  fully_specified:
+    image: my-image
+    build:
+      context: context-path
+      dockerfile: my-dockerfile
+      target: a-target
+      args:
+        arg1: value1
+  image_only:
+    image: my-image
+  string_build:
+    image: my-image
+    build: ./a-path
+  default_dockerfile:
+    build:
+      context: ./a-path
+  default_context:
+    build:
+      dockerfile: my-dockerfile
+"#,
+    )
+    .expect("compose file");
+
+    let fully_specified =
+        inspect_service_definition(std::slice::from_ref(&compose_file), "fully_specified")
+            .expect("fully specified service");
+    let fully_specified_build = fully_specified.build.as_ref().expect("build info");
+    assert_eq!(fully_specified.image.as_deref(), Some("my-image"));
+    assert_eq!(fully_specified_build.context, "context-path");
+    assert_eq!(fully_specified_build.dockerfile_path, "my-dockerfile");
+    assert_eq!(fully_specified_build.target.as_deref(), Some("a-target"));
+    assert_eq!(
+        fully_specified_build
+            .args
+            .as_ref()
+            .and_then(|args| args.get("arg1"))
+            .map(String::as_str),
+        Some("value1")
+    );
+
+    let image_only = inspect_service_definition(std::slice::from_ref(&compose_file), "image_only")
+        .expect("image-only service");
+    assert_eq!(image_only.image.as_deref(), Some("my-image"));
+    assert!(image_only.build.is_none());
+
+    let string_build =
+        inspect_service_definition(std::slice::from_ref(&compose_file), "string_build")
+            .expect("string build service");
+    let string_build_info = string_build.build.as_ref().expect("string build info");
+    assert_eq!(string_build.image.as_deref(), Some("my-image"));
+    assert_eq!(string_build_info.context, "./a-path");
+    assert_eq!(string_build_info.dockerfile_path, "Dockerfile");
+    assert_eq!(string_build_info.target, None);
+    assert_eq!(string_build_info.args, None);
+
+    let default_dockerfile =
+        inspect_service_definition(std::slice::from_ref(&compose_file), "default_dockerfile")
+            .expect("default dockerfile service");
+    let default_dockerfile_build = default_dockerfile.build.as_ref().expect("build info");
+    assert_eq!(default_dockerfile_build.context, "./a-path");
+    assert_eq!(default_dockerfile_build.dockerfile_path, "Dockerfile");
+    assert_eq!(default_dockerfile_build.target, None);
+    assert_eq!(default_dockerfile_build.args, None);
+
+    let default_context =
+        inspect_service_definition(std::slice::from_ref(&compose_file), "default_context")
+            .expect("default context service");
+    let default_context_build = default_context.build.as_ref().expect("build info");
+    assert_eq!(
+        default_context_build.context,
+        compose_dir.display().to_string()
+    );
+    assert_eq!(default_context_build.dockerfile_path, "my-dockerfile");
+    assert_eq!(default_context_build.target, None);
+    assert_eq!(default_context_build.args, None);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn compose_project_name_defaults_to_workspace_devcontainer() {
     let root = unique_temp_dir("devcontainer-compose-test");
     let compose_file = root.join(".devcontainer").join("docker-compose.yml");

@@ -52,6 +52,7 @@ mod tests {
     fn substitutes_local_env_and_workspace_tokens() {
         let mut env = HashMap::new();
         env.insert("USER".to_string(), "johan".to_string());
+        env.insert("baz".to_string(), "somevalue".to_string());
         let context = ConfigContext {
             workspace_folder: PathBuf::from("/workspace/demo"),
             env,
@@ -61,6 +62,7 @@ mod tests {
         let value = json!({
             "containerEnv": {
                 "USER_NAME": "${localEnv:USER}",
+                "ENV_ALIAS": "bar${env:baz}bar",
                 "WORKSPACE": "${localWorkspaceFolder}",
                 "CONTAINER_WORKSPACE": "${containerWorkspaceFolder}",
                 "CONTAINER_BASENAME": "${containerWorkspaceFolderBasename}"
@@ -70,6 +72,7 @@ mod tests {
         let substituted = substitute_local_context(&value, &context);
 
         assert_eq!(substituted["containerEnv"]["USER_NAME"], "johan");
+        assert_eq!(substituted["containerEnv"]["ENV_ALIAS"], "barsomevaluebar");
         assert_eq!(substituted["containerEnv"]["WORKSPACE"], "/workspace/demo");
         assert_eq!(
             substituted["containerEnv"]["CONTAINER_WORKSPACE"],
@@ -179,5 +182,35 @@ mod tests {
         assert!(id
             .chars()
             .all(|character| matches!(character, '0'..='9' | 'a'..='v')));
+    }
+
+    #[test]
+    fn devcontainer_id_changes_when_labels_change() {
+        let value = json!({
+            "test": "${devcontainerId}"
+        });
+        let first = substitute_local_context(
+            &value,
+            &ConfigContext {
+                workspace_folder: PathBuf::from("/workspace/demo"),
+                env: HashMap::new(),
+                container_workspace_folder: None,
+                id_labels: HashMap::from([("a".to_string(), "b".to_string())]),
+            },
+        );
+        let second = substitute_local_context(
+            &value,
+            &ConfigContext {
+                workspace_folder: PathBuf::from("/workspace/demo"),
+                env: HashMap::new(),
+                container_workspace_folder: None,
+                id_labels: HashMap::from([
+                    ("a".to_string(), "b".to_string()),
+                    ("c".to_string(), "d".to_string()),
+                ]),
+            },
+        );
+
+        assert_ne!(first["test"], second["test"]);
     }
 }

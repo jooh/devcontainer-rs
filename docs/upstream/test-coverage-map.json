@@ -224,29 +224,29 @@
 		},
 		{
 			"upstreamTest": "upstream/src/test/dockerComposeUtils.test.ts",
-			"status": "partial",
+			"status": "covered",
 			"nativeTests": [
-				"cmd/devcontainer/src/runtime/compose/tests.rs",
-				"cmd/devcontainer/tests/runtime_container_smoke/compose_project.rs",
-				"cmd/devcontainer/tests/runtime_container_smoke/compose_flow.rs"
+				"cmd/devcontainer/src/runtime/compose/tests.rs"
 			],
-			"notes": "Compose project naming and mount behavior are covered, but not every upstream utility case."
+			"notes": "Native compose utility coverage now mirrors upstream build-info parsing for image-only services, string and object build forms, default Dockerfile/default context behavior, build targets, and build args."
 		},
 		{
 			"upstreamTest": "upstream/src/test/dockerUtils.test.ts",
 			"status": "partial",
 			"nativeTests": [
-				"cmd/devcontainer/src/runtime/container/engine_run.rs"
+				"cmd/devcontainer/src/runtime/container/engine_run.rs",
+				"cmd/devcontainer/src/runtime/image.rs"
 			],
-			"notes": "Native coverage now exercises concurrent container removal retries; registry image inspection and Docker image-name qualification remain uncovered."
+			"notes": "Native coverage exercises concurrent container removal retries and Docker image-name qualification; live registry image inspection remains out of scope."
 		},
 		{
 			"upstreamTest": "upstream/src/test/dockerfileUtils.test.ts",
-			"status": "partial",
+			"status": "covered",
 			"nativeTests": [
+				"cmd/devcontainer/src/runtime/dockerfile.rs",
 				"cmd/devcontainer/tests/runtime_build_smoke/dockerfile.rs"
 			],
-			"notes": "Dockerfile build behavior is tested natively, but utility-level edge cases are not fully mirrored."
+			"notes": "Native Dockerfile utility coverage now mirrors upstream final-stage naming, Dockerfile extraction, base image and USER resolution, ARG/ENV precedence, stage alias traversal, build arg expressions, syntax directives, quoted images, lowercase instructions, and ENV forms."
 		},
 		{
 			"upstreamTest": "upstream/src/test/dotfiles.test.ts",
@@ -313,12 +313,12 @@
 		},
 		{
 			"upstreamTest": "upstream/src/test/variableSubstitution.test.ts",
-			"status": "partial",
+			"status": "covered",
 			"nativeTests": [
 				"cmd/devcontainer/src/config.rs",
 				"cmd/devcontainer/tests/cli_smoke/read_configuration.rs"
 			],
-			"notes": "Native substitution coverage exists, but the supported substitution surface is still narrower than upstream."
+			"notes": "Native substitution coverage mirrors upstream env/localEnv aliases, local and container workspace tokens, default handling, containerEnv defaults, and devcontainerId stability and label sensitivity."
 		},
 		{
 			"upstreamTest": "upstream/src/test/workspaceConfiguration.test.ts",

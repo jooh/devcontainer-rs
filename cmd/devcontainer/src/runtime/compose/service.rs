@@ -1,5 +1,6 @@
 //! Compose service inspection and build metadata helpers.
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,9 +15,18 @@ use crate::runtime::paths::resolve_relative;
 pub(super) struct ServiceDefinition {
     pub(super) image: Option<String>,
     pub(super) has_build: bool,
+    pub(super) build: Option<ServiceBuildInfo>,
     pub(super) user: Option<String>,
     pub(super) entrypoint: Option<Vec<String>>,
     pub(super) command: Option<Vec<String>>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct ServiceBuildInfo {
+    pub(super) context: String,
+    pub(super) dockerfile_path: String,
+    pub(super) target: Option<String>,
+    pub(super) args: Option<HashMap<String, String>>,
 }
 
 pub(super) fn compose_files(
@@ -93,10 +103,16 @@ pub(super) fn inspect_service_definition(
 ) -> Result<ServiceDefinition, String> {
     let mut image = None;
     let mut has_build = false;
+    let mut build = None;
     let mut user = None;
     let mut entrypoint = None;
     let mut command = None;
     let mut found_service = false;
+    let default_build_context = compose_files
+        .first()
+        .and_then(|path| path.parent())
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| ".".to_string());
 
     for compose_file in compose_files {
         let raw = std::fs::read_to_string(compose_file).map_err(|error| error.to_string())?;
@@ -115,6 +131,9 @@ pub(super) fn inspect_service_definition(
 
         if service_definition.contains_key(YamlValue::String("build".to_string())) {
             has_build = true;
+        }
+        if let Some(value) = service_field(service_definition, "build") {
+            build = parse_service_build(value, &default_build_context);
         }
         if let Some(value) = service_field(service_definition, "image").and_then(YamlValue::as_str)
         {
@@ -144,6 +163,7 @@ pub(super) fn inspect_service_definition(
     Ok(ServiceDefinition {
         image,
         has_build,
+        build,
         user,
         entrypoint,
         command,
@@ -152,6 +172,45 @@ pub(super) fn inspect_service_definition(
 
 fn service_field<'a>(mapping: &'a Mapping, key: &str) -> Option<&'a YamlValue> {
     mapping.get(YamlValue::String(key.to_string()))
+}
+
+fn parse_service_build(value: &YamlValue, default_context: &str) -> Option<ServiceBuildInfo> {
+    match value {
+        YamlValue::String(context) => Some(ServiceBuildInfo {
+            context: context.to_string(),
+            dockerfile_path: "Dockerfile".to_string(),
+            target: None,
+            args: None,
+        }),
+        YamlValue::Mapping(mapping) => Some(ServiceBuildInfo {
+            context: service_field(mapping, "context")
+                .and_then(YamlValue::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| default_context.to_string()),
+            dockerfile_path: service_field(mapping, "dockerfile")
+                .and_then(YamlValue::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| "Dockerfile".to_string()),
+            target: service_field(mapping, "target")
+                .and_then(YamlValue::as_str)
+                .map(str::to_string),
+            args: service_field(mapping, "args").and_then(parse_build_args),
+        }),
+        _ => None,
+    }
+}
+
+fn parse_build_args(value: &YamlValue) -> Option<HashMap<String, String>> {
+    let mapping = value.as_mapping()?;
+    let args = mapping
+        .iter()
+        .filter_map(|(key, value)| {
+            let key = yaml_scalar_to_string(key)?;
+            let value = yaml_scalar_to_string(value)?;
+            Some((key, value))
+        })
+        .collect::<HashMap<_, _>>();
+    (!args.is_empty()).then_some(args)
 }
 
 pub(super) fn read_version_prefix(compose_files: &[PathBuf]) -> Result<String, String> {

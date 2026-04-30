@@ -4,8 +4,8 @@ Machine-readable upstream test coverage inventory for the native Rust CLI.
 
 - Upstream commit: `2d81ee3c9ed96a7312c18c7513a17933f8f66d41`
 - Upstream tests inventoried: `35`
-- Covered: `9`
-- Partial: `26`
+- Covered: `12`
+- Partial: `23`
 - Missing: `0`
 
 ## Summary
@@ -35,9 +35,9 @@ Machine-readable upstream test coverage inventory for the native Rust CLI.
 | `upstream/src/test/container-templates/containerTemplatesOCI.test.ts` | partial | `cmd/devcontainer/src/commands/collections/tests/templates.rs`<br>`cmd/devcontainer/tests/cli_smoke/collections.rs` | Native coverage now includes workspace-local OCI metadata lookup and archive-backed template apply flows, but live registry template fetch behavior is still missing. |
 | `upstream/src/test/container-templates/templatesCLICommands.test.ts` | partial | `cmd/devcontainer/tests/cli_smoke/collections.rs`<br>`cmd/devcontainer/src/commands/collections/tests/templates.rs`<br>`cmd/devcontainer/src/commands/collections/tests/publish.rs` | Template CLI commands now cover workspace-local OCI metadata and apply flows, but published-template behavior is still partial without live registry fetches. |
 | `upstream/src/test/disallowedFeatures.test.ts` | covered | `cmd/devcontainer/src/commands/configuration/features/control.rs`<br>`cmd/devcontainer/src/commands/configuration/tests/read.rs`<br>`cmd/devcontainer/src/commands/collections/tests/features.rs` | Native coverage now includes prefix matching plus command-level failures for read-configuration and features resolve-dependencies. |
-| `upstream/src/test/dockerComposeUtils.test.ts` | partial | `cmd/devcontainer/src/runtime/compose/tests.rs`<br>`cmd/devcontainer/tests/runtime_container_smoke/compose_project.rs`<br>`cmd/devcontainer/tests/runtime_container_smoke/compose_flow.rs` | Compose project naming and mount behavior are covered, but not every upstream utility case. |
-| `upstream/src/test/dockerfileUtils.test.ts` | partial | `cmd/devcontainer/tests/runtime_build_smoke/dockerfile.rs` | Dockerfile build behavior is tested natively, but utility-level edge cases are not fully mirrored. |
-| `upstream/src/test/dockerUtils.test.ts` | partial | `cmd/devcontainer/src/runtime/container/engine_run.rs` | Native coverage now exercises concurrent container removal retries; registry image inspection and Docker image-name qualification remain uncovered. |
+| `upstream/src/test/dockerComposeUtils.test.ts` | covered | `cmd/devcontainer/src/runtime/compose/tests.rs` | Native compose utility coverage now mirrors upstream build-info parsing for image-only services, string and object build forms, default Dockerfile/default context behavior, build targets, and build args. |
+| `upstream/src/test/dockerfileUtils.test.ts` | covered | `cmd/devcontainer/src/runtime/dockerfile.rs`<br>`cmd/devcontainer/tests/runtime_build_smoke/dockerfile.rs` | Native Dockerfile utility coverage now mirrors upstream final-stage naming, Dockerfile extraction, base image and USER resolution, ARG/ENV precedence, stage alias traversal, build arg expressions, syntax directives, quoted images, lowercase instructions, and ENV forms. |
+| `upstream/src/test/dockerUtils.test.ts` | partial | `cmd/devcontainer/src/runtime/container/engine_run.rs`<br>`cmd/devcontainer/src/runtime/image.rs` | Native coverage exercises concurrent container removal retries and Docker image-name qualification; live registry image inspection remains out of scope. |
 | `upstream/src/test/dotfiles.test.ts` | covered | `cmd/devcontainer/tests/runtime_lifecycle_smoke/dotfiles.rs` | Native dotfiles coverage includes ordering, reinstall markers, and personalization stop behavior. |
 | `upstream/src/test/getEntPasswd.test.ts` | covered | `cmd/devcontainer/src/runtime/user_resolution.rs` | Native unit coverage matches passwd row parsing and upstream getent/grep command generation, including empty lookup and escaping cases. |
 | `upstream/src/test/getHomeFolder.test.ts` | covered | `cmd/devcontainer/src/runtime/user_resolution.rs`<br>`cmd/devcontainer/tests/runtime_exec_smoke.rs`<br>`cmd/devcontainer/tests/runtime_lifecycle_smoke/commands.rs` | Native unit and fake-engine smoke coverage validates non-root HOME fallback, root HOME acceptance, explicit remote HOME precedence, and lifecycle/exec injection. |
@@ -45,5 +45,5 @@ Machine-readable upstream test coverage inventory for the native Rust CLI.
 | `upstream/src/test/labelPathNormalization.test.ts` | covered | `cmd/devcontainer/src/commands/common/labels.rs`<br>`cmd/devcontainer/src/runtime/container/discovery.rs` | Native unit coverage now exercises Windows label normalization plus legacy workspace-only matching for default devcontainer labels. |
 | `upstream/src/test/updateUID.test.ts` | covered | `cmd/devcontainer/src/runtime/container/uid_update/tests.rs` | Native UID-update coverage includes image inspection, platform preservation, local tags, and podman behavior. |
 | `upstream/src/test/utils.test.ts` | covered | `cmd/devcontainer/src/runtime/build.rs` | Native build utility coverage matches upstream buildx inline cache detection cases and verifies build argument selection. |
-| `upstream/src/test/variableSubstitution.test.ts` | partial | `cmd/devcontainer/src/config.rs`<br>`cmd/devcontainer/tests/cli_smoke/read_configuration.rs` | Native substitution coverage exists, but the supported substitution surface is still narrower than upstream. |
+| `upstream/src/test/variableSubstitution.test.ts` | covered | `cmd/devcontainer/src/config.rs`<br>`cmd/devcontainer/tests/cli_smoke/read_configuration.rs` | Native substitution coverage mirrors upstream env/localEnv aliases, local and container workspace tokens, default handling, containerEnv defaults, and devcontainerId stability and label sensitivity. |
 | `upstream/src/test/workspaceConfiguration.test.ts` | partial | `cmd/devcontainer/src/runtime/context/workspace.rs`<br>`cmd/devcontainer/tests/runtime_container_smoke/basic.rs`<br>`cmd/devcontainer/tests/runtime_container_smoke/compose_project.rs` | Workspace mount behavior is covered, including lexical worktree common-dir normalization, but upstream cross-platform path cases are broader. |
