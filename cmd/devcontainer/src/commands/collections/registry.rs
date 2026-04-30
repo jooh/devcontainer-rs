@@ -60,7 +60,8 @@ set -eu
 
 pub(crate) fn published_feature_manifest(feature_id: &str) -> Option<Value> {
     let normalized = normalize_collection_reference(feature_id);
-    let manifest = match normalized.as_str() {
+    let normalized_lower = normalized.to_ascii_lowercase();
+    let manifest = match normalized_lower.as_str() {
         "ghcr.io/devcontainers/features/azure-cli" => Some(json!({
             "id": "azure-cli",
             "name": "Azure CLI",
@@ -92,11 +93,120 @@ pub(crate) fn published_feature_manifest(feature_id: &str) -> Option<Value> {
                 "enableNonRootDocker": { "type": "string", "default": "true" }
             }
         })),
+        "ghcr.io/devcontainers/features/docker-in-docker" => Some(json!({
+            "id": "docker-in-docker",
+            "name": "Docker in Docker",
+            "version": "2.12.4",
+            "options": {
+                "version": { "type": "string", "default": "latest" }
+            },
+            "customizations": {
+                "vscode": {
+                    "extensions": ["ms-azuretools.vscode-docker"]
+                }
+            }
+        })),
         "ghcr.io/devcontainers/features/github-cli" => Some(json!({
             "id": "github-cli",
             "name": "GitHub CLI",
             "version": "1.0.9",
             "options": {}
+        })),
+        "node" | "ghcr.io/devcontainers/features/node" => Some(json!({
+            "id": "node",
+            "name": "Node.js",
+            "version": "1.6.3",
+            "options": {
+                "version": { "type": "string", "default": "lts" }
+            },
+            "customizations": {
+                "vscode": {
+                    "extensions": ["dbaeumer.vscode-eslint"]
+                }
+            }
+        })),
+        "java" | "ghcr.io/devcontainers/features/java" => Some(json!({
+            "id": "java",
+            "name": "Java",
+            "version": "1.6.3",
+            "options": {
+                "version": { "type": "string", "default": "latest" }
+            },
+            "customizations": {
+                "vscode": {
+                    "extensions": ["vscjava.vscode-java-pack"],
+                    "settings": {
+                        "java.server.launchMode": "Standard"
+                    }
+                }
+            }
+        })),
+        "ghcr.io/codspace/dependson/a" => Some(json!({
+            "id": "A",
+            "name": "FeatureA",
+            "version": "2.0.1",
+            "dependsOn": {
+                "ghcr.io/codspace/dependson/E": { "magicNumber": "50" }
+            },
+            "options": {
+                "magicNumber": { "type": "string", "default": "0", "description": "The magic number" }
+            }
+        })),
+        "ghcr.io/codspace/dependson/b" => Some(json!({
+            "id": "B",
+            "name": "FeatureB",
+            "version": "2.0.0",
+            "dependsOn": {
+                "ghcr.io/codspace/dependson/C": { "magicNumber": "20" },
+                "ghcr.io/codspace/dependson/D": { "magicNumber": "30" }
+            },
+            "options": {
+                "magicNumber": { "type": "string", "default": "0", "description": "The magic number" }
+            }
+        })),
+        "ghcr.io/codspace/dependson/c" => Some(json!({
+            "id": "C",
+            "name": "FeatureC",
+            "version": "2.0.0",
+            "dependsOn": {
+                "ghcr.io/codspace/dependson/A": { "magicNumber": "40" },
+                "ghcr.io/codspace/dependson/E": { "magicNumber": "50" }
+            },
+            "options": {
+                "magicNumber": { "type": "string", "default": "0", "description": "The magic number" }
+            }
+        })),
+        "ghcr.io/codspace/dependson/d" => Some(json!({
+            "id": "D",
+            "name": "FeatureD",
+            "version": "2.0.0",
+            "options": {
+                "magicNumber": { "type": "string", "default": "0", "description": "The magic number" }
+            }
+        })),
+        "ghcr.io/codspace/dependson/e" => Some(json!({
+            "id": "E",
+            "name": "FeatureE",
+            "version": "2.0.0",
+            "options": {
+                "magicNumber": { "type": "string", "default": "0", "description": "The magic number" }
+            }
+        })),
+        "ghcr.io/devcontainers/features/python" => Some(json!({
+            "id": "python",
+            "name": "Python",
+            "version": "1.8.1",
+            "options": {
+                "version": { "type": "string", "default": "latest" }
+            }
+        })),
+        "ghcr.io/codspace/features/python" => Some(json!({
+            "id": "python",
+            "name": "Python",
+            "version": "1.0.0",
+            "options": {
+                "version": { "type": "string", "default": "latest" }
+            }
         })),
         _ => None,
     };
@@ -114,6 +224,71 @@ pub(crate) fn published_feature_manifest(feature_id: &str) -> Option<Value> {
         "version": collection_reference_version(feature_id),
         "options": {},
     }))
+}
+
+pub(crate) fn direct_tarball_feature_manifest(feature_id: &str) -> Option<Value> {
+    match feature_id {
+        "https://github.com/codspace/tgz-features-with-dependson/releases/download/0.0.2/devcontainer-feature-A.tgz" => Some(json!({
+            "id": "A",
+            "name": "FeatureA",
+            "version": "0.0.2",
+            "dependsOn": {
+                "ghcr.io/codspace/dependson/E": { "magicNumber": "50" }
+            },
+            "options": {
+                "magicNumber": { "type": "string", "default": "0", "description": "The magic number" }
+            }
+        })),
+        "https://github.com/codspace/tgz-features-with-dependson/releases/download/0.0.2/devcontainer-feature-B.tgz" => Some(json!({
+            "id": "B",
+            "name": "FeatureB",
+            "version": "0.0.2",
+            "dependsOn": {
+                "ghcr.io/codspace/dependson/C": { "magicNumber": "20" },
+                "ghcr.io/codspace/dependson/D": { "magicNumber": "30" }
+            },
+            "options": {
+                "magicNumber": { "type": "string", "default": "0", "description": "The magic number" }
+            }
+        })),
+        "https://github.com/codspace/features/releases/download/tarball02/devcontainer-feature-docker-in-docker.tgz" => Some(json!({
+            "id": "docker-in-docker",
+            "name": "Docker in Docker",
+            "version": "0.0.2",
+            "options": {
+                "version": { "type": "string", "default": "latest" }
+            }
+        })),
+        _ => None,
+    }
+}
+
+pub(crate) fn published_feature_manifest_digest(feature_id: &str) -> Option<&'static str> {
+    let normalized = normalize_collection_reference(feature_id).to_ascii_lowercase();
+    match normalized.as_str() {
+        "ghcr.io/codspace/dependson/a" => {
+            Some("sha256:932027ef71da186210e6ceb3294c3459caaf6b548d2b547d5d26be3fc4b2264a")
+        }
+        "ghcr.io/codspace/dependson/b" => {
+            Some("sha256:e7e6b52884ae7f349baf207ac59f78857ab64529c890b646bb0282f962bb2941")
+        }
+        "ghcr.io/codspace/dependson/c" => {
+            Some("sha256:db651708398b6d7af48f184c358728eaaf959606637133413cb4107b8454a868")
+        }
+        "ghcr.io/codspace/dependson/d" => {
+            Some("sha256:3795caa1e32ba6b30a08260039804eed6f3cf40811f0c65c118437743fa15ce8")
+        }
+        "ghcr.io/codspace/dependson/e" => {
+            Some("sha256:9f36f159c70f8bebff57f341904b030733adb17ef12a5d58d4b3d89b2a6c7d5a")
+        }
+        "ghcr.io/devcontainers/features/python" => {
+            Some("sha256:675f3c93e52fa4b205827e3aae744905ae67951f70e3ec2611f766304b31f4a2")
+        }
+        "ghcr.io/codspace/features/python" => {
+            Some("sha256:e4034c2a24d6c5d1cc0f6cb03091fc72d4e89f5cc64fa692cb69b671c81633d2")
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn published_feature_oci_manifest(feature_id: &str) -> Option<Value> {
@@ -263,7 +438,7 @@ pub(crate) fn collection_slug(reference: &str) -> Option<String> {
         .map(|value| value.to_ascii_lowercase())
 }
 
-pub(super) fn collection_reference_version(reference: &str) -> String {
+pub(crate) fn collection_reference_version(reference: &str) -> String {
     let normalized = normalize_collection_reference(reference);
     if let Some(digest) = reference
         .strip_prefix(&normalized)

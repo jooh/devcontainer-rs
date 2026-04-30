@@ -287,6 +287,112 @@ fn lifecycle_commands_receive_secrets_from_file() {
 }
 
 #[test]
+fn up_configuration_orders_feature_lifecycle_hooks_before_devcontainer_hooks() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    let feature_dir = workspace.join(".devcontainer").join("feature-hook");
+    fs::create_dir_all(&feature_dir).expect("feature dir");
+    fs::write(
+        feature_dir.join("devcontainer-feature.json"),
+        "{\n  \"id\": \"feature-hook\",\n  \"version\": \"1.0.0\",\n  \"postCreateCommand\": \"echo feature-post-create\"\n}\n",
+    )
+    .expect("feature manifest");
+    fs::write(feature_dir.join("install.sh"), "#!/bin/sh\nset -eu\n").expect("install script");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"alpine:3.20\",\n  \"features\": { \"./feature-hook\": {} },\n  \"postCreateCommand\": \"echo config-post-create\"\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--include-configuration",
+        ],
+        &[("FAKE_PODMAN_PS_DISABLE_DEFAULT", "1")],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let payload = harness.parse_stdout_json(&output);
+    let commands = payload["configuration"]["postCreateCommand"]
+        .as_object()
+        .expect("postCreateCommand object")
+        .values()
+        .map(|value| value.as_str().expect("postCreateCommand string"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        commands,
+        vec!["echo feature-post-create", "echo config-post-create"]
+    );
+}
+
+#[test]
+fn run_user_commands_runs_feature_lifecycle_hooks_with_secrets() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    let feature_dir = workspace.join(".devcontainer").join("secret-hook");
+    let secrets_path = harness.root.join("secrets.json");
+    fs::create_dir_all(&feature_dir).expect("feature dir");
+    fs::write(
+        feature_dir.join("devcontainer-feature.json"),
+        "{\n  \"id\": \"secret-hook\",\n  \"version\": \"1.0.0\",\n  \"postCreateCommand\": \"printf %s \\\"$SECRET_TOKEN\\\" > /workspaces/workspace/feature-secret.txt\"\n}\n",
+    )
+    .expect("feature manifest");
+    fs::write(feature_dir.join("install.sh"), "#!/bin/sh\nset -eu\n").expect("install script");
+    fs::write(
+        &secrets_path,
+        "{\n  \"SECRET_TOKEN\": \"from-feature-secret\"\n}\n",
+    )
+    .expect("secrets");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"alpine:3.20\",\n  \"features\": { \"./secret-hook\": {} }\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let up_output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--skip-post-create",
+        ],
+        &[("FAKE_PODMAN_PS_DISABLE_DEFAULT", "1")],
+    );
+    assert!(up_output.status.success(), "{up_output:?}");
+
+    let run_user_commands_output = harness.run(
+        &[
+            "run-user-commands",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--secrets-file",
+            secrets_path.to_string_lossy().as_ref(),
+        ],
+        &[("FAKE_PODMAN_PS_OUTPUT", "fake-container-id")],
+    );
+
+    assert!(
+        run_user_commands_output.status.success(),
+        "{run_user_commands_output:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.join("feature-secret.txt")).expect("feature secret file"),
+        "from-feature-secret"
+    );
+    let invocations = harness.read_invocations();
+    assert!(invocations.contains("-e SECRET_TOKEN=from-feature-secret"));
+}
+
+#[test]
 fn up_lifecycle_commands_receive_derived_home() {
     let harness = RuntimeHarness::new();
     let workspace = harness.workspace();

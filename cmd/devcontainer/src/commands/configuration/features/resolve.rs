@@ -1,12 +1,15 @@
 //! Feature declaration parsing, dependency ordering, and source resolution helpers.
 
-use std::collections::{HashMap, HashSet};
+use std::cmp::Ordering;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
 
 use crate::commands::collections::registry::{
-    collection_slug, normalize_collection_reference, published_feature_manifest,
+    collection_reference_version, collection_slug, direct_tarball_feature_manifest,
+    normalize_collection_reference, published_feature_manifest, published_feature_manifest_digest,
+    published_feature_oci_manifest,
 };
 use crate::commands::common;
 
@@ -14,8 +17,23 @@ use super::control::{ensure_no_disallowed_features, feature_advisories_for_oci_f
 use super::metadata::feature_metadata_entry;
 use super::options::{feature_object, feature_option_values_from_manifest, feature_options};
 use super::types::{
-    FeatureInstallation, FeatureInstallationSource, FeatureSpec, ResolvedFeatureSupport,
+    FeatureInstallation, FeatureInstallationSource, FeatureRequest, FeatureSource, FeatureSpec,
+    ResolvedFeatureSummary, ResolvedFeatureSupport,
 };
+
+#[derive(Clone)]
+struct FeatureNode {
+    spec: FeatureSpec,
+    depends_on: Vec<FeatureDependency>,
+    installs_after: Vec<FeatureDependency>,
+    round_priority: usize,
+}
+
+#[derive(Clone)]
+struct FeatureDependency {
+    request: FeatureRequest,
+    spec: FeatureSpec,
+}
 
 pub(crate) fn resolve_feature_support(
     args: &[String],
@@ -30,20 +48,27 @@ pub(crate) fn resolve_feature_support(
     ensure_no_disallowed_features(args, &declared)?;
 
     let config_root = config_file.parent().unwrap_or(workspace_folder);
-    let ordered_ids = resolve_feature_install_order(&declared, configuration, config_root)?;
+    let root_requests = declared
+        .iter()
+        .map(|(user_feature_id, options)| FeatureRequest {
+            user_feature_id: user_feature_id.clone(),
+            options: options.clone(),
+        })
+        .collect::<Vec<_>>();
+    let graph = build_dependency_graph(root_requests, configuration, config_root)?;
+    let ordered_nodes = compute_feature_install_order(graph)?;
+
     let mut feature_sets = Vec::new();
     let mut advisory_inputs = Vec::new();
     let mut metadata_entries = Vec::new();
     let mut installations = Vec::new();
+    let mut ordered_features = Vec::new();
+    let mut ordered_feature_ids = Vec::new();
 
-    for feature_id in &ordered_ids {
-        let feature_value = declared
-            .get(feature_id)
-            .cloned()
-            .unwrap_or_else(|| Value::Object(Map::new()));
-        let spec = resolve_feature_spec(feature_id, &feature_value, config_root)?;
+    for node in ordered_nodes {
+        let spec = node.spec;
         feature_sets.push(json!({
-            "features": [feature_object(&spec.manifest, &spec.options, &feature_value)],
+            "features": [feature_object(&spec.manifest, &spec.options, &spec.value)],
             "internalVersion": "2",
             "sourceInformation": spec.source_information,
         }));
@@ -54,17 +79,19 @@ pub(crate) fn resolve_feature_support(
         {
             metadata_entries.push(spec.metadata_entry);
         }
-        if matches!(
-            &spec.installation.source,
-            FeatureInstallationSource::Published(_)
-        ) {
+        if matches!(spec.source, FeatureSource::Oci { .. }) {
             if let Some(version) = spec.manifest.get("version").and_then(Value::as_str) {
                 advisory_inputs.push((
-                    normalize_collection_reference(feature_id),
+                    normalize_collection_reference(&spec.user_feature_id),
                     version.to_string(),
                 ));
             }
         }
+        ordered_feature_ids.push(spec.user_feature_id.clone());
+        ordered_features.push(ResolvedFeatureSummary {
+            id: spec.install_order_id.clone(),
+            options: spec.value.clone(),
+        });
         installations.push(spec.installation);
     }
     let feature_advisories = feature_advisories_for_oci_features(args, &advisory_inputs)?;
@@ -76,7 +103,8 @@ pub(crate) fn resolve_feature_support(
         feature_advisories,
         metadata_entries,
         installations,
-        ordered_feature_ids: ordered_ids,
+        ordered_features,
+        ordered_feature_ids,
     }))
 }
 
@@ -98,94 +126,309 @@ fn declared_features(args: &[String], configuration: &Value) -> Result<Map<Strin
     Ok(declared)
 }
 
-fn resolve_feature_install_order(
-    declared: &Map<String, Value>,
+fn build_dependency_graph(
+    root_requests: Vec<FeatureRequest>,
     configuration: &Value,
     config_root: &Path,
-) -> Result<Vec<String>, String> {
-    let mut explicit_order = configuration
-        .get("overrideFeatureInstallOrder")
-        .and_then(Value::as_array)
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(Value::as_str)
-                .filter(|entry| declared.contains_key(*entry))
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let remaining = declared
-        .keys()
-        .filter(|key| !explicit_order.contains(*key))
-        .cloned()
-        .collect::<Vec<_>>();
-    explicit_order.extend(remaining);
+) -> Result<Vec<FeatureNode>, String> {
+    let mut worklist = VecDeque::from(root_requests);
+    let mut resolved = Vec::new();
 
-    let mut ordered = Vec::new();
-    let mut visiting = HashSet::new();
-    let mut visited = HashSet::new();
-    let mut cache = HashMap::new();
-    for feature_id in explicit_order {
-        visit_feature(
-            &feature_id,
-            declared,
-            config_root,
-            &mut cache,
-            &mut visiting,
-            &mut visited,
-            &mut ordered,
-        )?;
+    while let Some(request) = worklist.pop_front() {
+        let node = resolve_feature_node(&request, config_root)?;
+        if resolved.iter().any(|existing| nodes_equal(existing, &node)) {
+            continue;
+        }
+        for dependency in &node.depends_on {
+            worklist.push_back(dependency.request.clone());
+        }
+        resolved.push(node);
     }
-    Ok(ordered)
+
+    apply_override_feature_install_order(&mut resolved, configuration, config_root)?;
+    Ok(resolved)
 }
 
-fn visit_feature(
-    feature_id: &str,
-    declared: &Map<String, Value>,
+fn resolve_feature_node(
+    request: &FeatureRequest,
     config_root: &Path,
-    cache: &mut HashMap<String, FeatureSpec>,
-    visiting: &mut HashSet<String>,
-    visited: &mut HashSet<String>,
-    ordered: &mut Vec<String>,
-) -> Result<(), String> {
-    if visited.contains(feature_id) {
-        return Ok(());
-    }
-    if !visiting.insert(feature_id.to_string()) {
-        return Err(format!(
-            "Detected cyclic feature dependency at {feature_id}"
-        ));
-    }
+) -> Result<FeatureNode, String> {
+    let spec = resolve_feature_spec(&request.user_feature_id, &request.options, config_root)?;
+    let depends_on = spec
+        .depends_on
+        .iter()
+        .map(|dependency| resolve_feature_dependency(dependency, config_root))
+        .collect::<Result<Vec<_>, _>>()?;
+    let installs_after = spec
+        .installs_after
+        .iter()
+        .map(|dependency| resolve_feature_dependency(dependency, config_root))
+        .collect::<Result<Vec<_>, _>>()?;
 
-    let spec = if let Some(spec) = cache.get(feature_id) {
-        spec.clone()
-    } else {
-        let value = declared
-            .get(feature_id)
-            .cloned()
-            .unwrap_or_else(|| Value::Object(Map::new()));
-        let spec = resolve_feature_spec(feature_id, &value, config_root)?;
-        cache.insert(feature_id.to_string(), spec.clone());
-        spec
+    Ok(FeatureNode {
+        spec,
+        depends_on,
+        installs_after,
+        round_priority: 0,
+    })
+}
+
+fn resolve_feature_dependency(
+    request: &FeatureRequest,
+    config_root: &Path,
+) -> Result<FeatureDependency, String> {
+    let spec = resolve_feature_spec(&request.user_feature_id, &request.options, config_root)?;
+    Ok(FeatureDependency {
+        request: request.clone(),
+        spec,
+    })
+}
+
+fn apply_override_feature_install_order(
+    worklist: &mut [FeatureNode],
+    configuration: &Value,
+    config_root: &Path,
+) -> Result<(), String> {
+    let Some(overrides) = configuration
+        .get("overrideFeatureInstallOrder")
+        .and_then(Value::as_array)
+    else {
+        return Ok(());
     };
 
-    for dependency in &spec.depends_on {
-        visit_feature(
-            dependency,
-            declared,
-            config_root,
-            cache,
-            visiting,
-            visited,
-            ordered,
-        )?;
+    let override_ids = overrides
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    let override_count = override_ids.len();
+    for (index, override_id) in override_ids.into_iter().enumerate().rev() {
+        let priority = override_count - index;
+        let request = FeatureRequest {
+            user_feature_id: override_id.to_string(),
+            options: json!({}),
+        };
+        let dependency = resolve_feature_dependency(&request, config_root)?;
+        for node in worklist.iter_mut() {
+            if node_satisfies_soft_dependency(node, &dependency) {
+                node.round_priority = node.round_priority.max(priority);
+            }
+        }
     }
 
-    visiting.remove(feature_id);
-    visited.insert(feature_id.to_string());
-    ordered.push(feature_id.to_string());
     Ok(())
+}
+
+fn compute_feature_install_order(
+    mut worklist: Vec<FeatureNode>,
+) -> Result<Vec<FeatureNode>, String> {
+    let snapshot = worklist.clone();
+    for node in &mut worklist {
+        node.installs_after.retain(|dependency| {
+            snapshot
+                .iter()
+                .any(|candidate| node_satisfies_soft_dependency(candidate, dependency))
+        });
+    }
+
+    let mut installation_order = Vec::new();
+    while !worklist.is_empty() {
+        let mut round = worklist
+            .iter()
+            .filter(|node| {
+                node.depends_on.iter().all(|dependency| {
+                    installation_order
+                        .iter()
+                        .any(|installed| node_matches_dependency(installed, dependency))
+                }) && node.installs_after.iter().all(|dependency| {
+                    installation_order
+                        .iter()
+                        .any(|installed| node_satisfies_soft_dependency(installed, dependency))
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if round.is_empty() {
+            return Err(format!(
+                "Circular feature dependency detected: {}",
+                worklist
+                    .iter()
+                    .map(|node| node.spec.user_feature_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+
+        let max_priority = round
+            .iter()
+            .map(|node| node.round_priority)
+            .max()
+            .unwrap_or(0);
+        round.retain(|node| node.round_priority == max_priority);
+        worklist.retain(|node| !round.iter().any(|candidate| nodes_equal(candidate, node)));
+        round.sort_by(compare_nodes);
+        installation_order.extend(round);
+    }
+
+    Ok(installation_order)
+}
+
+fn nodes_equal(left: &FeatureNode, right: &FeatureNode) -> bool {
+    compare_specs(&left.spec, &right.spec) == Ordering::Equal
+}
+
+fn node_matches_dependency(node: &FeatureNode, dependency: &FeatureDependency) -> bool {
+    compare_specs(&node.spec, &dependency.spec) == Ordering::Equal
+}
+
+fn node_satisfies_soft_dependency(node: &FeatureNode, dependency: &FeatureDependency) -> bool {
+    match (&node.spec.source, &dependency.spec.source) {
+        (
+            FeatureSource::Oci { resource, .. },
+            FeatureSource::Oci {
+                resource: dependency_resource,
+                ..
+            },
+        ) => {
+            if resource == dependency_resource {
+                return true;
+            }
+            let Some((prefix, _)) = dependency_resource.rsplit_once('/') else {
+                return false;
+            };
+            dependency
+                .spec
+                .aliases
+                .iter()
+                .any(|alias| format!("{prefix}/{}", alias.to_ascii_lowercase()) == *resource)
+        }
+        (
+            FeatureSource::Local { resolved_path },
+            FeatureSource::Local {
+                resolved_path: dependency_path,
+            },
+        ) => resolved_path == dependency_path,
+        (
+            FeatureSource::DirectTarball { uri },
+            FeatureSource::DirectTarball {
+                uri: dependency_uri,
+            },
+        ) => uri == dependency_uri,
+        (
+            FeatureSource::GithubRepo { id_without_version },
+            FeatureSource::GithubRepo {
+                id_without_version: dependency_id,
+            },
+        ) => id_without_version == dependency_id,
+        _ => false,
+    }
+}
+
+fn compare_nodes(left: &FeatureNode, right: &FeatureNode) -> Ordering {
+    compare_specs(&left.spec, &right.spec)
+}
+
+fn compare_specs(left: &FeatureSpec, right: &FeatureSpec) -> Ordering {
+    let left_type = source_type(&left.source);
+    let right_type = source_type(&right.source);
+    if left_type != right_type {
+        return left
+            .user_feature_id
+            .cmp(&right.user_feature_id)
+            .then_with(|| left_type.cmp(right_type));
+    }
+
+    match (&left.source, &right.source) {
+        (
+            FeatureSource::Oci {
+                resource,
+                tag,
+                digest,
+            },
+            FeatureSource::Oci {
+                resource: right_resource,
+                tag: right_tag,
+                digest: right_digest,
+            },
+        ) => resource
+            .cmp(right_resource)
+            .then_with(|| match (tag, right_tag) {
+                (Some(left), Some(right)) if left != right => left.cmp(right),
+                _ => Ordering::Equal,
+            })
+            .then_with(|| compare_options(&left.value, &right.value))
+            .then_with(|| digest.cmp(right_digest)),
+        (
+            FeatureSource::Local { resolved_path },
+            FeatureSource::Local {
+                resolved_path: right_path,
+            },
+        ) => resolved_path
+            .cmp(right_path)
+            .then_with(|| compare_options(&left.value, &right.value)),
+        (FeatureSource::DirectTarball { uri }, FeatureSource::DirectTarball { uri: right_uri }) => {
+            uri.cmp(right_uri)
+                .then_with(|| compare_options(&left.value, &right.value))
+        }
+        (
+            FeatureSource::GithubRepo { id_without_version },
+            FeatureSource::GithubRepo {
+                id_without_version: right_id,
+            },
+        ) => id_without_version
+            .cmp(right_id)
+            .then_with(|| compare_options(&left.value, &right.value)),
+        _ => Ordering::Equal,
+    }
+}
+
+fn source_type(source: &FeatureSource) -> &'static str {
+    match source {
+        FeatureSource::Local { .. } => "file-path",
+        FeatureSource::Oci { .. } => "oci",
+        FeatureSource::DirectTarball { .. } => "direct-tarball",
+        FeatureSource::GithubRepo { .. } => "github-repo",
+    }
+}
+
+fn compare_options(left: &Value, right: &Value) -> Ordering {
+    match (left, right) {
+        (Value::String(left), Value::String(right)) => left.cmp(right),
+        (Value::Bool(left), Value::Bool(right)) => left.cmp(right),
+        (Value::Object(left), Value::Object(right)) => {
+            left.len().cmp(&right.len()).then_with(|| {
+                left.iter()
+                    .zip(right.iter())
+                    .map(|((left_key, left_value), (right_key, right_value))| {
+                        left_key
+                            .cmp(right_key)
+                            .then_with(|| compare_options(left_value, right_value))
+                    })
+                    .find(|ordering| *ordering != Ordering::Equal)
+                    .unwrap_or(Ordering::Equal)
+            })
+        }
+        (Value::Number(left), Value::Number(right)) => left.to_string().cmp(&right.to_string()),
+        (Value::Null, Value::Null) => Ordering::Equal,
+        (Value::Array(left), Value::Array(right)) => left.len().cmp(&right.len()).then_with(|| {
+            left.iter()
+                .zip(right.iter())
+                .map(|(left_value, right_value)| compare_options(left_value, right_value))
+                .find(|ordering| *ordering != Ordering::Equal)
+                .unwrap_or(Ordering::Equal)
+        }),
+        _ => value_type_name(left).cmp(value_type_name(right)),
+    }
+}
+
+fn value_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 fn resolve_feature_spec(
@@ -193,75 +436,219 @@ fn resolve_feature_spec(
     value: &Value,
     config_root: &Path,
 ) -> Result<FeatureSpec, String> {
-    let (manifest, source_information, installation) = if is_local_feature_reference(feature_id) {
-        let feature_dir = resolve_local_feature_path(config_root, feature_id);
-        let manifest = common::parse_manifest(&feature_dir, "devcontainer-feature.json")?;
-        let source_information = json!({
-            "type": "file-path",
-            "resolvedFilePath": feature_dir.display().to_string(),
-            "userFeatureId": feature_id,
-        });
-        let installation = FeatureInstallation {
-            source: FeatureInstallationSource::Local(feature_dir),
-            env: feature_option_values_from_manifest(&manifest, value),
+    let (manifest, source_information, installation, source, install_order_id) =
+        if is_local_feature_reference(feature_id) {
+            let feature_dir = resolve_local_feature_path(config_root, feature_id);
+            let resolved_path = fs_path_string(&feature_dir);
+            let manifest = common::parse_manifest(&feature_dir, "devcontainer-feature.json")?;
+            let source_information = json!({
+                "type": "file-path",
+                "resolvedFilePath": resolved_path,
+                "userFeatureId": feature_id,
+            });
+            let source = FeatureSource::Local {
+                resolved_path: source_information_string(&source_information, "resolvedFilePath"),
+            };
+            let installation = FeatureInstallation {
+                source: FeatureInstallationSource::Local(feature_dir),
+                env: feature_option_values_from_manifest(&manifest, value),
+            };
+            (
+                manifest,
+                source_information,
+                installation,
+                source,
+                feature_id.to_string(),
+            )
+        } else if is_direct_tarball_reference(feature_id) {
+            let manifest = direct_tarball_feature_manifest(feature_id).unwrap_or_else(|| {
+                generic_feature_manifest(
+                    &collection_slug(feature_id).unwrap_or_else(|| "tarball-feature".to_string()),
+                    collection_reference_version(feature_id),
+                )
+            });
+            let source_information = json!({
+                "type": "direct-tarball",
+                "tarballUri": feature_id,
+                "userFeatureId": feature_id,
+            });
+            let installation = FeatureInstallation {
+                source: FeatureInstallationSource::DirectTarball(feature_id.to_string()),
+                env: feature_option_values_from_manifest(&manifest, value),
+            };
+            (
+                manifest,
+                source_information,
+                installation,
+                FeatureSource::DirectTarball {
+                    uri: feature_id.to_string(),
+                },
+                feature_id.to_string(),
+            )
+        } else if is_github_repo_feature_reference(feature_id) {
+            let id_without_version = github_repo_id_without_version(feature_id);
+            let manifest = published_feature_manifest(feature_id).unwrap_or_else(|| {
+                generic_feature_manifest(
+                    &collection_slug(&id_without_version)
+                        .unwrap_or_else(|| id_without_version.clone()),
+                    collection_reference_version(feature_id),
+                )
+            });
+            let source_information = json!({
+                "type": "github-repo",
+                "userFeatureId": feature_id,
+                "userFeatureIdWithoutVersion": id_without_version,
+            });
+            let source = FeatureSource::GithubRepo {
+                id_without_version: source_information_string(
+                    &source_information,
+                    "userFeatureIdWithoutVersion",
+                ),
+            };
+            let installation = FeatureInstallation {
+                source: FeatureInstallationSource::GithubRepo(feature_id.to_string()),
+                env: feature_option_values_from_manifest(&manifest, value),
+            };
+            (
+                manifest,
+                source_information,
+                installation,
+                source,
+                feature_id.to_string(),
+            )
+        } else {
+            let manifest = published_feature_manifest(feature_id).unwrap_or_else(|| {
+                generic_feature_manifest(
+                    &collection_slug(feature_id).unwrap_or_else(|| feature_id.to_string()),
+                    collection_reference_version(feature_id),
+                )
+            });
+            let resource = oci_resource(feature_id);
+            let tag = oci_reference_tag(feature_id);
+            let digest = published_feature_manifest_digest(feature_id)
+                .map(str::to_string)
+                .unwrap_or_default();
+            let source_information = json!({
+                "type": "oci",
+                "userFeatureId": feature_id,
+                "userFeatureIdWithoutVersion": normalize_collection_reference(feature_id),
+                "featureRef": oci_feature_ref(feature_id, &resource),
+                "manifestDigest": digest.clone(),
+                "manifest": published_feature_oci_manifest(feature_id),
+            });
+            let installation = FeatureInstallation {
+                source: FeatureInstallationSource::Published(feature_id.to_string()),
+                env: feature_option_values_from_manifest(&manifest, value),
+            };
+            let install_order_id = if digest.is_empty() {
+                if feature_id.starts_with("ghcr.io/") {
+                    resource.clone()
+                } else {
+                    feature_id.to_string()
+                }
+            } else {
+                format!("{resource}@{digest}")
+            };
+            (
+                manifest,
+                source_information,
+                installation,
+                FeatureSource::Oci {
+                    resource,
+                    tag,
+                    digest,
+                },
+                install_order_id,
+            )
         };
-        (manifest, source_information, installation)
-    } else {
-        let manifest = published_feature_manifest(feature_id).unwrap_or_else(|| {
-            json!({
-                "id": collection_slug(feature_id).unwrap_or_else(|| feature_id.to_string()),
-                "name": collection_slug(feature_id)
-                    .map(|slug| {
-                        slug.split('-')
-                            .filter(|segment| !segment.is_empty())
-                            .map(|segment| {
-                                let mut chars = segment.chars();
-                                match chars.next() {
-                                    Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
-                                    None => String::new(),
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    })
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or_else(|| feature_id.to_string()),
-                "version": "latest",
-                "options": {}
-            })
-        });
-        let source_information = json!({
-            "type": "oci",
-            "userFeatureId": feature_id,
-            "userFeatureIdWithoutVersion": normalize_collection_reference(feature_id),
-        });
-        let installation = FeatureInstallation {
-            source: FeatureInstallationSource::Published(feature_id.to_string()),
-            env: feature_option_values_from_manifest(&manifest, value),
-        };
-        (manifest, source_information, installation)
-    };
 
     let options = feature_options(&manifest, value);
     let metadata_entry = feature_metadata_entry(&manifest);
-    let depends_on = manifest
-        .get("dependsOn")
-        .and_then(Value::as_object)
-        .map(|entries| entries.keys().cloned().collect())
-        .unwrap_or_default();
+    let aliases = feature_aliases(&manifest);
+    let depends_on = feature_depends_on(&manifest);
+    let installs_after = feature_installs_after(&manifest);
 
     Ok(FeatureSpec {
+        user_feature_id: feature_id.to_string(),
         manifest,
         options,
+        value: value.clone(),
         source_information,
         metadata_entry,
         installation,
+        install_order_id,
+        source,
+        aliases,
         depends_on,
+        installs_after,
     })
+}
+
+fn feature_depends_on(manifest: &Value) -> Vec<FeatureRequest> {
+    manifest
+        .get("dependsOn")
+        .and_then(Value::as_object)
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|(user_feature_id, options)| FeatureRequest {
+                    user_feature_id: user_feature_id.clone(),
+                    options: options.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn feature_installs_after(manifest: &Value) -> Vec<FeatureRequest> {
+    manifest
+        .get("installsAfter")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|user_feature_id| FeatureRequest {
+                    user_feature_id: user_feature_id.to_string(),
+                    options: json!({}),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn feature_aliases(manifest: &Value) -> Vec<String> {
+    let mut aliases = Vec::new();
+    if let Some(current_id) = manifest
+        .get("currentId")
+        .or_else(|| manifest.get("id"))
+        .and_then(Value::as_str)
+    {
+        aliases.push(current_id.to_string());
+    }
+    if let Some(legacy_ids) = manifest.get("legacyIds").and_then(Value::as_array) {
+        aliases.extend(
+            legacy_ids
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string),
+        );
+    }
+    aliases
 }
 
 fn is_local_feature_reference(feature_id: &str) -> bool {
     feature_id.starts_with('.') || feature_id.starts_with('/') || feature_id.starts_with("file://")
+}
+
+fn is_direct_tarball_reference(feature_id: &str) -> bool {
+    feature_id.starts_with("http://") || feature_id.starts_with("https://")
+}
+
+fn is_github_repo_feature_reference(feature_id: &str) -> bool {
+    !feature_id.starts_with("ghcr.io/")
+        && !is_direct_tarball_reference(feature_id)
+        && feature_id.contains('/')
 }
 
 fn resolve_local_feature_path(config_root: &Path, feature_id: &str) -> PathBuf {
@@ -274,4 +661,82 @@ fn resolve_local_feature_path(config_root: &Path, feature_id: &str) -> PathBuf {
     } else {
         config_root.join(path)
     }
+}
+
+fn fs_path_string(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string()
+}
+
+fn source_information_string(source_information: &Value, key: &str) -> String {
+    source_information
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn github_repo_id_without_version(feature_id: &str) -> String {
+    let last_slash = feature_id.rfind('/').unwrap_or(0);
+    feature_id
+        .find('@')
+        .filter(|index| *index > last_slash)
+        .map(|index| feature_id[..index].to_string())
+        .unwrap_or_else(|| feature_id.to_string())
+}
+
+fn oci_resource(feature_id: &str) -> String {
+    if feature_id.starts_with("ghcr.io/") {
+        return normalize_collection_reference(feature_id).to_ascii_lowercase();
+    }
+    format!(
+        "ghcr.io/devcontainers/features/{}",
+        normalize_collection_reference(feature_id).to_ascii_lowercase()
+    )
+}
+
+fn oci_reference_tag(feature_id: &str) -> Option<String> {
+    let normalized = normalize_collection_reference(feature_id);
+    feature_id
+        .strip_prefix(&normalized)
+        .and_then(|suffix| suffix.strip_prefix(':'))
+        .map(str::to_string)
+}
+
+fn oci_feature_ref(feature_id: &str, resource: &str) -> Value {
+    let mut parts = resource.split('/').collect::<Vec<_>>();
+    let id = parts.pop().unwrap_or_default();
+    let registry = parts.first().copied().unwrap_or_default();
+    let namespace = parts.get(1..).unwrap_or_default().join("/");
+    let mut feature_ref = Map::new();
+    feature_ref.insert("resource".to_string(), Value::String(resource.to_string()));
+    feature_ref.insert("registry".to_string(), Value::String(registry.to_string()));
+    feature_ref.insert("namespace".to_string(), Value::String(namespace));
+    feature_ref.insert("id".to_string(), Value::String(id.to_string()));
+    if let Some(tag) = oci_reference_tag(feature_id) {
+        feature_ref.insert("tag".to_string(), Value::String(tag));
+    }
+    Value::Object(feature_ref)
+}
+
+fn generic_feature_manifest(id: &str, version: String) -> Value {
+    json!({
+        "id": id,
+        "name": id
+            .split('-')
+            .filter(|segment| !segment.is_empty())
+            .map(|segment| {
+                let mut chars = segment.chars();
+                match chars.next() {
+                    Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+        "version": version,
+        "options": {}
+    })
 }

@@ -1,16 +1,24 @@
 //! Unit tests for read-configuration behavior.
 
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
 use super::support::unique_temp_dir;
+use crate::commands::common::copy_directory_recursive;
 use crate::commands::common::resolve_read_configuration_path;
 use crate::commands::configuration::merge::merge_configuration;
 use crate::commands::configuration::{
     apply_feature_metadata, build_read_configuration_payload, should_use_native_read_configuration,
 };
 use crate::test_support::write_test_control_manifest;
+
+fn upstream_feature_set_path(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../upstream/src/test/container-features")
+        .join(relative)
+}
 
 #[test]
 fn resolves_modern_config_path_from_workspace_folder() {
@@ -263,6 +271,117 @@ fn read_configuration_resolves_feature_sets_and_feature_metadata() {
         "present"
     );
     assert_eq!(payload["mergedConfiguration"]["init"], true);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn read_configuration_generates_upstream_local_feature_sets() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    fs::create_dir_all(&config_dir).expect("failed to create config directory");
+    copy_directory_recursive(
+        &upstream_feature_set_path("example-v2-features-sets/simple/src/color"),
+        &config_dir.join("color"),
+    )
+    .expect("copy color feature");
+    copy_directory_recursive(
+        &upstream_feature_set_path("example-v2-features-sets/simple/src/hello"),
+        &config_dir.join("hello"),
+    )
+    .expect("copy hello feature");
+    fs::write(
+        config_dir.join("devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"./color\": { \"favorite\": \"gold\" },\n    \"./hello\": { \"greeting\": \"howdy\" }\n  }\n}\n",
+    )
+    .expect("failed to write config");
+
+    let payload = build_read_configuration_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--include-features-configuration".to_string(),
+    ])
+    .expect("payload");
+
+    let feature_sets = payload["featuresConfiguration"]["featureSets"]
+        .as_array()
+        .expect("feature sets");
+    assert_eq!(feature_sets.len(), 2);
+    assert_eq!(feature_sets[0]["features"][0]["id"], "color");
+    assert_eq!(
+        feature_sets[0]["features"][0]["value"],
+        json!({ "favorite": "gold" })
+    );
+    assert_eq!(
+        feature_sets[0]["features"][0]["options"]["favorite"],
+        "gold"
+    );
+    assert_eq!(feature_sets[1]["features"][0]["id"], "hello");
+    assert_eq!(
+        feature_sets[1]["features"][0]["value"],
+        json!({ "greeting": "howdy" })
+    );
+    assert_eq!(
+        feature_sets[1]["features"][0]["options"]["greeting"],
+        "howdy"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn read_configuration_generates_published_feature_customizations() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    fs::create_dir_all(&config_dir).expect("failed to create config directory");
+    fs::write(
+        config_dir.join("devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"node\": { \"version\": \"none\" },\n    \"ghcr.io/devcontainers/features/docker-in-docker:1\": { \"version\": \"latest\" },\n    \"ghcr.io/devcontainers/features/java:1\": { \"version\": \"none\" }\n  }\n}\n",
+    )
+    .expect("failed to write config");
+
+    let payload = build_read_configuration_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--include-features-configuration".to_string(),
+    ])
+    .expect("payload");
+
+    let feature_sets = payload["featuresConfiguration"]["featureSets"]
+        .as_array()
+        .expect("feature sets");
+    assert_eq!(feature_sets.len(), 3);
+    let docker = feature_sets
+        .iter()
+        .find(|set| set["features"][0]["id"] == "docker-in-docker")
+        .expect("docker-in-docker feature");
+    let node = feature_sets
+        .iter()
+        .find(|set| set["features"][0]["id"] == "node")
+        .expect("node feature");
+    let java = feature_sets
+        .iter()
+        .find(|set| set["features"][0]["id"] == "java")
+        .expect("java feature");
+    assert!(
+        docker["features"][0]["customizations"]["vscode"]["extensions"]
+            .as_array()
+            .expect("docker extensions")
+            .contains(&json!("ms-azuretools.vscode-docker"))
+    );
+    assert!(
+        node["features"][0]["customizations"]["vscode"]["extensions"]
+            .as_array()
+            .expect("node extensions")
+            .contains(&json!("dbaeumer.vscode-eslint"))
+    );
+    assert!(
+        java["features"][0]["customizations"]["vscode"]["extensions"]
+            .as_array()
+            .expect("java extensions")
+            .contains(&json!("vscjava.vscode-java-pack"))
+    );
+    assert!(java["features"][0]["customizations"]["vscode"]["settings"].is_object());
+
     let _ = fs::remove_dir_all(root);
 }
 

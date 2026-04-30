@@ -10,33 +10,7 @@ pub(super) fn feature_metadata_entry(manifest: &Value) -> Value {
         return Value::Object(Map::new());
     };
     let mut metadata = Map::new();
-    for key in [
-        "containerEnv",
-        "customizations",
-        "entrypoint",
-        "hostRequirements",
-        "init",
-        "mounts",
-        "overrideCommand",
-        "onCreateCommand",
-        "updateContentCommand",
-        "postCreateCommand",
-        "postStartCommand",
-        "postAttachCommand",
-        "portsAttributes",
-        "otherPortsAttributes",
-        "forwardPorts",
-        "privileged",
-        "capAdd",
-        "securityOpt",
-        "remoteEnv",
-        "remoteUser",
-        "containerUser",
-        "shutdownAction",
-        "updateRemoteUserUID",
-        "userEnvProbe",
-        "waitFor",
-    ] {
+    for key in FEATURE_METADATA_KEYS.iter().copied() {
         if let Some(value) = entries.get(key) {
             metadata.insert(key.to_string(), value.clone());
         }
@@ -49,8 +23,17 @@ pub(crate) fn apply_feature_metadata(
     metadata_entries: &[Value],
     skip_feature_customizations: bool,
 ) -> Value {
-    let mut merged = configuration.as_object().cloned().unwrap_or_default();
-    for metadata in metadata_entries {
+    let config_metadata = feature_metadata_entry(configuration);
+    let mut merged = configuration_without_metadata(configuration);
+    let mut ordered_metadata = metadata_entries.to_vec();
+    if config_metadata
+        .as_object()
+        .is_some_and(|entries| !entries.is_empty())
+    {
+        ordered_metadata.push(config_metadata);
+    }
+
+    for metadata in &ordered_metadata {
         merge_boolean_true(&mut merged, metadata, "init");
         merge_boolean_true(&mut merged, metadata, "privileged");
         merge_unique_array(&mut merged, metadata, "capAdd");
@@ -65,6 +48,7 @@ pub(crate) fn apply_feature_metadata(
         }
         merge_last_value(&mut merged, metadata, "containerUser");
         merge_last_value(&mut merged, metadata, "entrypoint");
+        merge_last_value(&mut merged, metadata, "hostRequirements");
         merge_last_value(&mut merged, metadata, "otherPortsAttributes");
         merge_last_value(&mut merged, metadata, "overrideCommand");
         merge_last_value(&mut merged, metadata, "remoteUser");
@@ -83,6 +67,42 @@ pub(crate) fn apply_feature_metadata(
         }
     }
     Value::Object(merged)
+}
+
+const FEATURE_METADATA_KEYS: &[&str] = &[
+    "containerEnv",
+    "customizations",
+    "entrypoint",
+    "hostRequirements",
+    "init",
+    "mounts",
+    "overrideCommand",
+    "onCreateCommand",
+    "updateContentCommand",
+    "postCreateCommand",
+    "postStartCommand",
+    "postAttachCommand",
+    "portsAttributes",
+    "otherPortsAttributes",
+    "forwardPorts",
+    "privileged",
+    "capAdd",
+    "securityOpt",
+    "remoteEnv",
+    "remoteUser",
+    "containerUser",
+    "shutdownAction",
+    "updateRemoteUserUID",
+    "userEnvProbe",
+    "waitFor",
+];
+
+fn configuration_without_metadata(configuration: &Value) -> Map<String, Value> {
+    let mut merged = configuration.as_object().cloned().unwrap_or_default();
+    for key in FEATURE_METADATA_KEYS.iter().copied() {
+        merged.remove(key);
+    }
+    merged
 }
 
 fn merge_boolean_true(merged: &mut Map<String, Value>, metadata: &Value, key: &str) {
