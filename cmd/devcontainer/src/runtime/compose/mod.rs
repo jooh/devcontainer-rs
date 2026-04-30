@@ -54,12 +54,13 @@ pub(crate) fn load_compose_spec(resolved: &ResolvedConfig) -> Result<Option<Comp
         .to_string();
     let project_name = project::compose_project_name(&files)?;
     let definition = service::inspect_service_definition(&files, &service)?;
+    let has_build = definition.has_build || definition.build.is_some();
 
     Ok(Some(ComposeSpec {
         files,
         service,
         image: definition.image,
-        has_build: definition.has_build,
+        has_build,
         user: definition.user,
         project_name,
     }))
