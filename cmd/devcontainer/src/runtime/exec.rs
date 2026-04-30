@@ -1,10 +1,12 @@
 //! Native runtime exec argument assembly helpers.
 
+use std::collections::HashMap;
 use std::io::IsTerminal;
 
 use serde_json::Value;
 
-use super::context::{combined_remote_env, configured_user};
+use super::context::configured_user;
+use super::user_resolution::combined_remote_env_with_home;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ExecStdio {
@@ -97,6 +99,25 @@ pub(crate) fn exec_engine_args(
     command_args: Vec<String>,
     stdio: ExecStdio,
 ) -> Result<Vec<String>, String> {
+    let remote_env = combined_remote_env_with_home(args, configuration, container_id)?;
+    Ok(exec_engine_args_with_remote_env(
+        configuration,
+        remote_workspace_folder,
+        container_id,
+        command_args,
+        stdio,
+        &remote_env,
+    ))
+}
+
+fn exec_engine_args_with_remote_env(
+    configuration: &Value,
+    remote_workspace_folder: &str,
+    container_id: &str,
+    command_args: Vec<String>,
+    stdio: ExecStdio,
+    remote_env: &HashMap<String, String>,
+) -> Vec<String> {
     let mut engine_args = vec!["exec".to_string()];
     engine_args.push("-i".to_string());
     if stdio.should_allocate_tty() {
@@ -108,20 +129,22 @@ pub(crate) fn exec_engine_args(
         engine_args.push("--user".to_string());
         engine_args.push(user.to_string());
     }
-    for (key, value) in combined_remote_env(args, Some(configuration))? {
+    for (key, value) in remote_env {
         engine_args.push("-e".to_string());
         engine_args.push(format!("{key}={value}"));
     }
     engine_args.push(container_id.to_string());
     engine_args.extend(command_args);
-    Ok(engine_args)
+    engine_args
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use serde_json::json;
 
-    use super::{exec_command_and_args, exec_engine_args, ExecStdio};
+    use super::{exec_command_and_args, exec_engine_args_with_remote_env, ExecStdio};
 
     #[test]
     fn exec_command_and_args_rejects_unknown_options() {
@@ -149,8 +172,7 @@ mod tests {
 
     #[test]
     fn exec_engine_args_include_workdir_user_and_remote_env() {
-        let args = exec_engine_args(
-            &["--remote-env".to_string(), "CLI_ENV=cli".to_string()],
+        let args = exec_engine_args_with_remote_env(
             &json!({
                 "remoteUser": "vscode",
                 "remoteEnv": {
@@ -164,8 +186,11 @@ mod tests {
                 stdin_is_terminal: false,
                 stdout_is_terminal: false,
             },
-        )
-        .expect("engine args");
+            &HashMap::from([
+                ("CONFIG_ENV".to_string(), "config".to_string()),
+                ("CLI_ENV".to_string(), "cli".to_string()),
+            ]),
+        );
 
         assert_eq!(args[0], "exec");
         assert_eq!(args[1], "-i");
@@ -232,15 +257,14 @@ mod tests {
     }
 
     fn minimal_exec_engine_args(stdio: ExecStdio) -> Vec<String> {
-        exec_engine_args(
-            &[],
+        exec_engine_args_with_remote_env(
             &json!({}),
             "/workspace",
             "container-id",
             vec!["/bin/echo".to_string(), "hello".to_string()],
             stdio,
+            &HashMap::new(),
         )
-        .expect("engine args")
     }
 
     #[test]

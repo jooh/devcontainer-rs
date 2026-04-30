@@ -107,9 +107,9 @@ fn up_starts_compose_services_and_exec_uses_compose_container_lookup() {
     assert!(invocations.contains(" up -d"));
     assert!(!invocations.contains(" up -d app"));
     assert!(invocations.contains(" ps -q app"));
-    assert!(invocations.contains(
-        "exec -i --workdir /workspace --user vscode fake-compose-container-id /bin/echo hello-from-compose"
-    ));
+    assert!(invocations.contains("exec -i --workdir /workspace --user vscode"));
+    assert!(invocations.contains("-e HOME=/home/vscode"));
+    assert!(invocations.contains("fake-compose-container-id /bin/echo hello-from-compose"));
 
     let exec_log = harness.read_exec_log();
     assert!(exec_log.contains("/bin/sh -lc echo ready"));
@@ -250,7 +250,9 @@ fn up_re_resolves_recreated_compose_container_ids() {
 
     let invocations = harness.read_invocations();
     assert!(invocations.contains(" ps -q app"));
-    assert!(invocations.contains("exec --workdir /workspace new-compose-id"));
+    assert!(invocations.contains("exec --workdir /workspace"));
+    assert!(invocations.contains("-e HOME=/root"));
+    assert!(invocations.contains("new-compose-id /bin/sh -lc echo recreated-post-create"));
 
     let exec_log = harness.read_exec_log();
     assert!(exec_log.contains("/bin/sh -lc echo recreated-post-create"));
@@ -315,9 +317,9 @@ fn exec_accepts_custom_compose_binary_for_compose_workspaces() {
     let invocations = harness.read_invocations();
     assert!(invocations.contains("compose --project-name workspace_devcontainer -f "));
     assert!(invocations.contains(" ps -q app"));
-    assert!(invocations.contains(
-        "exec -i --workdir /workspace --user vscode fake-compose-container-id /bin/echo hello-from-custom-compose"
-    ));
+    assert!(invocations.contains("exec -i --workdir /workspace --user vscode"));
+    assert!(invocations.contains("-e HOME=/home/vscode"));
+    assert!(invocations.contains("fake-compose-container-id /bin/echo hello-from-custom-compose"));
 }
 
 #[test]

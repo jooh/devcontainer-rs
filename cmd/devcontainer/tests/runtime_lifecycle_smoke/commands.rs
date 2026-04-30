@@ -238,12 +238,10 @@ fn compose_lifecycle_commands_honor_explicit_container_id() {
     );
     let invocations = harness.read_invocations();
     assert!(!invocations.contains("compose --project-name"));
-    assert!(invocations.contains(
-        "exec --workdir /workspace fake-compose-container-id /bin/sh -lc echo post-create"
-    ));
-    assert!(invocations.contains(
-        "exec --workdir /workspace fake-compose-container-id /bin/sh -lc echo post-attach"
-    ));
+    assert!(invocations.contains("exec --workdir /workspace"));
+    assert!(invocations.contains("-e HOME=/root"));
+    assert!(invocations.contains("fake-compose-container-id /bin/sh -lc echo post-create"));
+    assert!(invocations.contains("fake-compose-container-id /bin/sh -lc echo post-attach"));
     let exec_log = harness.read_exec_log();
     assert!(exec_log.contains("/bin/sh -lc echo post-create"));
     assert!(exec_log.contains("/bin/sh -lc echo post-attach"));
@@ -286,6 +284,73 @@ fn lifecycle_commands_receive_secrets_from_file() {
     );
     let invocations = harness.read_invocations();
     assert!(invocations.contains("-e SECRET_TOKEN=from-secret-file"));
+}
+
+#[test]
+fn up_lifecycle_commands_receive_derived_home() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"alpine:3.20\",\n  \"remoteUser\": \"vscode\",\n  \"postCreateCommand\": \"printf %s \\\"$HOME\\\" > /workspaces/workspace/home.txt\"\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+        ],
+        &[("FAKE_PODMAN_PS_DISABLE_DEFAULT", "1")],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(workspace.join("home.txt")).expect("home file"),
+        "/home/vscode"
+    );
+    let invocations = harness.read_invocations();
+    assert!(invocations.contains("-e HOME=/home/vscode"));
+}
+
+#[test]
+fn up_lifecycle_commands_derive_home_from_container_user_when_devcontainer_user_is_unset() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"alpine:3.20\",\n  \"postCreateCommand\": \"printf %s \\\"$HOME\\\" > /workspaces/workspace/home.txt\"\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+        ],
+        &[
+            ("FAKE_PODMAN_PS_DISABLE_DEFAULT", "1"),
+            ("FAKE_PODMAN_CONTAINER_USER", "vscode"),
+            ("FAKE_PODMAN_CONTAINER_HOME", "/root"),
+        ],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(workspace.join("home.txt")).expect("home file"),
+        "/home/vscode"
+    );
+    let invocations = harness.read_invocations();
+    assert!(invocations.contains("exec --workdir /workspaces/workspace -e HOME=/home/vscode"));
+    assert!(!invocations.contains("--user vscode"));
 }
 
 #[test]
@@ -342,10 +407,10 @@ fn object_lifecycle_commands_are_executed() {
 
     assert!(output.status.success(), "{output:?}");
     let invocations = harness.read_invocations();
-    assert!(invocations
-        .contains("exec --workdir /workspaces/workspace fake-container-id /bin/sh -lc echo first"));
-    assert!(invocations
-        .contains("exec --workdir /workspaces/workspace fake-container-id printf %s second value"));
+    assert!(invocations.contains("exec --workdir /workspaces/workspace"));
+    assert!(invocations.contains("-e HOME=/root"));
+    assert!(invocations.contains("fake-container-id /bin/sh -lc echo first"));
+    assert!(invocations.contains("fake-container-id printf %s second value"));
 }
 
 #[test]

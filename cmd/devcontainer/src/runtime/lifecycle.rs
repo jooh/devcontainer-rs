@@ -14,7 +14,7 @@ use crate::process_runner::{self, ProcessRequest};
 use requests::{host_lifecycle_request, lifecycle_exec_args};
 use selection::{lifecycle_command_value, selected_lifecycle_steps};
 
-use super::engine;
+use super::{engine, user_resolution};
 
 #[derive(Clone, Copy)]
 pub(crate) enum LifecycleMode {
@@ -42,18 +42,25 @@ pub(crate) fn run_lifecycle_commands(
     remote_workspace_folder: &str,
     mode: LifecycleMode,
 ) -> Result<(), String> {
-    for step in selected_lifecycle_steps(configuration, args, mode) {
+    let steps = selected_lifecycle_steps(configuration, args, mode);
+    if steps.is_empty() {
+        return Ok(());
+    }
+    let remote_env =
+        user_resolution::combined_remote_env_with_home(args, configuration, container_id)?;
+
+    for step in steps {
         match step {
             LifecycleStep::CommandGroup(command_group) => {
                 run_process_group(command_group, |command| {
-                    lifecycle_exec_args(
-                        args,
+                    let engine_args = lifecycle_exec_args(
                         configuration,
+                        &remote_env,
                         remote_workspace_folder,
                         container_id,
                         command,
-                    )
-                    .map(|engine_args| engine::engine_request(args, engine_args))
+                    );
+                    Ok(engine::engine_request(args, engine_args))
                 })?;
             }
             LifecycleStep::InstallDotfiles => {
@@ -61,14 +68,14 @@ pub(crate) fn run_lifecycle_commands(
                     continue;
                 };
                 run_process_group(vec![LifecycleCommand::Shell(command)], |command| {
-                    lifecycle_exec_args(
-                        args,
+                    let engine_args = lifecycle_exec_args(
                         configuration,
+                        &remote_env,
                         remote_workspace_folder,
                         container_id,
                         command,
-                    )
-                    .map(|engine_args| engine::engine_request(args, engine_args))
+                    );
+                    Ok(engine::engine_request(args, engine_args))
                 })?;
             }
         }
@@ -155,6 +162,8 @@ fn run_process_group(
 #[cfg(test)]
 mod tests {
     //! Unit tests for lifecycle helper behavior.
+
+    use std::collections::HashMap;
 
     use serde_json::json;
 
@@ -248,13 +257,12 @@ mod tests {
     #[test]
     fn lifecycle_exec_args_use_absolute_shell_path() {
         let args = lifecycle_exec_args(
-            &[],
             &json!({}),
+            &HashMap::new(),
             "/workspaces/sample",
             "container-id",
             LifecycleCommand::Shell("echo hello".to_string()),
-        )
-        .expect("lifecycle exec args");
+        );
 
         assert!(
             args.contains(&"/bin/sh".to_string()),

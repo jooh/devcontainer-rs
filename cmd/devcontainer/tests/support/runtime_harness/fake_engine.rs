@@ -276,6 +276,27 @@ ${2:-}"
     json_escape() {
       printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
     }
+    env_json=""
+    append_env_json() {
+      escaped_env="$(json_escape "$1")"
+      if [ -n "$env_json" ]; then
+        env_json="$env_json,"
+      fi
+      env_json="$env_json\"$escaped_env\""
+    }
+    if [ "${FAKE_PODMAN_CONTAINER_HOME+x}" ]; then
+      append_env_json "HOME=${FAKE_PODMAN_CONTAINER_HOME}"
+    fi
+    if [ -n "${FAKE_PODMAN_CONTAINER_ENV:-}" ]; then
+      old_ifs="${IFS- }"
+      IFS='
+'
+      for env_entry in $FAKE_PODMAN_CONTAINER_ENV; do
+        [ -n "$env_entry" ] || continue
+        append_env_json "$env_entry"
+      done
+      IFS="$old_ifs"
+    fi
     labels_json=""
     if [ -f "$LOG_DIR/last-run-labels" ]; then
       while IFS= read -r label; do
@@ -331,7 +352,9 @@ ${2:-}"
         mounts_json="$mounts_json{\"Source\":\"$escaped_source\",\"Destination\":\"$escaped_destination\"}"
       done < "$LOG_DIR/last-run-mounts"
     fi
-    printf '[{"Config":{"Labels":{%s}},"Mounts":[%s]}]' "$labels_json" "$mounts_json"
+    container_user="${FAKE_PODMAN_CONTAINER_USER:-}"
+    escaped_container_user="$(json_escape "$container_user")"
+    printf '[{"Config":{"Labels":{%s},"Env":[%s],"User":"%s"},"Mounts":[%s]}]' "$labels_json" "$env_json" "$escaped_container_user" "$mounts_json"
     exit 0
     ;;
   start)
@@ -400,6 +423,55 @@ ${2:-}"
     elif { [ "${1:-}" = "/bin/bash" ] || [ "${1:-}" = "/bin/sh" ]; } && [ "${2:-}" = "-lc" ]; then
       shell_program="${1:-}"
       command_text="${3:-}"
+      if printf '%s' "$command_text" | grep -Fq "getent passwd "; then
+        lookup="$(printf '%s' "$command_text" | sed -n "s/.*getent passwd '\([^']*\)'.*/\1/p")"
+        lookup="$(printf '%s' "$lookup" | sed "s/\\\\'/'/g; s/\\\\\\\\/\\\\/g")"
+        passwd_db="${FAKE_PODMAN_PASSWD_DB:-root:x:0:0:root:/root:/bin/sh
+vscode:x:1000:1000::/home/vscode:/bin/bash}"
+        old_ifs="${IFS- }"
+        IFS='
+'
+        for passwd_row in $passwd_db; do
+          [ -n "$passwd_row" ] || continue
+          IFS=':'
+          set -- $passwd_row
+          IFS='
+'
+          if [ "${1:-}" = "$lookup" ] || [ "${3:-}" = "$lookup" ]; then
+            IFS="$old_ifs"
+            printf '%s\n' "$passwd_row"
+            exit 0
+          fi
+        done
+        IFS="$old_ifs"
+        exit 0
+      fi
+      check_home="$(printf '%s' "$command_text" | sed -n "s/^\[ ! -e '\([^']*\)' \] || \[ -w '\([^']*\)' \]$/\1/p")"
+      if [ -n "$check_home" ]; then
+        home_exists=0
+        home_writable=0
+        existing_homes="${FAKE_PODMAN_EXISTING_HOMES:-/root
+/home/vscode}"
+        writable_homes="${FAKE_PODMAN_WRITABLE_HOMES:-/home/vscode}"
+        old_ifs="${IFS- }"
+        IFS='
+'
+        for existing_home in $existing_homes; do
+          if [ "$existing_home" = "$check_home" ]; then
+            home_exists=1
+          fi
+        done
+        for writable_home in $writable_homes; do
+          if [ "$writable_home" = "$check_home" ]; then
+            home_writable=1
+          fi
+        done
+        IFS="$old_ifs"
+        if [ "$home_exists" -eq 0 ] || [ "$home_writable" -eq 1 ]; then
+          exit 0
+        fi
+        exit 1
+      fi
       host_cwd=""
       if [ -f "$LOG_DIR/last-run-mounts" ]; then
         while IFS= read -r mount; do
