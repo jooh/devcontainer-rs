@@ -234,9 +234,11 @@
 		},
 		{
 			"upstreamTest": "upstream/src/test/dockerUtils.test.ts",
-			"status": "missing",
-			"nativeTests": [],
-			"notes": "No direct native equivalent for upstream docker utility unit tests is tracked yet."
+			"status": "partial",
+			"nativeTests": [
+				"cmd/devcontainer/src/runtime/container/engine_run.rs"
+			],
+			"notes": "Native coverage now exercises concurrent container removal retries; registry image inspection and Docker image-name qualification remain uncovered."
 		},
 		{
 			"upstreamTest": "upstream/src/test/dockerfileUtils.test.ts",
@@ -303,9 +305,11 @@
 		},
 		{
 			"upstreamTest": "upstream/src/test/utils.test.ts",
-			"status": "missing",
-			"nativeTests": [],
-			"notes": "No single native utility suite maps to upstream spec utility coverage."
+			"status": "covered",
+			"nativeTests": [
+				"cmd/devcontainer/src/runtime/build.rs"
+			],
+			"notes": "Native build utility coverage matches upstream buildx inline cache detection cases and verifies build argument selection."
 		},
 		{
 			"upstreamTest": "upstream/src/test/variableSubstitution.test.ts",
