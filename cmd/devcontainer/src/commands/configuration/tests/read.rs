@@ -489,7 +489,7 @@ fn merged_configuration_merges_host_requirements_field_by_field() {
 }
 
 #[test]
-fn feature_metadata_mounts_replace_existing_mounts_with_the_same_target() {
+fn devcontainer_mounts_replace_feature_mounts_with_the_same_target() {
     let merged = apply_feature_metadata(
         &json!({
             "image": "debian:bookworm",
@@ -511,8 +511,8 @@ fn feature_metadata_mounts_replace_existing_mounts_with_the_same_target() {
     assert_eq!(
         merged["mounts"],
         json!([{
-            "type": "volume",
-            "source": "feature-cache",
+            "type": "bind",
+            "source": "/workspace/from-config",
             "target": "/workspace/cache"
         }])
     );

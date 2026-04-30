@@ -112,7 +112,7 @@ pub(crate) fn published_feature_manifest(feature_id: &str) -> Option<Value> {
             "version": "1.0.9",
             "options": {}
         })),
-        "node" | "ghcr.io/devcontainers/features/node" => Some(json!({
+        "node" => Some(json!({
             "id": "node",
             "name": "Node.js",
             "version": "1.6.3",
