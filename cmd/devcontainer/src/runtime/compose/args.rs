@@ -2,27 +2,9 @@
 
 use std::path::PathBuf;
 
-use crate::commands::common;
-
 use super::ComposeSpec;
 
-pub(super) fn compose_args(spec: &ComposeSpec, subcommand: &str, tail: &[&str]) -> Vec<String> {
-    compose_args_with_override(spec, subcommand, tail, None)
-}
-
-pub(super) fn compose_args_with_override(
-    spec: &ComposeSpec,
-    subcommand: &str,
-    tail: &[&str],
-    override_file: Option<&PathBuf>,
-) -> Vec<String> {
-    compose_args_owned(
-        spec,
-        subcommand,
-        override_file,
-        tail.iter().map(|value| value.to_string()).collect(),
-    )
-}
+use crate::commands::common;
 
 pub(super) fn compose_args_owned(
     spec: &ComposeSpec,

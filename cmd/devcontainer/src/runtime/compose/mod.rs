@@ -15,6 +15,9 @@ use crate::commands::configuration;
 use super::context::ResolvedConfig;
 use super::engine;
 
+const COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
+const COMPOSE_SERVICE_LABEL: &str = "com.docker.compose.service";
+
 pub(crate) struct ComposeSpec {
     pub(crate) files: Vec<PathBuf>,
     pub(crate) service: String,
@@ -182,19 +185,6 @@ pub(crate) fn up_service(
     Ok(())
 }
 
-pub(crate) fn remove_service(resolved: &ResolvedConfig, args: &[String]) -> Result<(), String> {
-    let spec = load_compose_spec(resolved)?
-        .ok_or_else(|| "Compose configuration was expected but not found".to_string())?;
-    let result = engine::run_compose(
-        args,
-        args::compose_args(&spec, "rm", &["-s", "-f", &spec.service]),
-    )?;
-    if result.status_code != 0 {
-        return Err(engine::stderr_or_stdout(&result));
-    }
-    Ok(())
-}
-
 pub(crate) fn resolve_container_id(
     resolved: &ResolvedConfig,
     args: &[String],
@@ -216,12 +206,19 @@ fn resolve_container_id_with_options(
 ) -> Result<Option<String>, String> {
     let spec = load_compose_spec(resolved)?
         .ok_or_else(|| "Compose configuration was expected but not found".to_string())?;
-    let mut ps_args = vec!["-q"];
+    let mut ps_args = vec!["ps".to_string(), "-q".to_string()];
     if include_stopped {
-        ps_args.push("-a");
+        ps_args.push("-a".to_string());
     }
-    ps_args.push(&spec.service);
-    let result = engine::run_compose(args, args::compose_args(&spec, "ps", &ps_args))?;
+    ps_args.push("--filter".to_string());
+    ps_args.push(format!(
+        "label={COMPOSE_PROJECT_LABEL}={}",
+        spec.project_name
+    ));
+    ps_args.push("--filter".to_string());
+    ps_args.push(format!("label={COMPOSE_SERVICE_LABEL}={}", spec.service));
+
+    let result = engine::run_engine(args, ps_args)?;
     if result.status_code != 0 {
         return Err(engine::stderr_or_stdout(&result));
     }

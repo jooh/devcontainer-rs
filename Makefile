@@ -4,6 +4,9 @@
 	rust-check \
 	rust-tests \
 	build-release \
+	real-engine-lifecycle-smoke \
+	real-engine-lifecycle-smoke-docker \
+	real-engine-lifecycle-smoke-podman \
 	standalone-artifact-smoke \
 	pypi-wheel-smoke \
 	native-only-startup-contract \
@@ -43,6 +46,14 @@ rust-tests:
 
 build-release:
 	cargo build --release --manifest-path $(RUST_MANIFEST)
+
+real-engine-lifecycle-smoke: real-engine-lifecycle-smoke-docker real-engine-lifecycle-smoke-podman
+
+real-engine-lifecycle-smoke-docker: build-release
+	./scripts/standalone/real-engine-smoke.sh $(RELEASE_BINARY)
+
+real-engine-lifecycle-smoke-podman: build-release
+	./scripts/standalone/real-engine-smoke.sh $(RELEASE_BINARY) --docker-path podman --docker-compose-path podman-compose
 
 standalone-artifact-smoke: build-release
 	./scripts/standalone/smoke.sh $(RELEASE_BINARY)

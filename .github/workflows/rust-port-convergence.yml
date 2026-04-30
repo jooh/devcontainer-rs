@@ -92,6 +92,14 @@ jobs:
   real-engine-lifecycle-smoke:
     name: Real Engine Lifecycle Smoke
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: docker
+            smoke_target: real-engine-lifecycle-smoke-docker
+          - runner: podman
+            smoke_target: real-engine-lifecycle-smoke-podman
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -101,14 +109,24 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build release binary
-        run: cargo build --release --manifest-path cmd/devcontainer/Cargo.toml
+      - name: Install Podman Compose
+        if: matrix.runner == 'podman'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman podman-compose
 
-      - name: Docker version
-        run: docker version
+      - name: Runtime version
+        run: |
+          if [[ "${{ matrix.runner }}" == "podman" ]]; then
+            podman version
+            podman-compose version
+          else
+            docker version
+            docker compose version
+          fi
 
       - name: Real engine lifecycle smoke
-        run: ./scripts/standalone/real-engine-smoke.sh ./cmd/devcontainer/target/release/devcontainer
+        run: make ${{ matrix.smoke_target }}
 
   upstream-convergence:
     name: Upstream Convergence Baseline

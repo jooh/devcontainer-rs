@@ -90,7 +90,7 @@ fn ensure_compose_up_container(
     let remove_existing = common::has_flag(args, "--remove-existing-container");
     if let Some(container_id) = compose::resolve_container_id(resolved, args)? {
         if remove_existing {
-            compose::remove_service(resolved, args)?;
+            remove_container(args, &container_id)?;
             return create_compose_container(resolved, args, image_name, remote_workspace_folder);
         }
         return refresh_compose_container(
@@ -105,7 +105,7 @@ fn ensure_compose_up_container(
 
     if let Some(container_id) = compose::resolve_container_id_including_stopped(resolved, args)? {
         if remove_existing {
-            compose::remove_service(resolved, args)?;
+            remove_container(args, &container_id)?;
             return create_compose_container(resolved, args, image_name, remote_workspace_folder);
         }
         return refresh_compose_container(
