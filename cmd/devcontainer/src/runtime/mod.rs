@@ -7,6 +7,7 @@ pub(crate) mod context;
 mod dockerfile;
 pub(crate) mod engine;
 mod exec;
+mod image;
 mod lifecycle;
 pub(crate) mod metadata;
 pub(crate) mod mounts;
