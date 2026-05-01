@@ -525,8 +525,8 @@ fn resolve_feature_spec(
             });
             let resource = oci_resource(feature_id);
             let tag = oci_reference_tag(feature_id);
-            let digest = published_feature_manifest_digest(feature_id)
-                .map(str::to_string)
+            let digest = oci_reference_digest(feature_id)
+                .or_else(|| published_feature_manifest_digest(feature_id).map(str::to_string))
                 .unwrap_or_default();
             let source_information = json!({
                 "type": "oci",
@@ -646,9 +646,17 @@ fn is_direct_tarball_reference(feature_id: &str) -> bool {
 }
 
 fn is_github_repo_feature_reference(feature_id: &str) -> bool {
-    !feature_id.starts_with("ghcr.io/")
+    !is_registry_qualified_oci_reference(feature_id)
         && !is_direct_tarball_reference(feature_id)
         && feature_id.contains('/')
+}
+
+fn is_registry_qualified_oci_reference(feature_id: &str) -> bool {
+    let normalized = normalize_collection_reference(feature_id);
+    let Some((registry, _)) = normalized.split_once('/') else {
+        return false;
+    };
+    registry.contains('.') || registry.contains(':') || registry == "localhost"
 }
 
 fn resolve_local_feature_path(config_root: &Path, feature_id: &str) -> PathBuf {
@@ -688,13 +696,11 @@ fn github_repo_id_without_version(feature_id: &str) -> String {
 }
 
 fn oci_resource(feature_id: &str) -> String {
-    if feature_id.starts_with("ghcr.io/") {
-        return normalize_collection_reference(feature_id).to_ascii_lowercase();
+    let normalized = normalize_collection_reference(feature_id).to_ascii_lowercase();
+    if is_registry_qualified_oci_reference(feature_id) {
+        return normalized;
     }
-    format!(
-        "ghcr.io/devcontainers/features/{}",
-        normalize_collection_reference(feature_id).to_ascii_lowercase()
-    )
+    format!("ghcr.io/devcontainers/features/{}", normalized)
 }
 
 fn oci_reference_tag(feature_id: &str) -> Option<String> {
@@ -702,6 +708,14 @@ fn oci_reference_tag(feature_id: &str) -> Option<String> {
     feature_id
         .strip_prefix(&normalized)
         .and_then(|suffix| suffix.strip_prefix(':'))
+        .map(str::to_string)
+}
+
+fn oci_reference_digest(feature_id: &str) -> Option<String> {
+    let normalized = normalize_collection_reference(feature_id);
+    feature_id
+        .strip_prefix(&normalized)
+        .and_then(|suffix| suffix.strip_prefix('@'))
         .map(str::to_string)
 }
 

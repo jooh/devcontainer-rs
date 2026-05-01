@@ -174,7 +174,7 @@ fn build_skips_feature_customizations_in_output_configuration_when_requested() {
     fs::write(feature_dir.join("install.sh"), "#!/bin/sh\nset -eu\n").expect("install script");
     write_devcontainer_config(
         &workspace,
-        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"./local-feature\": {}\n  }\n}\n",
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"./local-feature\": {}\n  },\n  \"customizations\": {\n    \"vscode\": {\n      \"extensions\": [\"user.extension\"]\n    }\n  }\n}\n",
     );
 
     let fake_podman = harness.fake_podman.to_string_lossy().to_string();
@@ -192,7 +192,14 @@ fn build_skips_feature_customizations_in_output_configuration_when_requested() {
 
     assert!(output.status.success(), "{output:?}");
     let payload = harness.parse_stdout_json(&output);
-    assert!(payload["configuration"].get("customizations").is_none());
+    assert_eq!(
+        payload["configuration"]["customizations"],
+        serde_json::json!({
+            "vscode": {
+                "extensions": ["user.extension"]
+            }
+        })
+    );
 }
 
 #[test]

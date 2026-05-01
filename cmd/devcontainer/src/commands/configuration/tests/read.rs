@@ -10,7 +10,8 @@ use crate::commands::common::copy_directory_recursive;
 use crate::commands::common::resolve_read_configuration_path;
 use crate::commands::configuration::merge::merge_configuration;
 use crate::commands::configuration::{
-    apply_feature_metadata, build_read_configuration_payload, should_use_native_read_configuration,
+    apply_feature_metadata, apply_feature_metadata_with_options, build_read_configuration_payload,
+    should_use_native_read_configuration,
 };
 use crate::test_support::write_test_control_manifest;
 
@@ -453,6 +454,76 @@ fn read_configuration_reports_feature_advisories_for_published_features() {
 }
 
 #[test]
+fn read_configuration_keeps_registry_qualified_oci_features_on_oci_source_path() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    fs::create_dir_all(&config_dir).expect("failed to create config directory");
+    fs::write(
+        config_dir.join("devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"registry.example.com/org/features/foo:1\": {}\n  }\n}\n",
+    )
+    .expect("failed to write config");
+
+    let payload = build_read_configuration_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--include-features-configuration".to_string(),
+    ])
+    .expect("payload");
+
+    let feature_sets = payload["featuresConfiguration"]["featureSets"]
+        .as_array()
+        .expect("feature sets");
+    let source_information = &feature_sets[0]["sourceInformation"];
+    assert_eq!(source_information["type"], "oci");
+    assert_eq!(
+        source_information["featureRef"]["resource"],
+        "registry.example.com/org/features/foo"
+    );
+    assert_eq!(
+        source_information["featureRef"]["registry"],
+        "registry.example.com"
+    );
+    assert_eq!(
+        source_information["featureRef"]["namespace"],
+        "org/features"
+    );
+    assert_eq!(source_information["featureRef"]["id"], "foo");
+    assert_eq!(source_information["featureRef"]["tag"], "1");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn read_configuration_preserves_digest_from_user_pinned_oci_feature() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    fs::create_dir_all(&config_dir).expect("failed to create config directory");
+    fs::write(
+        config_dir.join("devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/acme/features/foo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\": {}\n  }\n}\n",
+    )
+    .expect("failed to write config");
+
+    let payload = build_read_configuration_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--include-features-configuration".to_string(),
+    ])
+    .expect("payload");
+
+    let feature_sets = payload["featuresConfiguration"]["featureSets"]
+        .as_array()
+        .expect("feature sets");
+    assert_eq!(
+        feature_sets[0]["sourceInformation"]["manifestDigest"],
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn merged_configuration_normalizes_forward_ports_before_deduplication() {
     let merged = merge_configuration(
         &json!({ "image": "debian:bookworm" }),
@@ -515,5 +586,42 @@ fn devcontainer_mounts_replace_feature_mounts_with_the_same_target() {
             "source": "/workspace/from-config",
             "target": "/workspace/cache"
         }])
+    );
+}
+
+#[test]
+fn feature_metadata_skip_feature_customizations_preserves_config_customizations() {
+    let merged = apply_feature_metadata_with_options(
+        &json!({
+            "image": "debian:bookworm",
+            "customizations": {
+                "vscode": {
+                    "extensions": ["user.extension"],
+                    "settings": {
+                        "editor.tabSize": 2
+                    }
+                }
+            }
+        }),
+        &[json!({
+            "customizations": {
+                "vscode": {
+                    "extensions": ["feature.extension"]
+                }
+            }
+        })],
+        true,
+    );
+
+    assert_eq!(
+        merged["customizations"],
+        json!({
+            "vscode": {
+                "extensions": ["user.extension"],
+                "settings": {
+                    "editor.tabSize": 2
+                }
+            }
+        })
     );
 }

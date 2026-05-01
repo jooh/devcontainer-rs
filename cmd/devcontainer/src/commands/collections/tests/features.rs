@@ -210,6 +210,36 @@ fn feature_dependency_resolution_rejects_disallowed_features() {
 }
 
 #[test]
+fn feature_dependency_resolution_preserves_digest_pinned_oci_install_order() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    fs::create_dir_all(&config_dir).expect("failed to create config directory");
+    fs::write(
+        config_dir.join("devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/acme/features/foo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\": {}\n  }\n}\n",
+    )
+    .expect("failed to write config");
+
+    let payload = build_features_resolve_dependencies_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+    ])
+    .expect("payload");
+
+    let actual = install_order_id_options(&payload);
+    assert_eq!(
+        actual,
+        vec![(
+            "ghcr.io/acme/features/foo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            serde_json::json!({})
+        )]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn feature_info_reads_manifest_metadata() {
     let root = unique_temp_dir();
     fs::create_dir_all(&root).expect("failed to create feature root");
