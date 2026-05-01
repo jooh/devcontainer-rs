@@ -23,18 +23,31 @@ pub(super) fn build_features_resolve_dependencies_payload(
         &configuration,
     )?
     .map(|resolved| {
-        resolved
+        let resolved_features = resolved
             .ordered_feature_ids
-            .into_iter()
+            .iter()
+            .cloned()
             .map(Value::String)
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        let install_order = resolved
+            .ordered_features
+            .into_iter()
+            .map(|feature| {
+                json!({
+                    "id": feature.id,
+                    "options": feature.options,
+                })
+            })
+            .collect::<Vec<_>>();
+        (resolved_features, install_order)
     })
     .unwrap_or_default();
 
     Ok(json!({
         "outcome": "success",
         "command": "features resolve-dependencies",
-        "resolvedFeatures": ordered,
+        "resolvedFeatures": ordered.0,
+        "installOrder": ordered.1,
     }))
 }
 

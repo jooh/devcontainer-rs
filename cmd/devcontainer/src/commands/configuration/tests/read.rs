@@ -1,16 +1,25 @@
 //! Unit tests for read-configuration behavior.
 
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
 use super::support::unique_temp_dir;
+use crate::commands::common::copy_directory_recursive;
 use crate::commands::common::resolve_read_configuration_path;
 use crate::commands::configuration::merge::merge_configuration;
 use crate::commands::configuration::{
-    apply_feature_metadata, build_read_configuration_payload, should_use_native_read_configuration,
+    apply_feature_metadata, apply_feature_metadata_with_options, build_read_configuration_payload,
+    should_use_native_read_configuration,
 };
 use crate::test_support::write_test_control_manifest;
+
+fn upstream_feature_set_path(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../upstream/src/test/container-features")
+        .join(relative)
+}
 
 #[test]
 fn resolves_modern_config_path_from_workspace_folder() {
@@ -267,6 +276,117 @@ fn read_configuration_resolves_feature_sets_and_feature_metadata() {
 }
 
 #[test]
+fn read_configuration_generates_upstream_local_feature_sets() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    fs::create_dir_all(&config_dir).expect("failed to create config directory");
+    copy_directory_recursive(
+        &upstream_feature_set_path("example-v2-features-sets/simple/src/color"),
+        &config_dir.join("color"),
+    )
+    .expect("copy color feature");
+    copy_directory_recursive(
+        &upstream_feature_set_path("example-v2-features-sets/simple/src/hello"),
+        &config_dir.join("hello"),
+    )
+    .expect("copy hello feature");
+    fs::write(
+        config_dir.join("devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"./color\": { \"favorite\": \"gold\" },\n    \"./hello\": { \"greeting\": \"howdy\" }\n  }\n}\n",
+    )
+    .expect("failed to write config");
+
+    let payload = build_read_configuration_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--include-features-configuration".to_string(),
+    ])
+    .expect("payload");
+
+    let feature_sets = payload["featuresConfiguration"]["featureSets"]
+        .as_array()
+        .expect("feature sets");
+    assert_eq!(feature_sets.len(), 2);
+    assert_eq!(feature_sets[0]["features"][0]["id"], "color");
+    assert_eq!(
+        feature_sets[0]["features"][0]["value"],
+        json!({ "favorite": "gold" })
+    );
+    assert_eq!(
+        feature_sets[0]["features"][0]["options"]["favorite"],
+        "gold"
+    );
+    assert_eq!(feature_sets[1]["features"][0]["id"], "hello");
+    assert_eq!(
+        feature_sets[1]["features"][0]["value"],
+        json!({ "greeting": "howdy" })
+    );
+    assert_eq!(
+        feature_sets[1]["features"][0]["options"]["greeting"],
+        "howdy"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn read_configuration_generates_published_feature_customizations() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    fs::create_dir_all(&config_dir).expect("failed to create config directory");
+    fs::write(
+        config_dir.join("devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"node\": { \"version\": \"none\" },\n    \"ghcr.io/devcontainers/features/docker-in-docker:1\": { \"version\": \"latest\" },\n    \"ghcr.io/devcontainers/features/java:1\": { \"version\": \"none\" }\n  }\n}\n",
+    )
+    .expect("failed to write config");
+
+    let payload = build_read_configuration_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--include-features-configuration".to_string(),
+    ])
+    .expect("payload");
+
+    let feature_sets = payload["featuresConfiguration"]["featureSets"]
+        .as_array()
+        .expect("feature sets");
+    assert_eq!(feature_sets.len(), 3);
+    let docker = feature_sets
+        .iter()
+        .find(|set| set["features"][0]["id"] == "docker-in-docker")
+        .expect("docker-in-docker feature");
+    let node = feature_sets
+        .iter()
+        .find(|set| set["features"][0]["id"] == "node")
+        .expect("node feature");
+    let java = feature_sets
+        .iter()
+        .find(|set| set["features"][0]["id"] == "java")
+        .expect("java feature");
+    assert!(
+        docker["features"][0]["customizations"]["vscode"]["extensions"]
+            .as_array()
+            .expect("docker extensions")
+            .contains(&json!("ms-azuretools.vscode-docker"))
+    );
+    assert!(
+        node["features"][0]["customizations"]["vscode"]["extensions"]
+            .as_array()
+            .expect("node extensions")
+            .contains(&json!("dbaeumer.vscode-eslint"))
+    );
+    assert!(
+        java["features"][0]["customizations"]["vscode"]["extensions"]
+            .as_array()
+            .expect("java extensions")
+            .contains(&json!("vscjava.vscode-java-pack"))
+    );
+    assert!(java["features"][0]["customizations"]["vscode"]["settings"].is_object());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn read_configuration_rejects_disallowed_published_features() {
     let root = unique_temp_dir();
     let config_dir = root.join(".devcontainer");
@@ -334,6 +454,76 @@ fn read_configuration_reports_feature_advisories_for_published_features() {
 }
 
 #[test]
+fn read_configuration_keeps_registry_qualified_oci_features_on_oci_source_path() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    fs::create_dir_all(&config_dir).expect("failed to create config directory");
+    fs::write(
+        config_dir.join("devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"registry.example.com/org/features/foo:1\": {}\n  }\n}\n",
+    )
+    .expect("failed to write config");
+
+    let payload = build_read_configuration_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--include-features-configuration".to_string(),
+    ])
+    .expect("payload");
+
+    let feature_sets = payload["featuresConfiguration"]["featureSets"]
+        .as_array()
+        .expect("feature sets");
+    let source_information = &feature_sets[0]["sourceInformation"];
+    assert_eq!(source_information["type"], "oci");
+    assert_eq!(
+        source_information["featureRef"]["resource"],
+        "registry.example.com/org/features/foo"
+    );
+    assert_eq!(
+        source_information["featureRef"]["registry"],
+        "registry.example.com"
+    );
+    assert_eq!(
+        source_information["featureRef"]["namespace"],
+        "org/features"
+    );
+    assert_eq!(source_information["featureRef"]["id"], "foo");
+    assert_eq!(source_information["featureRef"]["tag"], "1");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn read_configuration_preserves_digest_from_user_pinned_oci_feature() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    fs::create_dir_all(&config_dir).expect("failed to create config directory");
+    fs::write(
+        config_dir.join("devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/acme/features/foo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\": {}\n  }\n}\n",
+    )
+    .expect("failed to write config");
+
+    let payload = build_read_configuration_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--include-features-configuration".to_string(),
+    ])
+    .expect("payload");
+
+    let feature_sets = payload["featuresConfiguration"]["featureSets"]
+        .as_array()
+        .expect("feature sets");
+    assert_eq!(
+        feature_sets[0]["sourceInformation"]["manifestDigest"],
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn merged_configuration_normalizes_forward_ports_before_deduplication() {
     let merged = merge_configuration(
         &json!({ "image": "debian:bookworm" }),
@@ -370,7 +560,7 @@ fn merged_configuration_merges_host_requirements_field_by_field() {
 }
 
 #[test]
-fn feature_metadata_mounts_replace_existing_mounts_with_the_same_target() {
+fn devcontainer_mounts_replace_feature_mounts_with_the_same_target() {
     let merged = apply_feature_metadata(
         &json!({
             "image": "debian:bookworm",
@@ -392,9 +582,46 @@ fn feature_metadata_mounts_replace_existing_mounts_with_the_same_target() {
     assert_eq!(
         merged["mounts"],
         json!([{
-            "type": "volume",
-            "source": "feature-cache",
+            "type": "bind",
+            "source": "/workspace/from-config",
             "target": "/workspace/cache"
         }])
+    );
+}
+
+#[test]
+fn feature_metadata_skip_feature_customizations_preserves_config_customizations() {
+    let merged = apply_feature_metadata_with_options(
+        &json!({
+            "image": "debian:bookworm",
+            "customizations": {
+                "vscode": {
+                    "extensions": ["user.extension"],
+                    "settings": {
+                        "editor.tabSize": 2
+                    }
+                }
+            }
+        }),
+        &[json!({
+            "customizations": {
+                "vscode": {
+                    "extensions": ["feature.extension"]
+                }
+            }
+        })],
+        true,
+    );
+
+    assert_eq!(
+        merged["customizations"],
+        json!({
+            "vscode": {
+                "extensions": ["user.extension"],
+                "settings": {
+                    "editor.tabSize": 2
+                }
+            }
+        })
     );
 }

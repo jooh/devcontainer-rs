@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
-use crate::commands::common;
+use crate::commands::{common, configuration};
 
 use super::compose;
 use super::container;
@@ -85,9 +85,10 @@ pub(crate) fn resolve_existing_container_context(
         {
             let container_id = compose::resolve_container_id(resolved, args)?
                 .ok_or_else(|| "Dev container not found.".to_string())?;
+            let configuration = configuration_with_feature_metadata(args, resolved)?;
             return Ok(ExistingContainerContext {
                 container_id,
-                configuration: resolved.configuration.clone(),
+                configuration,
                 remote_workspace_folder: remote_workspace_folder_for_args(resolved, args),
             });
         }
@@ -117,11 +118,14 @@ pub(crate) fn resolve_existing_container_context(
     } else {
         None
     };
-    let configuration = resolved
-        .as_ref()
-        .map(|value| value.configuration.clone())
-        .or_else(|| inspected.as_ref().map(|value| value.configuration.clone()))
-        .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+    let configuration = if let Some(resolved) = resolved.as_ref() {
+        configuration_with_feature_metadata(args, resolved)?
+    } else {
+        inspected
+            .as_ref()
+            .map(|value| value.configuration.clone())
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+    };
     let remote_workspace_folder = resolved
         .as_ref()
         .map(|resolved| remote_workspace_folder_for_args(resolved, args))
@@ -144,6 +148,27 @@ pub(crate) fn resolve_existing_container_context(
         configuration,
         remote_workspace_folder,
     })
+}
+
+fn configuration_with_feature_metadata(
+    args: &[String],
+    resolved: &ResolvedConfig,
+) -> Result<Value, String> {
+    let feature_support = configuration::resolve_feature_support(
+        args,
+        &resolved.workspace_folder,
+        &resolved.config_file,
+        &resolved.configuration,
+    )?;
+    Ok(feature_support
+        .as_ref()
+        .map(|resolved_features| {
+            configuration::apply_feature_metadata(
+                &resolved.configuration,
+                &resolved_features.metadata_entries,
+            )
+        })
+        .unwrap_or_else(|| resolved.configuration.clone()))
 }
 
 #[cfg(test)]

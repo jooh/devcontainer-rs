@@ -1,12 +1,41 @@
 //! Unit tests for feature collection commands.
 
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use super::support::unique_temp_dir;
 use crate::commands::collections::features::{
     build_feature_info_payload, build_features_resolve_dependencies_payload,
 };
+use crate::commands::common::copy_directory_recursive;
 use crate::test_support::write_test_control_manifest;
+
+fn upstream_fixture_path(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../upstream/src/test/container-features/configs")
+        .join(relative)
+}
+
+fn copy_upstream_fixture(relative: &str) -> PathBuf {
+    let root = unique_temp_dir();
+    copy_directory_recursive(&upstream_fixture_path(relative), &root)
+        .expect("failed to copy upstream fixture");
+    root
+}
+
+fn install_order_id_options(payload: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
+    payload["installOrder"]
+        .as_array()
+        .expect("installOrder array")
+        .iter()
+        .map(|entry| {
+            (
+                entry["id"].as_str().expect("install order id").to_string(),
+                entry["options"].clone(),
+            )
+        })
+        .collect()
+}
 
 #[test]
 fn feature_dependency_resolution_respects_override_order() {
@@ -34,6 +63,128 @@ fn feature_dependency_resolution_respects_override_order() {
 }
 
 #[test]
+fn feature_dependency_resolution_matches_upstream_local_option_round_order() {
+    let root = copy_upstream_fixture("feature-dependencies/dependsOn/local-with-options");
+
+    let payload = build_features_resolve_dependencies_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+    ])
+    .expect("payload");
+
+    let actual = install_order_id_options(&payload);
+    assert_eq!(
+        actual,
+        vec![
+            ("./b".to_string(), serde_json::json!({})),
+            (
+                "./b".to_string(),
+                serde_json::json!({ "optA": "a", "optB": "a" })
+            ),
+            (
+                "./b".to_string(),
+                serde_json::json!({ "optA": "a", "optB": "b" })
+            ),
+            (
+                "./b".to_string(),
+                serde_json::json!({ "optA": "b", "optB": "a" })
+            ),
+            (
+                "./b".to_string(),
+                serde_json::json!({ "optA": "b", "optB": "b" })
+            ),
+            ("./d".to_string(), serde_json::json!({})),
+            ("./e".to_string(), serde_json::json!({})),
+            ("./c".to_string(), serde_json::json!({})),
+            (
+                "./a".to_string(),
+                serde_json::json!({ "optA": "a", "optB": "b" })
+            ),
+        ]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn feature_dependency_resolution_matches_upstream_override_round_priority() {
+    let root =
+        copy_upstream_fixture("feature-dependencies/overrideFeatureInstallOrder/local-simple");
+
+    let payload = build_features_resolve_dependencies_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+    ])
+    .expect("payload");
+
+    let ids = install_order_id_options(&payload)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect::<Vec<_>>();
+    assert_eq!(ids, vec!["./c", "./b", "./d", "./a"]);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn feature_dependency_resolution_matches_upstream_published_and_tarball_order() {
+    let root = copy_upstream_fixture("feature-dependencies/dependsOn/tgz-ab");
+
+    let payload = build_features_resolve_dependencies_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+    ])
+    .expect("payload");
+
+    let actual = install_order_id_options(&payload);
+    assert_eq!(
+        actual,
+        vec![
+            (
+                "ghcr.io/codspace/dependson/d@sha256:3795caa1e32ba6b30a08260039804eed6f3cf40811f0c65c118437743fa15ce8".to_string(),
+                serde_json::json!({ "magicNumber": "30" })
+            ),
+            (
+                "ghcr.io/codspace/dependson/e@sha256:9f36f159c70f8bebff57f341904b030733adb17ef12a5d58d4b3d89b2a6c7d5a".to_string(),
+                serde_json::json!({ "magicNumber": "50" })
+            ),
+            (
+                "ghcr.io/codspace/dependson/a@sha256:932027ef71da186210e6ceb3294c3459caaf6b548d2b547d5d26be3fc4b2264a".to_string(),
+                serde_json::json!({ "magicNumber": "40" })
+            ),
+            (
+                "https://github.com/codspace/tgz-features-with-dependson/releases/download/0.0.2/devcontainer-feature-A.tgz".to_string(),
+                serde_json::json!({ "magicNumber": "10" })
+            ),
+            (
+                "ghcr.io/codspace/dependson/c@sha256:db651708398b6d7af48f184c358728eaaf959606637133413cb4107b8454a868".to_string(),
+                serde_json::json!({ "magicNumber": "20" })
+            ),
+            (
+                "https://github.com/codspace/tgz-features-with-dependson/releases/download/0.0.2/devcontainer-feature-B.tgz".to_string(),
+                serde_json::json!({ "magicNumber": "400" })
+            ),
+        ]
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn feature_dependency_resolution_rejects_upstream_circular_dependencies() {
+    let root = copy_upstream_fixture("feature-dependencies/dependsOn/invalid-circular");
+
+    let error = build_features_resolve_dependencies_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+    ])
+    .expect_err("circular dependencies should fail");
+
+    assert!(error.contains("Circular feature dependency"), "{error}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn feature_dependency_resolution_rejects_disallowed_features() {
     let root = unique_temp_dir();
     let config_dir = root.join(".devcontainer");
@@ -55,6 +206,36 @@ fn feature_dependency_resolution_rejects_disallowed_features() {
     .expect_err("disallowed feature should fail");
 
     assert!(error.contains("problematic-feature:1"), "{error}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn feature_dependency_resolution_preserves_digest_pinned_oci_install_order() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    fs::create_dir_all(&config_dir).expect("failed to create config directory");
+    fs::write(
+        config_dir.join("devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/acme/features/foo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\": {}\n  }\n}\n",
+    )
+    .expect("failed to write config");
+
+    let payload = build_features_resolve_dependencies_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+    ])
+    .expect("payload");
+
+    let actual = install_order_id_options(&payload);
+    assert_eq!(
+        actual,
+        vec![(
+            "ghcr.io/acme/features/foo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            serde_json::json!({})
+        )]
+    );
+
     let _ = fs::remove_dir_all(root);
 }
 

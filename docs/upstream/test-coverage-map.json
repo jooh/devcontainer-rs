@@ -110,12 +110,12 @@
 		},
 		{
 			"upstreamTest": "upstream/src/test/container-features/containerFeaturesOrder.test.ts",
-			"status": "partial",
+			"status": "covered",
 			"nativeTests": [
 				"cmd/devcontainer/src/commands/collections/tests/features.rs",
 				"cmd/devcontainer/src/commands/configuration/tests/read.rs"
 			],
-			"notes": "Dependency ordering is covered, but not with the full upstream OCI-backed graph cases."
+			"notes": "Native coverage exercises upstream-shaped Feature ordering for dependsOn, installsAfter, overrideFeatureInstallOrder, duplicate option variants, circular dependency failures, fixture-backed OCI references, direct tarballs, and mixed source graphs without live registry credentials."
 		},
 		{
 			"upstreamTest": "upstream/src/test/container-features/e2e.test.ts",
@@ -158,22 +158,22 @@
 		},
 		{
 			"upstreamTest": "upstream/src/test/container-features/generateFeaturesConfig.test.ts",
-			"status": "partial",
+			"status": "covered",
 			"nativeTests": [
 				"cmd/devcontainer/src/commands/configuration/tests/read.rs",
 				"cmd/devcontainer/tests/runtime_build_smoke/features.rs"
 			],
-			"notes": "Generated feature configuration is exercised indirectly through read/build paths."
+			"notes": "Native read-configuration coverage validates generated local Feature sets, option values, published Feature customizations, metadata merge behavior, and runtime build smoke coverage validates install materialization."
 		},
 		{
 			"upstreamTest": "upstream/src/test/container-features/lifecycleHooks.test.ts",
-			"status": "partial",
+			"status": "covered",
 			"nativeTests": [
 				"cmd/devcontainer/tests/runtime_lifecycle_smoke.rs",
 				"cmd/devcontainer/tests/runtime_lifecycle_smoke/commands.rs",
 				"cmd/devcontainer/tests/runtime_lifecycle_smoke/selection.rs"
 			],
-			"notes": "Lifecycle behavior is tested natively, but not specifically as upstream Feature-contributed hook cases."
+			"notes": "Native lifecycle smoke coverage now includes Feature-contributed hooks merged before devcontainer-level hooks, install-order-sensitive hook ordering, resume/run-user-commands paths, and secrets propagation through lifecycle exec."
 		},
 		{
 			"upstreamTest": "upstream/src/test/container-features/lockfile.test.ts",
