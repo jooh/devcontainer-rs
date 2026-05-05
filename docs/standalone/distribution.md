@@ -4,7 +4,7 @@
 
 - GitHub Releases is the active distribution channel.
 - `dist-workspace.toml` is the release artifact baseline for cargo-dist.
-- `.github/workflows/devcontainer-release.yml` builds release archives for Linux x64 (glibc), Linux x64 (musl), macOS x64, and macOS arm64 with cargo-dist.
+- `.github/workflows/devcontainer-release.yml` builds release archives for Linux x64 (glibc), Linux x64 (musl), Linux arm64 (glibc), Linux arm64 (musl), macOS x64, and macOS arm64 with cargo-dist.
 - Each release artifact currently includes a compressed archive and a SHA-256 checksum file.
 - npm publishes two wrapper entrypoints:
   - `devcontainer-rs` for `npx devcontainer-rs`
@@ -40,6 +40,8 @@ The initial PyPI wheel set matches the standalone release targets:
 
 - Linux x64 glibc (`manylinux2014_x86_64`)
 - Linux x64 musl (`musllinux_1_2_x86_64`)
+- Linux arm64 glibc (`manylinux2014_aarch64`)
+- Linux arm64 musl (`musllinux_1_2_aarch64`)
 - macOS x64
 - macOS arm64
 
@@ -58,8 +60,8 @@ Homebrew maps the backing repository `jooh/homebrew-tap` to the tap shorthand `j
 
 ## Local build flow
 
-- `scripts/standalone/build.sh <target>` builds the Rust release binary and places it under `dist/standalone/`.
-- `scripts/standalone/build-linux-x64-musl.sh` builds the Linux x64 musl artifact for older-glibc distro compatibility.
+- `scripts/standalone/build.sh <target>` builds the Rust release binary and places it under `dist/standalone/`. Supported Linux targets are `linux-x64`, `linux-x64-musl`, `linux-arm64`, and `linux-arm64-musl`.
+- `scripts/standalone/build-linux-x64-musl.sh` and `scripts/standalone/build-linux-arm64-musl.sh` build musl artifacts for older-glibc distro compatibility.
 - `scripts/standalone/smoke.sh <binary>` runs the repo-owned smoke commands against a built artifact.
 - `~/.cargo/bin/dist build --artifacts=local --target <triple> --allow-dirty` builds the cargo-dist archive into `target/distrib/`.
 - `node build/prepare-npm-packages.js --artifacts-dir target/distrib --output-dir dist/npm` stages the publishable npm wrapper/native packages from dist outputs.
