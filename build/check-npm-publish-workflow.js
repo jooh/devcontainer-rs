@@ -73,6 +73,26 @@ assert.match(
   /node build\/publish-npm-packages\.js /,
   "npm publish job should use the repo-owned idempotent npm publish helper",
 );
+assert.match(
+  buildJob,
+  /rust_target:\s*aarch64-unknown-linux-gnu\b/,
+  "release build matrix should include Linux arm64 GNU artifacts",
+);
+assert.match(
+  buildJob,
+  /rust_target:\s*aarch64-unknown-linux-musl\b/,
+  "release build matrix should include Linux arm64 musl artifacts",
+);
+assert.match(
+  npmJob,
+  /dist\/npm\/devcontainer-rs-devcontainer-linux-arm64-gnu\b/,
+  "npm publish job should publish the Linux arm64 GNU native package",
+);
+assert.match(
+  npmJob,
+  /dist\/npm\/devcontainer-rs-devcontainer-linux-arm64-musl\b/,
+  "npm publish job should publish the Linux arm64 musl native package",
+);
 assert.doesNotMatch(
   npmJob,
   /\bnpm publish --access public\b/,

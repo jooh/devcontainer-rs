@@ -58,6 +58,32 @@ test("maps linux x64 musl to the musl native package", () => {
   );
 });
 
+test("maps linux arm64 glibc to the arm64 gnu native package", () => {
+  const resolved = resolveBinaryPackage({
+    platform: "linux",
+    arch: "arm64",
+    libc: "gnu",
+  });
+  assert.equal(resolved.target, "linux-arm64-gnu");
+  assert.equal(
+    resolved.packageName,
+    "@devcontainer-rs/devcontainer-linux-arm64-gnu",
+  );
+});
+
+test("maps linux arm64 musl to the arm64 musl native package", () => {
+  const resolved = resolveBinaryPackage({
+    platform: "linux",
+    arch: "arm64",
+    libc: "musl",
+  });
+  assert.equal(resolved.target, "linux-arm64-musl");
+  assert.equal(
+    resolved.packageName,
+    "@devcontainer-rs/devcontainer-linux-arm64-musl",
+  );
+});
+
 test("detects musl when ldd reports on stderr and exits non-zero", () => {
   const detected = detectLibc({
     platform: "linux",
@@ -118,6 +144,8 @@ test("runtime config optional dependency set matches supported targets", () => {
   assert.deepEqual(packageNames.sort(), [
     "@devcontainer-rs/devcontainer-darwin-arm64",
     "@devcontainer-rs/devcontainer-darwin-x64",
+    "@devcontainer-rs/devcontainer-linux-arm64-gnu",
+    "@devcontainer-rs/devcontainer-linux-arm64-musl",
     "@devcontainer-rs/devcontainer-linux-x64-gnu",
     "@devcontainer-rs/devcontainer-linux-x64-musl",
   ]);
