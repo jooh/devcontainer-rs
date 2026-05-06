@@ -21,6 +21,10 @@ function writePackage(dir, name, version) {
   );
 }
 
+function readPackage(dir) {
+  return JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+}
+
 function makeConflictError(message) {
   const error = new Error(message);
   error.stdout = "";
@@ -71,6 +75,67 @@ test("continues when npm publish reports a publish conflict", () => {
   assert.deepEqual(calls, [
     ["view", "@devcontainer-rs/example@1.2.3", "version"],
     ["publish", "--access", "public", packageDir],
+  ]);
+});
+
+test("skips unregistered packages and prunes unavailable optional dependencies", () => {
+  const existingNativeDir = mkTempDir("devcontainer-rs-publish-existing-native-");
+  const missingNativeDir = mkTempDir("devcontainer-rs-publish-missing-native-");
+  const wrapperDir = mkTempDir("devcontainer-rs-publish-wrapper-");
+
+  writePackage(existingNativeDir, "@devcontainer-rs/devcontainer-linux-x64-gnu", "1.2.3");
+  writePackage(missingNativeDir, "@devcontainer-rs/devcontainer-linux-arm64-gnu", "1.2.3");
+  fs.mkdirSync(wrapperDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(wrapperDir, "package.json"),
+    `${JSON.stringify(
+      {
+        name: "@devcontainer-rs/cli",
+        version: "1.2.3",
+        optionalDependencies: {
+          "@devcontainer-rs/devcontainer-linux-x64-gnu": "1.2.3",
+          "@devcontainer-rs/devcontainer-linux-arm64-gnu": "1.2.3",
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+
+  const calls = [];
+  publishPackageDirs([existingNativeDir, missingNativeDir, wrapperDir], {
+    skipUnregistered: true,
+    runNpm(args) {
+      calls.push(args);
+      if (args[0] === "view" && args.length === 3 && args[2] === "name") {
+        if (args[1] === "@devcontainer-rs/devcontainer-linux-arm64-gnu") {
+          throw new Error("not found");
+        }
+        return args[1];
+      }
+      if (args[0] === "view" && args.length === 3 && args[2] === "version") {
+        throw new Error("new version not published yet");
+      }
+      if (args[0] === "publish") {
+        return "published";
+      }
+      throw new Error(`unexpected npm args: ${args.join(" ")}`);
+    },
+    log() {},
+  });
+
+  assert.deepEqual(readPackage(wrapperDir).optionalDependencies, {
+    "@devcontainer-rs/devcontainer-linux-x64-gnu": "1.2.3",
+  });
+  assert.deepEqual(calls, [
+    ["view", "@devcontainer-rs/devcontainer-linux-x64-gnu", "name"],
+    ["view", "@devcontainer-rs/devcontainer-linux-arm64-gnu", "name"],
+    ["view", "@devcontainer-rs/cli", "name"],
+    ["view", "@devcontainer-rs/devcontainer-linux-x64-gnu@1.2.3", "version"],
+    ["publish", "--access", "public", existingNativeDir],
+    ["view", "@devcontainer-rs/cli@1.2.3", "version"],
+    ["publish", "--access", "public", wrapperDir],
   ]);
 });
 

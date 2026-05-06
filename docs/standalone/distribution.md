@@ -74,6 +74,7 @@ Homebrew maps the backing repository `jooh/homebrew-tap` to the tap shorthand `j
 - The repository no longer ships or maintains the old bundled-Node installer path.
 - Release automation does not currently sign artifacts or notarize macOS builds.
 - PyPI publication requires a PyPI Trusted Publisher configured for `.github/workflows/devcontainer-release.yml` and the `pypi` GitHub environment.
-- npm publication requires npm Trusted Publisher entries for each npm package, pointing at the same `.github/workflows/devcontainer-release.yml` workflow.
+- PyPI publication uses PyPA's trusted publishing action with duplicate-file skipping so reruns can recover from partial releases.
+- npm publication requires npm Trusted Publisher entries for each npm package, pointing at the same `.github/workflows/devcontainer-release.yml` workflow. The release job skips native npm package names that have not been registered yet and prunes them from wrapper optional dependencies for that publish.
 - Homebrew formula publication is tap-owned and scheduled, so a source release can be available on GitHub/PyPI/npm before the tap cron commits the formula update.
 - Compatibility tooling in `package.json` is not part of the runtime distribution path.

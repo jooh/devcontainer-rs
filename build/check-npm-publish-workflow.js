@@ -12,6 +12,7 @@ const workflowPath = path.join(
 
 const workflow = fs.readFileSync(workflowPath, "utf8");
 const buildJobMatch = workflow.match(/^  build:\n([\s\S]+?)^  release:/m);
+const pypiJobMatch = workflow.match(/^  pypi:\n([\s\S]+?)^  npm:/m);
 const npmJobMatch = workflow.match(/^  npm:\n([\s\S]+)$/m);
 
 assert.ok(
@@ -19,8 +20,10 @@ assert.ok(
   "expected build release job in devcontainer-release workflow",
 );
 assert.ok(npmJobMatch, "expected npm release job in devcontainer-release workflow");
+assert.ok(pypiJobMatch, "expected PyPI release job in devcontainer-release workflow");
 
 const buildJob = buildJobMatch[0];
+const pypiJob = pypiJobMatch[0];
 const npmJob = npmJobMatch[0];
 
 assert.match(
@@ -70,7 +73,7 @@ assert.match(
 );
 assert.match(
   npmJob,
-  /node build\/publish-npm-packages\.js /,
+  /node build\/publish-npm-packages\.js --skip-unregistered /,
   "npm publish job should use the repo-owned idempotent npm publish helper",
 );
 assert.match(
@@ -97,4 +100,24 @@ assert.doesNotMatch(
   npmJob,
   /\bnpm publish --access public\b/,
   "npm publish job should not inline raw npm publish commands",
+);
+assert.match(
+  pypiJob,
+  /uses:\s*pypa\/gh-action-pypi-publish@release\/v1\b/,
+  "PyPI publish job should use PyPA's trusted-publishing action",
+);
+assert.match(
+  pypiJob,
+  /packages-dir:\s*dist\b/,
+  "PyPI publish job should upload the downloaded wheel artifact directory",
+);
+assert.match(
+  pypiJob,
+  /skip-existing:\s*true\b/,
+  "PyPI publish job should skip already uploaded files after a partial release",
+);
+assert.doesNotMatch(
+  pypiJob,
+  /\buv publish\b/,
+  "PyPI publish job should not use uv for the final upload path",
 );
