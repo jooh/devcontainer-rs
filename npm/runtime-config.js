@@ -37,6 +37,26 @@ const supportedTargets = {
     cpu: "x64",
     libc: "musl",
   },
+  "linux-arm64-gnu": {
+    target: "linux-arm64-gnu",
+    triple: "aarch64-unknown-linux-gnu",
+    archiveSuffix: "linux-arm64-gnu",
+    packageName: "@devcontainer-rs/devcontainer-linux-arm64-gnu",
+    packageSlug: "devcontainer-rs-devcontainer-linux-arm64-gnu",
+    os: "linux",
+    cpu: "arm64",
+    libc: "glibc",
+  },
+  "linux-arm64-musl": {
+    target: "linux-arm64-musl",
+    triple: "aarch64-unknown-linux-musl",
+    archiveSuffix: "linux-arm64-musl",
+    packageName: "@devcontainer-rs/devcontainer-linux-arm64-musl",
+    packageSlug: "devcontainer-rs-devcontainer-linux-arm64-musl",
+    os: "linux",
+    cpu: "arm64",
+    libc: "musl",
+  },
 };
 
 const wrapperPackages = {

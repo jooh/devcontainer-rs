@@ -95,12 +95,13 @@ function resolveBinaryPackage(system = {}) {
   if (platform === "darwin" && arch === "arm64") {
     return runtimeConfig.supportedTargets["darwin-arm64"];
   }
-  if (platform === "linux" && arch === "x64") {
+  if (platform === "linux" && (arch === "x64" || arch === "arm64")) {
+    const targetArch = arch === "x64" ? "x64" : "arm64";
     const libc = detectLibc(system);
     if (libc === "musl") {
-      return runtimeConfig.supportedTargets["linux-x64-musl"];
+      return runtimeConfig.supportedTargets[`linux-${targetArch}-musl`];
     }
-    return runtimeConfig.supportedTargets["linux-x64-gnu"];
+    return runtimeConfig.supportedTargets[`linux-${targetArch}-gnu`];
   }
 
   throw new Error(

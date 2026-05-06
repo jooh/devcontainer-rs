@@ -3,7 +3,7 @@ set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
   echo "usage: $0 <target>" >&2
-  echo "example targets: linux-x64, linux-x64-musl, darwin-x64, darwin-arm64" >&2
+  echo "example targets: linux-x64, linux-x64-musl, linux-arm64, linux-arm64-musl, darwin-x64, darwin-arm64" >&2
   exit 2
 fi
 
@@ -17,6 +17,12 @@ case "$target" in
     ;;
   linux-x64-musl)
     rust_target="x86_64-unknown-linux-musl"
+    ;;
+  linux-arm64)
+    rust_target="aarch64-unknown-linux-gnu"
+    ;;
+  linux-arm64-musl)
+    rust_target="aarch64-unknown-linux-musl"
     ;;
   darwin-x64|darwin-arm64)
     ;;
