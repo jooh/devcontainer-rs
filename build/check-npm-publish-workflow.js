@@ -108,8 +108,18 @@ assert.match(
 );
 assert.match(
   pypiJob,
+  /find dist -type f -name '\*\.whl'/,
+  "PyPI publish job should collect wheel files from the mixed artifact download",
+);
+assert.match(
+  pypiJob,
+  /packages-dir:\s*pypi-dist\b/,
+  "PyPI publish job should upload from a wheel-only directory",
+);
+assert.doesNotMatch(
+  pypiJob,
   /packages-dir:\s*dist\b/,
-  "PyPI publish job should upload the downloaded wheel artifact directory",
+  "PyPI publish job should not upload the mixed artifact download directory",
 );
 assert.match(
   pypiJob,

@@ -32,6 +32,13 @@ function makeConflictError(message) {
   return error;
 }
 
+function makeNotFoundError(message = "npm error code E404") {
+  const error = new Error(message);
+  error.stdout = "";
+  error.stderr = message;
+  return error;
+}
+
 test("skips publish when the package version already exists", () => {
   const packageDir = mkTempDir("devcontainer-rs-publish-skip-");
   writePackage(packageDir, "@devcontainer-rs/example", "1.2.3");
@@ -60,7 +67,7 @@ test("continues when npm publish reports a publish conflict", () => {
     runNpm(args) {
       calls.push(args);
       if (args[0] === "view") {
-        throw new Error("not found");
+        throw makeNotFoundError();
       }
       if (args[0] === "publish") {
         throw makeConflictError(
@@ -110,12 +117,12 @@ test("skips unregistered packages and prunes unavailable optional dependencies",
       calls.push(args);
       if (args[0] === "view" && args.length === 3 && args[2] === "name") {
         if (args[1] === "@devcontainer-rs/devcontainer-linux-arm64-gnu") {
-          throw new Error("not found");
+          throw makeNotFoundError();
         }
         return args[1];
       }
       if (args[0] === "view" && args.length === 3 && args[2] === "version") {
-        throw new Error("new version not published yet");
+        throw makeNotFoundError("npm error code E404: new version not published yet");
       }
       if (args[0] === "publish") {
         return "published";
@@ -150,7 +157,7 @@ test("publishes packages in the given order", () => {
     runNpm(args) {
       calls.push(args);
       if (args[0] === "view") {
-        throw new Error("not found");
+        throw makeNotFoundError();
       }
       if (args[0] === "publish") {
         return "published";
@@ -166,4 +173,28 @@ test("publishes packages in the given order", () => {
     ["view", "@devcontainer-rs/second@1.2.3", "version"],
     ["publish", "--access", "public", secondDir],
   ]);
+});
+
+test("fails skip-unregistered publishing when npm name lookup fails for a reason other than not found", () => {
+  const packageDir = mkTempDir("devcontainer-rs-publish-lookup-failure-");
+  writePackage(packageDir, "@devcontainer-rs/example", "1.2.3");
+
+  const error = new Error("npm error code E503");
+  error.stdout = "";
+  error.stderr = "npm error code E503\nnpm error registry unavailable";
+
+  assert.throws(
+    () =>
+      publishPackageDirs([packageDir], {
+        skipUnregistered: true,
+        runNpm(args) {
+          if (args[0] === "view" && args.length === 3 && args[2] === "name") {
+            throw error;
+          }
+          throw new Error(`unexpected npm args: ${args.join(" ")}`);
+        },
+        log() {},
+      }),
+    /E503/,
+  );
 });

@@ -4,6 +4,8 @@ const { execFileSync } = require("node:child_process");
 
 const CONFLICT_PATTERN =
   /You cannot publish over the previously published versions|cannot publish over existing version|EPUBLISHCONFLICT/;
+const NPM_NOT_FOUND_PATTERN =
+  /\bE404\b|404 Not Found|is not in this registry|No match found for version/i;
 
 function readPackageInfo(packageDir) {
   const manifestPath = path.join(packageDir, "package.json");
@@ -27,8 +29,11 @@ function packageVersionExists(packageInfo, runNpm = defaultRunNpm) {
   try {
     runNpm(["view", versionSpec(packageInfo), "version"]);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (isNpmNotFoundError(error)) {
+      return false;
+    }
+    throw error;
   }
 }
 
@@ -36,9 +41,18 @@ function packageNameExists(packageInfo, runNpm = defaultRunNpm) {
   try {
     runNpm(["view", packageInfo.name, "name"]);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (isNpmNotFoundError(error)) {
+      return false;
+    }
+    throw error;
   }
+}
+
+function isNpmNotFoundError(error) {
+  return NPM_NOT_FOUND_PATTERN.test(
+    `${error.stdout || ""}${error.stderr || ""}${error.message || ""}`,
+  );
 }
 
 function defaultRunNpm(args) {
