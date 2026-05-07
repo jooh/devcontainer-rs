@@ -21,7 +21,18 @@ function writePackage(dir, name, version) {
   );
 }
 
+function readPackage(dir) {
+  return JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+}
+
 function makeConflictError(message) {
+  const error = new Error(message);
+  error.stdout = "";
+  error.stderr = message;
+  return error;
+}
+
+function makeNotFoundError(message = "npm error code E404") {
   const error = new Error(message);
   error.stdout = "";
   error.stderr = message;
@@ -56,7 +67,7 @@ test("continues when npm publish reports a publish conflict", () => {
     runNpm(args) {
       calls.push(args);
       if (args[0] === "view") {
-        throw new Error("not found");
+        throw makeNotFoundError();
       }
       if (args[0] === "publish") {
         throw makeConflictError(
@@ -74,6 +85,67 @@ test("continues when npm publish reports a publish conflict", () => {
   ]);
 });
 
+test("skips unregistered packages and prunes unavailable optional dependencies", () => {
+  const existingNativeDir = mkTempDir("devcontainer-rs-publish-existing-native-");
+  const missingNativeDir = mkTempDir("devcontainer-rs-publish-missing-native-");
+  const wrapperDir = mkTempDir("devcontainer-rs-publish-wrapper-");
+
+  writePackage(existingNativeDir, "@devcontainer-rs/devcontainer-linux-x64-gnu", "1.2.3");
+  writePackage(missingNativeDir, "@devcontainer-rs/devcontainer-linux-arm64-gnu", "1.2.3");
+  fs.mkdirSync(wrapperDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(wrapperDir, "package.json"),
+    `${JSON.stringify(
+      {
+        name: "@devcontainer-rs/cli",
+        version: "1.2.3",
+        optionalDependencies: {
+          "@devcontainer-rs/devcontainer-linux-x64-gnu": "1.2.3",
+          "@devcontainer-rs/devcontainer-linux-arm64-gnu": "1.2.3",
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+
+  const calls = [];
+  publishPackageDirs([existingNativeDir, missingNativeDir, wrapperDir], {
+    skipUnregistered: true,
+    runNpm(args) {
+      calls.push(args);
+      if (args[0] === "view" && args.length === 3 && args[2] === "name") {
+        if (args[1] === "@devcontainer-rs/devcontainer-linux-arm64-gnu") {
+          throw makeNotFoundError();
+        }
+        return args[1];
+      }
+      if (args[0] === "view" && args.length === 3 && args[2] === "version") {
+        throw makeNotFoundError("npm error code E404: new version not published yet");
+      }
+      if (args[0] === "publish") {
+        return "published";
+      }
+      throw new Error(`unexpected npm args: ${args.join(" ")}`);
+    },
+    log() {},
+  });
+
+  assert.deepEqual(readPackage(wrapperDir).optionalDependencies, {
+    "@devcontainer-rs/devcontainer-linux-x64-gnu": "1.2.3",
+  });
+  assert.deepEqual(calls, [
+    ["view", "@devcontainer-rs/devcontainer-linux-x64-gnu", "name"],
+    ["view", "@devcontainer-rs/devcontainer-linux-arm64-gnu", "name"],
+    ["view", "@devcontainer-rs/cli", "name"],
+    ["view", "@devcontainer-rs/devcontainer-linux-x64-gnu@1.2.3", "version"],
+    ["publish", "--access", "public", existingNativeDir],
+    ["view", "@devcontainer-rs/cli@1.2.3", "version"],
+    ["publish", "--access", "public", wrapperDir],
+  ]);
+});
+
 test("publishes packages in the given order", () => {
   const firstDir = mkTempDir("devcontainer-rs-publish-order-");
   const secondDir = mkTempDir("devcontainer-rs-publish-order-");
@@ -85,7 +157,7 @@ test("publishes packages in the given order", () => {
     runNpm(args) {
       calls.push(args);
       if (args[0] === "view") {
-        throw new Error("not found");
+        throw makeNotFoundError();
       }
       if (args[0] === "publish") {
         return "published";
@@ -101,4 +173,28 @@ test("publishes packages in the given order", () => {
     ["view", "@devcontainer-rs/second@1.2.3", "version"],
     ["publish", "--access", "public", secondDir],
   ]);
+});
+
+test("fails skip-unregistered publishing when npm name lookup fails for a reason other than not found", () => {
+  const packageDir = mkTempDir("devcontainer-rs-publish-lookup-failure-");
+  writePackage(packageDir, "@devcontainer-rs/example", "1.2.3");
+
+  const error = new Error("npm error code E503");
+  error.stdout = "";
+  error.stderr = "npm error code E503\nnpm error registry unavailable";
+
+  assert.throws(
+    () =>
+      publishPackageDirs([packageDir], {
+        skipUnregistered: true,
+        runNpm(args) {
+          if (args[0] === "view" && args.length === 3 && args[2] === "name") {
+            throw error;
+          }
+          throw new Error(`unexpected npm args: ${args.join(" ")}`);
+        },
+        log() {},
+      }),
+    /E503/,
+  );
 });

@@ -225,19 +225,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v6
-
-      - name: Download wheels
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
-      - name: Publish wheels to PyPI
+      - name: Collect PyPI wheels
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p pypi-dist
           mapfile -t wheels < <(find dist -type f -name '*.whl' | sort)
 
           if [[ "${#wheels[@]}" -eq 0 ]]; then
@@ -245,7 +243,13 @@ jobs:
             exit 1
           fi
 
-          uv publish "${wheels[@]}"
+          cp "${wheels[@]}" pypi-dist/
+
+      - name: Publish wheels to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: pypi-dist
+          skip-existing: true
 
   npm:
     needs: [prepare, build, release]
@@ -324,7 +328,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node build/publish-npm-packages.js \
+          node build/publish-npm-packages.js --skip-unregistered \
             dist/npm/devcontainer-rs-devcontainer-darwin-x64 \
             dist/npm/devcontainer-rs-devcontainer-darwin-arm64 \
             dist/npm/devcontainer-rs-devcontainer-linux-x64-gnu \
