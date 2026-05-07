@@ -2,6 +2,8 @@
 
 use serde_json::{Map, Value};
 
+use crate::commands::common;
+
 pub(super) fn feature_object(manifest: &Value, options: &Value, value: &Value) -> Value {
     let mut feature = manifest.as_object().cloned().unwrap_or_default();
     feature.insert("options".to_string(), options.clone());
@@ -21,7 +23,12 @@ pub(super) fn feature_option_values_from_manifest(
 ) -> Vec<(String, String)> {
     merged_feature_options(manifest, value)
         .into_iter()
-        .map(|(key, value)| (feature_option_env_name(&key), json_value_to_env(&value)))
+        .map(|(key, value)| {
+            (
+                common::feature_option_env_name(&key),
+                json_value_to_env(&value),
+            )
+        })
         .collect()
 }
 
@@ -87,18 +94,6 @@ fn migrate_legacy_customizations(feature: &mut Map<String, Value>) {
     }
 }
 
-fn feature_option_env_name(key: &str) -> String {
-    key.chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 fn json_value_to_env(value: &Value) -> String {
     match value {
         Value::Null => String::new(),
@@ -106,5 +101,56 @@ fn json_value_to_env(value: &Value) -> String {
         Value::Number(number) => number.to_string(),
         Value::String(text) => text.clone(),
         _ => value.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::commands::common;
+
+    use super::feature_option_values_from_manifest;
+
+    #[test]
+    fn feature_option_env_names_match_upstream_safe_id_cases() {
+        assert_eq!(
+            common::feature_option_env_name("option-name"),
+            "OPTION_NAME"
+        );
+        assert_eq!(
+            common::feature_option_env_name("option1-name-with_dashes-"),
+            "OPTION1_NAME_WITH_DASHES_"
+        );
+        assert_eq!(
+            common::feature_option_env_name("myOptionName"),
+            "MYOPTIONNAME"
+        );
+        assert_eq!(common::feature_option_env_name("1name"), "_NAME");
+        assert_eq!(
+            common::feature_option_env_name("12345_option-name"),
+            "_OPTION_NAME"
+        );
+    }
+
+    #[test]
+    fn feature_option_values_use_safe_env_names_for_defaults_and_overrides() {
+        let manifest = json!({
+            "id": "demo",
+            "options": {
+                "1name": { "type": "string", "default": "default-value" },
+                "option-name": { "type": "string", "default": "default-option" }
+            }
+        });
+        let values = feature_option_values_from_manifest(
+            &manifest,
+            &json!({
+                "1name": "override-value"
+            }),
+        );
+
+        assert!(values.contains(&("_NAME".to_string(), "override-value".to_string())));
+        assert!(values.contains(&("OPTION_NAME".to_string(), "default-option".to_string())));
+        assert!(!values.iter().any(|(key, _)| key == "1NAME"));
     }
 }
