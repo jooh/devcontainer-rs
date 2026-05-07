@@ -117,9 +117,12 @@ fn feature_option_values_from_manifest(manifest: &Value, value: &Value) -> Vec<(
             options
                 .iter()
                 .filter_map(|(key, option)| {
-                    option
-                        .get("default")
-                        .map(|default| (feature_option_env_name(key), json_value_to_env(default)))
+                    option.get("default").map(|default| {
+                        (
+                            common::feature_option_env_name(key),
+                            json_value_to_env(default),
+                        )
+                    })
                 })
                 .collect::<Vec<_>>()
         })
@@ -129,7 +132,12 @@ fn feature_option_values_from_manifest(manifest: &Value, value: &Value) -> Vec<(
         .map(|options| {
             options
                 .iter()
-                .map(|(key, option)| (feature_option_env_name(key), json_value_to_env(option)))
+                .map(|(key, option)| {
+                    (
+                        common::feature_option_env_name(key),
+                        json_value_to_env(option),
+                    )
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -155,7 +163,7 @@ pub(super) fn alternate_feature_option_values(
 
     let mut values = Vec::new();
     for (key, option) in options {
-        let env_name = feature_option_env_name(key);
+        let env_name = common::feature_option_env_name(key);
         let default = option.get("default");
         let value = match option.get("type").and_then(Value::as_str) {
             Some("boolean") => {
@@ -230,18 +238,6 @@ fn choose_alternate_string_candidate(
         alternate_indexes[0]
     };
     values.get(selected_index).cloned()
-}
-
-fn feature_option_env_name(key: &str) -> String {
-    key.chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() {
-                character.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 pub(super) fn write_feature_test_dockerfile(
@@ -383,7 +379,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        alternate_feature_option_values, choose_alternate_string_candidate, unique_feature_test_dir,
+        alternate_feature_option_values, choose_alternate_string_candidate, feature_option_values,
+        unique_feature_test_dir,
     };
 
     #[test]
@@ -438,6 +435,43 @@ mod tests {
         let values = alternate_feature_option_values(&feature_dir, false).expect("values");
 
         assert_eq!(values, vec![("COLOR".to_string(), "green".to_string())]);
+        let _ = fs::remove_dir_all(feature_dir);
+    }
+
+    #[test]
+    fn feature_test_option_env_names_match_upstream_safe_id_cases() {
+        let feature_dir = unique_feature_test_dir();
+        fs::create_dir_all(&feature_dir).expect("feature dir");
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            r#"{
+  "id": "demo",
+  "version": "1.0.0",
+  "options": {
+    "1name": {
+      "type": "string",
+      "default": "default-value"
+    },
+    "option-name": {
+      "type": "string",
+      "default": "default-option"
+    }
+  }
+}"#,
+        )
+        .expect("manifest");
+
+        let values = feature_option_values(
+            &feature_dir,
+            &json!({
+                "1name": "override-value"
+            }),
+        )
+        .expect("values");
+
+        assert!(values.contains(&("_NAME".to_string(), "override-value".to_string())));
+        assert!(values.contains(&("OPTION_NAME".to_string(), "default-option".to_string())));
+        assert!(!values.iter().any(|(key, _)| key == "1NAME"));
         let _ = fs::remove_dir_all(feature_dir);
     }
 }
