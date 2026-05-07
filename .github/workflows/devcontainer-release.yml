@@ -254,6 +254,7 @@ jobs:
   npm:
     needs: [prepare, build, release]
     runs-on: ubuntu-latest
+    environment: npm
     permissions:
       id-token: write
       contents: read

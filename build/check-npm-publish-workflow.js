@@ -48,6 +48,11 @@ assert.doesNotMatch(
 );
 assert.match(
   npmJob,
+  /\s+environment:\s*npm\b/,
+  "npm publish job should use the npm GitHub environment",
+);
+assert.match(
+  npmJob,
   /\s+permissions:\n(?:\s+.*\n)*?\s+id-token:\s+write\b/m,
   "npm publish job must request id-token: write for OIDC",
 );
