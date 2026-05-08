@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use super::support::unique_temp_dir;
 use crate::commands::collections::features::{
-    build_feature_info_payload, build_features_resolve_dependencies_payload,
+    build_feature_info_payload, build_feature_info_payload_with_workspace,
+    build_features_resolve_dependencies_payload,
 };
 use crate::commands::common::copy_directory_recursive;
 use crate::test_support::write_test_control_manifest;
@@ -361,4 +362,44 @@ fn feature_info_reads_catalog_tags_for_published_features() {
         .expect("published tags array");
     assert_eq!(tags[0], "1.2.0");
     assert_eq!(tags[1], "1.1.5");
+}
+
+#[test]
+fn feature_info_registry_tags_do_not_require_resolved_manifest() {
+    let workspace = unique_temp_dir();
+    let layout_dir = workspace
+        .join(".devcontainer")
+        .join("oci-layouts")
+        .join("ghcr.io/acme/features/fake");
+    fs::create_dir_all(&layout_dir).expect("layout dir");
+    fs::write(
+        layout_dir.join("oci-layout"),
+        "{\"imageLayoutVersion\":\"1.0.0\"}\n",
+    )
+    .expect("oci layout");
+    fs::write(
+        layout_dir.join("index.json"),
+        r#"{
+  "schemaVersion": 2,
+  "manifests": [{
+    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "annotations": {
+      "org.opencontainers.image.ref.name": "dev"
+    }
+  }]
+}
+"#,
+    )
+    .expect("index");
+
+    let payload = build_feature_info_payload_with_workspace(
+        "tags",
+        "ghcr.io/acme/features/fake",
+        Some(&workspace),
+    )
+    .expect("tags payload");
+
+    assert_eq!(payload["publishedTags"], serde_json::json!(["dev"]));
+    let _ = fs::remove_dir_all(workspace);
 }

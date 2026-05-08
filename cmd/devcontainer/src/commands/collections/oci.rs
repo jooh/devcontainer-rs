@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{self, Cursor, Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -38,6 +40,7 @@ pub(crate) struct OciFeatureArtifact {
     pub(crate) registry: String,
     pub(crate) repository: String,
     pub(crate) tag: Option<String>,
+    pub(crate) reference_digest: Option<String>,
     pub(crate) manifest_digest: String,
     pub(crate) manifest: Value,
     pub(crate) metadata: Value,
@@ -177,10 +180,9 @@ pub(crate) fn feature_ref_json(artifact: &OciFeatureArtifact) -> Value {
     if let Some(tag) = &artifact.tag {
         feature_ref.insert("tag".to_string(), Value::String(tag.clone()));
     }
-    feature_ref.insert(
-        "digest".to_string(),
-        Value::String(artifact.manifest_digest.clone()),
-    );
+    if let Some(digest) = &artifact.reference_digest {
+        feature_ref.insert("digest".to_string(), Value::String(digest.clone()));
+    }
     Value::Object(feature_ref)
 }
 
@@ -297,6 +299,7 @@ fn artifact_from_manifest(
         registry: parsed.registry.clone(),
         repository: parsed.repository.clone(),
         tag: Some(manifest_reference).filter(|reference| !reference.starts_with("sha256:")),
+        reference_digest: parsed.digest.clone(),
         manifest_digest,
         manifest,
         metadata,
@@ -315,8 +318,9 @@ fn registry_manifest_reference(
     if tag == "latest" || exact_semver(tag).is_some() {
         return Ok(tag.to_string());
     }
-    let selector = VersionSelector::parse(tag)
-        .ok_or_else(|| format!("Invalid OCI Feature version selector: {tag}"))?;
+    let Some(selector) = VersionSelector::parse(tag) else {
+        return Ok(tag.to_string());
+    };
     let tags = registry_tags(parsed, transport)?;
     tags.into_iter()
         .filter(|candidate| selector.matches(candidate))
@@ -547,8 +551,9 @@ fn local_layout_manifest_digest(
             .as_str()
             .map(|digest| (digest.to_string(), Some(tag.to_string()))));
     }
-    let selector = VersionSelector::parse(tag)
-        .ok_or_else(|| format!("Invalid OCI Feature version selector: {tag}"))?;
+    let Some(selector) = VersionSelector::parse(tag) else {
+        return Ok(None);
+    };
     Ok(manifests
         .into_iter()
         .filter_map(|entry| {
@@ -646,6 +651,7 @@ fn metadata_from_feature_layer(
                 registry: parsed.registry.clone(),
                 repository: parsed.repository.clone(),
                 tag: parsed.tag.clone(),
+                reference_digest: parsed.digest.clone(),
                 manifest_digest: String::new(),
                 manifest: json!({}),
                 metadata: json!({}),
@@ -714,9 +720,13 @@ fn extract_feature_layer(bytes: &[u8], media_type: &str, destination: &Path) -> 
             if let Some(parent) = destination_path.parent() {
                 fs::create_dir_all(parent).map_err(|error| error.to_string())?;
             }
-            let mut output =
-                fs::File::create(&destination_path).map_err(|error| error.to_string())?;
-            io::copy(&mut entry, &mut output).map_err(|error| error.to_string())?;
+            let mode = entry.header().mode().map_err(|error| error.to_string())?;
+            {
+                let mut output =
+                    fs::File::create(&destination_path).map_err(|error| error.to_string())?;
+                io::copy(&mut entry, &mut output).map_err(|error| error.to_string())?;
+            }
+            set_archive_file_mode(&destination_path, mode)?;
         } else {
             return Err(format!(
                 "OCI Feature layer contains unsupported archive entry: {}",
@@ -725,6 +735,19 @@ fn extract_feature_layer(bytes: &[u8], media_type: &str, destination: &Path) -> 
         }
     }
     Ok(())
+}
+
+fn set_archive_file_mode(path: &Path, mode: u32) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode & 0o7777))
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode);
+        Ok(())
+    }
 }
 
 fn feature_layer_reader<'a>(bytes: &'a [u8], media_type: &str) -> Box<dyn Read + 'a> {
@@ -998,6 +1021,14 @@ fn fixture_feature_artifact(parsed: &OciReference) -> Result<Option<OciFeatureAr
                 .map(|bytes| format!("sha256:{}", sha256_digest(&bytes)))
                 .unwrap_or_default()
         });
+    if let Some(expected) = &parsed.digest {
+        if expected != &manifest_digest {
+            return Err(format!(
+                "OCI registry manifest digest mismatch for {}: expected {expected}, got {manifest_digest}",
+                parsed.original
+            ));
+        }
+    }
     Ok(Some(OciFeatureArtifact {
         original_reference: parsed.original.clone(),
         resource: parsed.resource.clone(),
@@ -1007,6 +1038,7 @@ fn fixture_feature_artifact(parsed: &OciReference) -> Result<Option<OciFeatureAr
             .map(|entry| entry.version)
             .or_else(|| parsed.tag.clone())
             .or_else(|| Some("latest".to_string())),
+        reference_digest: parsed.digest.clone(),
         manifest_digest,
         manifest,
         metadata,
@@ -1379,8 +1411,8 @@ mod tests {
     use tar::{Builder, Header};
 
     use super::{
-        extract_feature_layer, parse_oci_reference, resolve_feature_artifact_for_reference,
-        OciHttpResponse, OciReference, OciTransport,
+        extract_feature_layer, feature_ref_json, parse_oci_reference,
+        resolve_feature_artifact_for_reference, OciHttpResponse, OciReference, OciTransport,
     };
 
     #[derive(Clone, Default)]
@@ -1455,9 +1487,18 @@ mod tests {
     }
 
     fn append_file<W: Write>(builder: &mut Builder<W>, path: &str, bytes: &[u8]) {
+        append_file_with_mode(builder, path, bytes, 0o644);
+    }
+
+    fn append_file_with_mode<W: Write>(
+        builder: &mut Builder<W>,
+        path: &str,
+        bytes: &[u8],
+        mode: u32,
+    ) {
         let mut header = Header::new_gnu();
         header.set_size(bytes.len() as u64);
-        header.set_mode(0o644);
+        header.set_mode(mode);
         header.set_cksum();
         builder
             .append_data(&mut header, path, bytes)
@@ -1554,6 +1595,83 @@ mod tests {
     }
 
     #[test]
+    fn resolves_non_semver_tags_as_exact_registry_references() {
+        let transport = FakeTransport::default();
+        let reference = OciReference {
+            original: "ghcr.io/acme/features/fake:dev".to_string(),
+            resource: "ghcr.io/acme/features/fake".to_string(),
+            registry: "ghcr.io".to_string(),
+            repository: "acme/features/fake".to_string(),
+            tag: Some("dev".to_string()),
+            digest: None,
+        };
+        let metadata = json!({"id":"fake","version":"dev"});
+        let manifest = json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "annotations": {
+                "dev.containers.metadata": metadata.to_string(),
+            },
+            "layers": [],
+        });
+        transport.add(
+            "https://ghcr.io/v2/acme/features/fake/manifests/dev",
+            manifest_response(&manifest),
+        );
+
+        let artifact =
+            resolve_feature_artifact_for_reference(&reference, None, &transport).expect("artifact");
+
+        assert_eq!(artifact.tag.as_deref(), Some("dev"));
+        assert_eq!(artifact.metadata["id"], "fake");
+    }
+
+    #[test]
+    fn fixture_artifact_rejects_unmatched_digest_pin() {
+        let reference = parse_oci_reference(
+            "ghcr.io/devcontainers/features/common-utils@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .expect("reference");
+
+        let error =
+            resolve_feature_artifact_for_reference(&reference, None, &FakeTransport::default())
+                .expect_err("digest mismatch");
+
+        assert!(error.contains("digest mismatch"), "{error}");
+    }
+
+    #[test]
+    fn feature_ref_digest_is_only_serialized_for_digest_pinned_references() {
+        let tag_reference =
+            parse_oci_reference("ghcr.io/devcontainers/features/azure-cli:1").expect("reference");
+        let tag_artifact =
+            resolve_feature_artifact_for_reference(&tag_reference, None, &FakeTransport::default())
+                .expect("tag artifact");
+
+        let tag_feature_ref = feature_ref_json(&tag_artifact);
+
+        assert!(tag_feature_ref
+            .as_object()
+            .expect("featureRef object")
+            .get("digest")
+            .is_none());
+
+        let digest = "sha256:a00aa292592a8df58a940d6f6dfcf2bfd3efab145f62a17ccb12656528793134";
+        let digest_reference = parse_oci_reference(&format!(
+            "ghcr.io/devcontainers/features/azure-cli@{digest}"
+        ))
+        .expect("reference");
+        let digest_artifact = resolve_feature_artifact_for_reference(
+            &digest_reference,
+            None,
+            &FakeTransport::default(),
+        )
+        .expect("digest artifact");
+
+        assert_eq!(feature_ref_json(&digest_artifact)["digest"], digest);
+    }
+
+    #[test]
     fn rejects_manifest_digest_mismatch() {
         let transport = FakeTransport::default();
         let reference = OciReference {
@@ -1588,5 +1706,34 @@ mod tests {
             assert!(destination.join("repo").join("data.txt").is_file());
             let _ = std::fs::remove_dir_all(destination);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extract_feature_layer_preserves_file_modes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut archive = Vec::new();
+        {
+            let mut builder = Builder::new(&mut archive);
+            append_file_with_mode(&mut builder, "bin/helper", b"#!/bin/sh\n", 0o755);
+            builder.finish().expect("finish archive");
+        }
+        let destination = crate::test_support::unique_temp_dir("devcontainer-oci-mode-test");
+
+        extract_feature_layer(
+            &archive,
+            "application/vnd.devcontainers.layer.v1+tar",
+            &destination,
+        )
+        .expect("extract");
+
+        let mode = std::fs::metadata(destination.join("bin").join("helper"))
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755);
+        let _ = std::fs::remove_dir_all(destination);
     }
 }

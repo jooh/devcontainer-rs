@@ -57,7 +57,6 @@ pub(super) fn build_feature_info_payload_with_workspace(
     feature_path: &str,
     workspace_folder: Option<&Path>,
 ) -> Result<Value, String> {
-    let manifest = feature_manifest(feature_path, workspace_folder)?;
     match mode {
         "manifest" => {
             if oci::is_registry_qualified_reference(feature_path) {
@@ -68,6 +67,7 @@ pub(super) fn build_feature_info_payload_with_workspace(
                     "canonicalId": canonical_id,
                 }))
             } else {
+                let manifest = feature_manifest(feature_path, workspace_folder)?;
                 Ok(json!({
                     "id": manifest.get("id").cloned().unwrap_or_else(|| Value::String("unknown".to_string())),
                     "name": manifest.get("name").cloned().unwrap_or_else(|| Value::String("unknown".to_string())),
@@ -80,20 +80,25 @@ pub(super) fn build_feature_info_payload_with_workspace(
             if oci::is_registry_qualified_reference(feature_path) {
                 Ok(json!({
                     "feature": normalize_collection_reference(feature_path),
-                    "publishedTags": feature_tags(feature_path, &manifest, workspace_folder)?,
+                    "publishedTags": published_feature_tags(feature_path, workspace_folder)?,
                 }))
             } else {
+                let manifest = feature_manifest(feature_path, workspace_folder)?;
                 Ok(json!({
                     "feature": normalize_collection_reference(feature_path),
                     "tags": feature_tags(feature_path, &manifest, workspace_folder)?,
                 }))
             }
         }
-        "dependencies" => Ok(json!({
-            "feature": normalize_collection_reference(feature_path),
-            "dependsOn": manifest.get("dependsOn").cloned().unwrap_or_else(|| json!({})),
-        })),
+        "dependencies" => {
+            let manifest = feature_manifest(feature_path, workspace_folder)?;
+            Ok(json!({
+                "feature": normalize_collection_reference(feature_path),
+                "dependsOn": manifest.get("dependsOn").cloned().unwrap_or_else(|| json!({})),
+            }))
+        }
         "verbose" => {
+            let manifest = feature_manifest(feature_path, workspace_folder)?;
             if oci::is_registry_qualified_reference(feature_path) {
                 let (oci_manifest, canonical_id) =
                     published_feature_manifest_payload(feature_path, workspace_folder)?;
@@ -132,8 +137,7 @@ fn feature_tags(
     workspace_folder: Option<&Path>,
 ) -> Result<Vec<Value>, String> {
     if oci::is_registry_qualified_reference(feature_path) {
-        return oci::list_feature_tags(feature_path, workspace_folder)
-            .map(|tags| tags.into_iter().map(Value::String).collect());
+        return published_feature_tags(feature_path, workspace_folder);
     }
 
     Ok(manifest
@@ -141,6 +145,14 @@ fn feature_tags(
         .cloned()
         .map(|version| vec![version])
         .unwrap_or_default())
+}
+
+fn published_feature_tags(
+    feature_path: &str,
+    workspace_folder: Option<&Path>,
+) -> Result<Vec<Value>, String> {
+    oci::list_feature_tags(feature_path, workspace_folder)
+        .map(|tags| tags.into_iter().map(Value::String).collect())
 }
 
 fn published_feature_manifest_payload(
