@@ -72,7 +72,7 @@ fn latest_oci_version(
 ) -> Result<Option<String>, String> {
     let mut tags = oci::list_feature_tags(base, workspace_folder)?
         .into_iter()
-        .filter(|tag| parse_version(tag).is_some())
+        .filter(|tag| is_exact_semver(tag))
         .collect::<Vec<_>>();
     tags.sort_by(|left, right| compare_versions_desc(left, right));
     if let Some(tag) = tags.into_iter().next() {
@@ -539,7 +539,7 @@ mod tests {
     use serde_json::json;
     use sha2::{Digest, Sha256};
 
-    use super::{catalog_entries, exact_catalog_entry};
+    use super::{catalog_entries, exact_catalog_entry, latest_oci_version};
 
     fn write_layout_version(
         workspace_root: &std::path::Path,
@@ -607,6 +607,38 @@ mod tests {
         digest
     }
 
+    fn replace_layout_tags(workspace_root: &std::path::Path, base: &str, tags: &[(&str, &str)]) {
+        let layout_dir = workspace_root
+            .join(".devcontainer")
+            .join("oci-layouts")
+            .join(base);
+        let manifests = tags
+            .iter()
+            .map(|(tag, digest)| {
+                let size = fs::metadata(layout_dir.join("blobs").join("sha256").join(digest))
+                    .expect("manifest blob metadata")
+                    .len();
+                json!({
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": format!("sha256:{digest}"),
+                    "size": size,
+                    "annotations": {
+                        "org.opencontainers.image.ref.name": tag,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        fs::write(
+            layout_dir.join("index.json"),
+            serde_json::to_string_pretty(&json!({
+                "schemaVersion": 2,
+                "manifests": manifests,
+            }))
+            .expect("index payload"),
+        )
+        .expect("index write");
+    }
+
     fn sha256_digest(bytes: &[u8]) -> String {
         let mut hasher = Sha256::new();
         hasher.update(bytes);
@@ -650,6 +682,28 @@ mod tests {
         .expect("git catalog entries");
 
         assert_eq!(entries.first().expect("first entry").version, "9.9.9");
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn latest_oci_version_ignores_moving_semantic_tags() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-catalog-test");
+        let base = "ghcr.io/acme/features/published-feature";
+        let digest = write_layout_version(&workspace, base, "2.0.0", None);
+        replace_layout_tags(
+            &workspace,
+            base,
+            &[
+                ("2", &digest),
+                ("2.0", &digest),
+                ("2.0.0", &digest),
+                ("latest", &digest),
+            ],
+        );
+
+        let latest = latest_oci_version(base, Some(workspace.as_path())).expect("latest version");
+
+        assert_eq!(latest.as_deref(), Some("2.0.0"));
         let _ = fs::remove_dir_all(workspace);
     }
 

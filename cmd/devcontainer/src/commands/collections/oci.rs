@@ -657,10 +657,9 @@ fn metadata_from_feature_layer(
                 metadata: json!({}),
                 layer: layer.clone(),
             };
-            (
-                registry_blob(&placeholder, digest, transport)?,
-                media_type.clone(),
-            )
+            let bytes = registry_blob(&placeholder, digest, transport)?;
+            verify_digest(digest, &bytes, "Feature layer")?;
+            (bytes, media_type.clone())
         }
         OciFeatureLayer::LocalPath {
             digest,
@@ -1466,6 +1465,10 @@ mod tests {
     }
 
     fn layer_bytes(gzip: bool) -> Vec<u8> {
+        layer_bytes_with_manifest(gzip, br#"{"id":"fake","version":"1.0.0"}"#)
+    }
+
+    fn layer_bytes_with_manifest(gzip: bool, manifest: &[u8]) -> Vec<u8> {
         let mut archive = Vec::new();
         {
             let writer: Box<dyn Write> = if gzip {
@@ -1474,11 +1477,7 @@ mod tests {
                 Box::new(&mut archive)
             };
             let mut builder = Builder::new(writer);
-            append_file(
-                &mut builder,
-                "devcontainer-feature.json",
-                br#"{"id":"fake","version":"1.0.0"}"#,
-            );
+            append_file(&mut builder, "devcontainer-feature.json", manifest);
             append_file(&mut builder, "install.sh", b"#!/bin/sh\nset -eu\n");
             append_file(&mut builder, "repo/data.txt", b"data");
             builder.finish().expect("finish archive");
@@ -1691,6 +1690,53 @@ mod tests {
             resolve_feature_artifact_for_reference(&reference, None, &transport).expect_err("err");
 
         assert!(error.contains("digest mismatch"), "{error}");
+    }
+
+    #[test]
+    fn rejects_fallback_metadata_layer_digest_mismatch() {
+        let transport = FakeTransport::default();
+        let reference = OciReference {
+            original: "ghcr.io/acme/features/fake:1.0.0".to_string(),
+            resource: "ghcr.io/acme/features/fake".to_string(),
+            registry: "ghcr.io".to_string(),
+            repository: "acme/features/fake".to_string(),
+            tag: Some("1.0.0".to_string()),
+            digest: None,
+        };
+        let expected_layer = layer_bytes_with_manifest(
+            false,
+            br#"{"id":"fake","version":"1.0.0","dependsOn":["ghcr.io/acme/features/base"]}"#,
+        );
+        let expected_digest = format!("sha256:{}", super::sha256_digest(&expected_layer));
+        let manifest = json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "layers": [{
+                "mediaType": "application/vnd.devcontainers.layer.v1+tar",
+                "digest": expected_digest,
+            }],
+        });
+        transport.add(
+            "https://ghcr.io/v2/acme/features/fake/manifests/1.0.0",
+            manifest_response(&manifest),
+        );
+        let wrong_layer = layer_bytes_with_manifest(
+            false,
+            br#"{"id":"fake","version":"9.9.9","dependsOn":["ghcr.io/acme/features/untrusted"]}"#,
+        );
+        transport.add(
+            &format!("https://ghcr.io/v2/acme/features/fake/blobs/{expected_digest}"),
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: wrong_layer,
+            },
+        );
+
+        let error =
+            resolve_feature_artifact_for_reference(&reference, None, &transport).expect_err("err");
+
+        assert!(error.contains("Feature layer digest mismatch"), "{error}");
     }
 
     #[test]
