@@ -12,6 +12,7 @@ use super::catalog::{
 };
 use super::load::load_config;
 use super::{FeatureReference, Lockfile, LockfileEntry};
+use crate::commands::collections::oci;
 use crate::commands::common;
 use crate::output::{CommandLogLevel, CommandLogger, LogFormat, TerminalDimensions};
 
@@ -158,7 +159,8 @@ fn build_outdated_payload_with_logger(
             &reference,
             lockfile.as_ref(),
             Some(loaded.workspace_folder.as_path()),
-        ) else {
+        )?
+        else {
             continue;
         };
         payload_features.insert(feature_id.clone(), feature_info);
@@ -338,7 +340,7 @@ fn generate_lockfile(
             continue;
         };
 
-        let (lockfile_key, entry) = generate_lockfile_entry(&reference, workspace_folder)
+        let (lockfile_key, entry) = generate_lockfile_entry(&reference, workspace_folder)?
             .ok_or_else(|| {
                 format!("Unsupported feature for native lockfile generation: {feature_id}")
             })?;
@@ -351,35 +353,67 @@ fn generate_lockfile(
 fn generate_lockfile_entry(
     feature: &FeatureReference,
     workspace_folder: Option<&Path>,
-) -> Option<(String, LockfileEntry)> {
+) -> Result<Option<(String, LockfileEntry)>, String> {
+    if oci::is_registry_qualified_reference(&feature.base) {
+        let artifact = oci::resolve_feature_artifact(&feature.original, workspace_folder)?;
+        return Ok(Some((
+            feature.original.clone(),
+            LockfileEntry {
+                version: artifact
+                    .metadata
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .or(artifact.tag.as_deref())
+                    .unwrap_or("latest")
+                    .to_string(),
+                resolved: oci::canonical_feature_id(&artifact),
+                integrity: artifact.manifest_digest,
+                depends_on: feature_depends_on_entries(&artifact.metadata),
+            },
+        )));
+    }
+
     if feature.digest.is_some() {
-        return exact_catalog_entry(&feature.original, workspace_folder).map(|entry| {
-            (
-                feature.original.clone(),
-                LockfileEntry {
-                    version: entry.version.clone(),
-                    resolved: entry.resolved.clone(),
-                    integrity: entry.integrity.clone(),
-                    depends_on: entry.depends_on.clone(),
-                },
-            )
-        });
+        return Ok(
+            exact_catalog_entry(&feature.original, workspace_folder).map(|entry| {
+                (
+                    feature.original.clone(),
+                    LockfileEntry {
+                        version: entry.version.clone(),
+                        resolved: entry.resolved.clone(),
+                        integrity: entry.integrity.clone(),
+                        depends_on: entry.depends_on.clone(),
+                    },
+                )
+            }),
+        );
     }
 
     let version = if let Some(tag) = feature.tag.as_deref() {
         if tag == "latest" {
-            latest_version(&feature.base, workspace_folder)?
+            let Some(version) = latest_version(&feature.base, workspace_folder) else {
+                return Ok(None);
+            };
+            version
         } else if tag.matches('.').count() == 2 {
             tag.to_string()
         } else {
-            resolve_wanted_version(feature, None, workspace_folder)?
+            let Some(version) = resolve_wanted_version(feature, None, workspace_folder) else {
+                return Ok(None);
+            };
+            version
         }
     } else {
-        latest_version(&feature.base, workspace_folder)?
+        let Some(version) = latest_version(&feature.base, workspace_folder) else {
+            return Ok(None);
+        };
+        version
     };
 
-    let entry = catalog_entry_for_version(&feature.base, &version, workspace_folder)?;
-    Some((
+    let Some(entry) = catalog_entry_for_version(&feature.base, &version, workspace_folder) else {
+        return Ok(None);
+    };
+    Ok(Some((
         feature.original.clone(),
         LockfileEntry {
             version,
@@ -387,7 +421,23 @@ fn generate_lockfile_entry(
             integrity: entry.integrity.clone(),
             depends_on: entry.depends_on.clone(),
         },
-    ))
+    )))
+}
+
+fn feature_depends_on_entries(metadata: &Value) -> Option<Vec<String>> {
+    let depends_on = metadata.get("dependsOn")?;
+    let entries = if let Some(object) = depends_on.as_object() {
+        object.keys().cloned().collect::<Vec<_>>()
+    } else if let Some(array) = depends_on.as_array() {
+        array
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    (!entries.is_empty()).then_some(entries)
 }
 
 pub(super) fn lockfile_path(config_file: &Path) -> PathBuf {

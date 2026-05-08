@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use super::support::unique_temp_dir;
 use crate::commands::common::copy_directory_recursive;
@@ -19,6 +20,61 @@ fn upstream_feature_set_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../upstream/src/test/container-features")
         .join(relative)
+}
+
+fn write_oci_layout_manifest(
+    workspace_root: &Path,
+    resource: &str,
+    tag: &str,
+    metadata: serde_json::Value,
+) -> String {
+    let layout_dir = workspace_root
+        .join(".devcontainer")
+        .join("oci-layouts")
+        .join(resource);
+    fs::create_dir_all(layout_dir.join("blobs").join("sha256")).expect("layout blobs");
+    fs::write(
+        layout_dir.join("oci-layout"),
+        "{\n  \"imageLayoutVersion\": \"1.0.0\"\n}\n",
+    )
+    .expect("layout marker");
+    let manifest = json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "annotations": {
+            "dev.containers.metadata": metadata.to_string(),
+        },
+        "layers": [],
+    });
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest).expect("manifest bytes");
+    let mut hasher = Sha256::new();
+    hasher.update(&manifest_bytes);
+    let digest = format!("sha256:{:x}", hasher.finalize());
+    fs::write(
+        layout_dir
+            .join("blobs")
+            .join("sha256")
+            .join(digest.trim_start_matches("sha256:")),
+        &manifest_bytes,
+    )
+    .expect("manifest blob");
+    fs::write(
+        layout_dir.join("index.json"),
+        serde_json::to_string_pretty(&json!({
+            "schemaVersion": 2,
+            "manifests": [{
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": digest,
+                "size": manifest_bytes.len(),
+                "annotations": {
+                    "org.opencontainers.image.ref.name": tag,
+                }
+            }],
+        }))
+        .expect("index json"),
+    )
+    .expect("index write");
+    digest
 }
 
 #[test]
@@ -458,6 +514,17 @@ fn read_configuration_keeps_registry_qualified_oci_features_on_oci_source_path()
     let root = unique_temp_dir();
     let config_dir = root.join(".devcontainer");
     fs::create_dir_all(&config_dir).expect("failed to create config directory");
+    write_oci_layout_manifest(
+        &root,
+        "registry.example.com/org/features/foo",
+        "1",
+        json!({
+            "id": "foo",
+            "name": "Foo",
+            "version": "1.0.0",
+            "options": {},
+        }),
+    );
     fs::write(
         config_dir.join("devcontainer.json"),
         "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"registry.example.com/org/features/foo:1\": {}\n  }\n}\n",
@@ -484,11 +551,9 @@ fn read_configuration_keeps_registry_qualified_oci_features_on_oci_source_path()
         source_information["featureRef"]["registry"],
         "registry.example.com"
     );
-    assert_eq!(
-        source_information["featureRef"]["namespace"],
-        "org/features"
-    );
+    assert_eq!(source_information["featureRef"]["path"], "org/features/foo");
     assert_eq!(source_information["featureRef"]["id"], "foo");
+    assert_eq!(source_information["featureRef"]["version"], "1.0.0");
     assert_eq!(source_information["featureRef"]["tag"], "1");
 
     let _ = fs::remove_dir_all(root);
@@ -499,9 +564,22 @@ fn read_configuration_preserves_digest_from_user_pinned_oci_feature() {
     let root = unique_temp_dir();
     let config_dir = root.join(".devcontainer");
     fs::create_dir_all(&config_dir).expect("failed to create config directory");
+    let digest = write_oci_layout_manifest(
+        &root,
+        "ghcr.io/acme/features/foo",
+        "1.0.0",
+        json!({
+            "id": "foo",
+            "name": "Foo",
+            "version": "1.0.0",
+            "options": {},
+        }),
+    );
     fs::write(
         config_dir.join("devcontainer.json"),
-        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/acme/features/foo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\": {}\n  }\n}\n",
+        format!(
+            "{{\n  \"image\": \"debian:bookworm\",\n  \"features\": {{\n    \"ghcr.io/acme/features/foo@{digest}\": {{}}\n  }}\n}}\n"
+        ),
     )
     .expect("failed to write config");
 
@@ -517,7 +595,7 @@ fn read_configuration_preserves_digest_from_user_pinned_oci_feature() {
         .expect("feature sets");
     assert_eq!(
         feature_sets[0]["sourceInformation"]["manifestDigest"],
-        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        digest
     );
 
     let _ = fs::remove_dir_all(root);

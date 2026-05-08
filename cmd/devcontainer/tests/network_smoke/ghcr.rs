@@ -2,6 +2,7 @@
 
 use serde_json::Value;
 
+use crate::support::runtime_harness::{write_devcontainer_config, RuntimeHarness};
 use crate::support::test_support::devcontainer_command;
 
 #[test]
@@ -74,4 +75,38 @@ fn features_info_verbose_reads_live_ghcr_manifest_when_enabled() {
         manifest_payload["canonicalId"]
     );
     assert_eq!(verbose_payload["manifest"], manifest_payload["manifest"]);
+}
+
+#[test]
+#[ignore = "requires outbound internet access to ghcr.io"]
+fn build_materializes_live_ghcr_feature_without_features_path() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"debian:trixie\",\n  \"features\": {\n    \"ghcr.io/jooh/offline-apt-devcontainer-feature/offline-apt:1.0.0\": {\n      \"packages\": \"jq\",\n      \"strict\": true\n    }\n  }\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "build",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--image-name",
+            "example/native-build:live-ghcr-feature",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let dockerfiles = std::fs::read_to_string(harness.log_dir.join("build-dockerfiles.log"))
+        .expect("build dockerfiles log");
+    assert!(dockerfiles.contains("COPY feature-0-offline-apt"));
+    assert!(dockerfiles.contains("PACKAGES="));
+    assert!(dockerfiles.contains("jq"));
+    assert!(dockerfiles.contains("STRICT="));
+    assert!(dockerfiles.contains("true"));
 }

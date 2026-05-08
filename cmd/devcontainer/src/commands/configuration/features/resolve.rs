@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
 
+use crate::commands::collections::oci;
 use crate::commands::collections::registry::{
     collection_reference_version, collection_slug, direct_tarball_feature_manifest,
-    normalize_collection_reference, published_feature_manifest, published_feature_manifest_digest,
-    published_feature_oci_manifest,
+    normalize_collection_reference, published_feature_manifest,
 };
 use crate::commands::common;
 
@@ -55,7 +55,8 @@ pub(crate) fn resolve_feature_support(
             options: options.clone(),
         })
         .collect::<Vec<_>>();
-    let graph = build_dependency_graph(root_requests, configuration, config_root)?;
+    let graph =
+        build_dependency_graph(root_requests, configuration, config_root, workspace_folder)?;
     let ordered_nodes = compute_feature_install_order(graph)?;
 
     let mut feature_sets = Vec::new();
@@ -130,12 +131,13 @@ fn build_dependency_graph(
     root_requests: Vec<FeatureRequest>,
     configuration: &Value,
     config_root: &Path,
+    workspace_folder: &Path,
 ) -> Result<Vec<FeatureNode>, String> {
     let mut worklist = VecDeque::from(root_requests);
     let mut resolved = Vec::new();
 
     while let Some(request) = worklist.pop_front() {
-        let node = resolve_feature_node(&request, config_root)?;
+        let node = resolve_feature_node(&request, config_root, workspace_folder)?;
         if resolved.iter().any(|existing| nodes_equal(existing, &node)) {
             continue;
         }
@@ -145,24 +147,35 @@ fn build_dependency_graph(
         resolved.push(node);
     }
 
-    apply_override_feature_install_order(&mut resolved, configuration, config_root)?;
+    apply_override_feature_install_order(
+        &mut resolved,
+        configuration,
+        config_root,
+        workspace_folder,
+    )?;
     Ok(resolved)
 }
 
 fn resolve_feature_node(
     request: &FeatureRequest,
     config_root: &Path,
+    workspace_folder: &Path,
 ) -> Result<FeatureNode, String> {
-    let spec = resolve_feature_spec(&request.user_feature_id, &request.options, config_root)?;
+    let spec = resolve_feature_spec(
+        &request.user_feature_id,
+        &request.options,
+        config_root,
+        workspace_folder,
+    )?;
     let depends_on = spec
         .depends_on
         .iter()
-        .map(|dependency| resolve_feature_dependency(dependency, config_root))
+        .map(|dependency| resolve_feature_dependency(dependency, config_root, workspace_folder))
         .collect::<Result<Vec<_>, _>>()?;
     let installs_after = spec
         .installs_after
         .iter()
-        .map(|dependency| resolve_feature_dependency(dependency, config_root))
+        .map(|dependency| resolve_feature_dependency(dependency, config_root, workspace_folder))
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(FeatureNode {
@@ -176,8 +189,14 @@ fn resolve_feature_node(
 fn resolve_feature_dependency(
     request: &FeatureRequest,
     config_root: &Path,
+    workspace_folder: &Path,
 ) -> Result<FeatureDependency, String> {
-    let spec = resolve_feature_spec(&request.user_feature_id, &request.options, config_root)?;
+    let spec = resolve_feature_spec(
+        &request.user_feature_id,
+        &request.options,
+        config_root,
+        workspace_folder,
+    )?;
     Ok(FeatureDependency {
         request: request.clone(),
         spec,
@@ -188,6 +207,7 @@ fn apply_override_feature_install_order(
     worklist: &mut [FeatureNode],
     configuration: &Value,
     config_root: &Path,
+    workspace_folder: &Path,
 ) -> Result<(), String> {
     let Some(overrides) = configuration
         .get("overrideFeatureInstallOrder")
@@ -207,7 +227,7 @@ fn apply_override_feature_install_order(
             user_feature_id: override_id.to_string(),
             options: json!({}),
         };
-        let dependency = resolve_feature_dependency(&request, config_root)?;
+        let dependency = resolve_feature_dependency(&request, config_root, workspace_folder)?;
         for node in worklist.iter_mut() {
             if node_satisfies_soft_dependency(node, &dependency) {
                 node.round_priority = node.round_priority.max(priority);
@@ -435,6 +455,7 @@ fn resolve_feature_spec(
     feature_id: &str,
     value: &Value,
     config_root: &Path,
+    workspace_folder: &Path,
 ) -> Result<FeatureSpec, String> {
     let (manifest, source_information, installation, source, install_order_id) =
         if is_local_feature_reference(feature_id) {
@@ -517,38 +538,24 @@ fn resolve_feature_spec(
                 feature_id.to_string(),
             )
         } else {
-            let manifest = published_feature_manifest(feature_id).unwrap_or_else(|| {
-                generic_feature_manifest(
-                    &collection_slug(feature_id).unwrap_or_else(|| feature_id.to_string()),
-                    collection_reference_version(feature_id),
-                )
-            });
-            let resource = oci_resource(feature_id);
-            let tag = oci_reference_tag(feature_id);
-            let digest = oci_reference_digest(feature_id)
-                .or_else(|| published_feature_manifest_digest(feature_id).map(str::to_string))
-                .unwrap_or_default();
+            let artifact = oci::resolve_feature_artifact(feature_id, Some(workspace_folder))?;
+            let manifest = artifact.metadata.clone();
+            let resource = artifact.resource.clone();
+            let tag = artifact.tag.clone();
+            let digest = artifact.manifest_digest.clone();
             let source_information = json!({
                 "type": "oci",
                 "userFeatureId": feature_id,
-                "userFeatureIdWithoutVersion": normalize_collection_reference(feature_id),
-                "featureRef": oci_feature_ref(feature_id, &resource),
+                "userFeatureIdWithoutVersion": resource,
+                "featureRef": oci::feature_ref_json(&artifact),
                 "manifestDigest": digest.clone(),
-                "manifest": published_feature_oci_manifest(feature_id),
+                "manifest": artifact.manifest.clone(),
             });
             let installation = FeatureInstallation {
-                source: FeatureInstallationSource::Published(feature_id.to_string()),
+                source: FeatureInstallationSource::Published(Box::new(artifact.clone())),
                 env: feature_option_values_from_manifest(&manifest, value),
             };
-            let install_order_id = if digest.is_empty() {
-                if feature_id.starts_with("ghcr.io/") {
-                    resource.clone()
-                } else {
-                    feature_id.to_string()
-                }
-            } else {
-                format!("{resource}@{digest}")
-            };
+            let install_order_id = oci::canonical_feature_id(&artifact);
             (
                 manifest,
                 source_information,
@@ -693,46 +700,6 @@ fn github_repo_id_without_version(feature_id: &str) -> String {
         .filter(|index| *index > last_slash)
         .map(|index| feature_id[..index].to_string())
         .unwrap_or_else(|| feature_id.to_string())
-}
-
-fn oci_resource(feature_id: &str) -> String {
-    let normalized = normalize_collection_reference(feature_id).to_ascii_lowercase();
-    if is_registry_qualified_oci_reference(feature_id) {
-        return normalized;
-    }
-    format!("ghcr.io/devcontainers/features/{}", normalized)
-}
-
-fn oci_reference_tag(feature_id: &str) -> Option<String> {
-    let normalized = normalize_collection_reference(feature_id);
-    feature_id
-        .strip_prefix(&normalized)
-        .and_then(|suffix| suffix.strip_prefix(':'))
-        .map(str::to_string)
-}
-
-fn oci_reference_digest(feature_id: &str) -> Option<String> {
-    let normalized = normalize_collection_reference(feature_id);
-    feature_id
-        .strip_prefix(&normalized)
-        .and_then(|suffix| suffix.strip_prefix('@'))
-        .map(str::to_string)
-}
-
-fn oci_feature_ref(feature_id: &str, resource: &str) -> Value {
-    let mut parts = resource.split('/').collect::<Vec<_>>();
-    let id = parts.pop().unwrap_or_default();
-    let registry = parts.first().copied().unwrap_or_default();
-    let namespace = parts.get(1..).unwrap_or_default().join("/");
-    let mut feature_ref = Map::new();
-    feature_ref.insert("resource".to_string(), Value::String(resource.to_string()));
-    feature_ref.insert("registry".to_string(), Value::String(registry.to_string()));
-    feature_ref.insert("namespace".to_string(), Value::String(namespace));
-    feature_ref.insert("id".to_string(), Value::String(id.to_string()));
-    if let Some(tag) = oci_reference_tag(feature_id) {
-        feature_ref.insert("tag".to_string(), Value::String(tag));
-    }
-    Value::Object(feature_ref)
 }
 
 fn generic_feature_manifest(id: &str, version: String) -> Value {

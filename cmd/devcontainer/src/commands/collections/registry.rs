@@ -1,14 +1,10 @@
 //! Registry lookup helpers for bundled collections and published features.
 
-use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-
-use crate::process_runner::{self, ProcessLogLevel, ProcessRequest};
 
 pub(super) fn embedded_template_source_dir(reference: &str) -> Option<PathBuf> {
     let slug = collection_slug(reference)?;
@@ -27,11 +23,6 @@ pub(super) fn embedded_template_source_dir(reference: &str) -> Option<PathBuf> {
 pub(super) struct LocalOciArtifact {
     pub metadata: Value,
     pub layer_path: Option<PathBuf>,
-}
-
-pub(crate) struct LiveRegistryManifest {
-    pub manifest: Value,
-    pub digest: String,
 }
 
 pub(crate) fn published_feature_install_script(feature_id: &str) -> &'static str {
@@ -291,79 +282,6 @@ pub(crate) fn published_feature_manifest_digest(feature_id: &str) -> Option<&'st
     }
 }
 
-pub(crate) fn published_feature_oci_manifest(feature_id: &str) -> Option<Value> {
-    let normalized = normalize_collection_reference(feature_id);
-    let feature_manifest = published_feature_manifest(feature_id)?;
-    let metadata = serde_json::to_string(&feature_manifest).ok()?;
-    let config_bytes = metadata.as_bytes();
-    let layer_title = format!("devcontainer-feature-{}.tgz", collection_slug(&normalized)?);
-    let layer_bytes = published_feature_install_script(feature_id).as_bytes();
-
-    Some(json!({
-        "schemaVersion": 2,
-        "mediaType": "application/vnd.oci.image.manifest.v1+json",
-        "config": {
-            "mediaType": "application/vnd.devcontainers",
-            "digest": format!("sha256:{}", sha256_digest(config_bytes)),
-            "size": config_bytes.len(),
-        },
-        "layers": [{
-            "mediaType": "application/vnd.devcontainers.layer.v1+tar",
-            "digest": format!("sha256:{}", sha256_digest(layer_bytes)),
-            "size": layer_bytes.len(),
-            "annotations": {
-                "org.opencontainers.image.title": layer_title,
-            }
-        }],
-        "annotations": {
-            "dev.containers.metadata": metadata,
-            "com.github.package.type": "devcontainer_feature",
-            "org.opencontainers.image.ref.name": feature_id,
-        }
-    }))
-}
-
-pub(crate) fn live_ghcr_feature_manifest(
-    feature_id: &str,
-) -> Result<Option<LiveRegistryManifest>, String> {
-    if !live_ghcr_enabled() || !feature_id.starts_with("ghcr.io/") {
-        return Ok(None);
-    }
-
-    let normalized = normalize_collection_reference(feature_id);
-    if !normalized.contains("/features/") {
-        return Ok(None);
-    }
-
-    let repository = normalized
-        .strip_prefix("ghcr.io/")
-        .ok_or_else(|| format!("Unsupported GHCR feature reference: {feature_id}"))?;
-    let reference = collection_reference_version(feature_id);
-    let manifest_url = format!("https://ghcr.io/v2/{repository}/manifests/{reference}");
-    let headers = fetch_http_headers(&manifest_url, None, Some(OCI_MANIFEST_ACCEPT))?;
-    let challenge = headers
-        .headers
-        .get("www-authenticate")
-        .cloned()
-        .ok_or_else(|| format!("GHCR did not return an auth challenge for {feature_id}"))?;
-    let token = fetch_bearer_token(&challenge)?;
-    let response = fetch_json_response(
-        &manifest_url,
-        Some(&format!("Bearer {token}")),
-        Some(OCI_MANIFEST_ACCEPT),
-    )?;
-    let digest = response
-        .headers
-        .get("docker-content-digest")
-        .cloned()
-        .ok_or_else(|| format!("GHCR manifest response for {feature_id} is missing a digest"))?;
-
-    Ok(Some(LiveRegistryManifest {
-        manifest: response.body,
-        digest,
-    }))
-}
-
 pub(super) fn published_template_manifest_with_workspace(
     template_id: &str,
     workspace_folder: Option<&Path>,
@@ -469,155 +387,6 @@ pub(super) fn humanize_collection_slug(slug: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn sha256_digest(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
-}
-
-const OCI_MANIFEST_ACCEPT: &str =
-    "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json";
-
-fn live_ghcr_enabled() -> bool {
-    matches!(
-        env::var("DEVCONTAINER_ENABLE_LIVE_GHCR").ok().as_deref(),
-        Some("1" | "true" | "TRUE" | "yes" | "YES")
-    )
-}
-
-struct HttpHeaders {
-    headers: HashMap<String, String>,
-}
-
-struct JsonHttpResponse {
-    headers: HashMap<String, String>,
-    body: Value,
-}
-
-fn fetch_bearer_token(challenge: &str) -> Result<String, String> {
-    let challenge = challenge
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| format!("Unsupported auth challenge: {challenge}"))?;
-    let parameters = challenge
-        .split(',')
-        .filter_map(|entry| entry.split_once('='))
-        .map(|(key, value)| {
-            (
-                key.trim().to_string(),
-                value.trim().trim_matches('"').to_string(),
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    let realm = parameters
-        .get("realm")
-        .ok_or_else(|| format!("Auth challenge is missing a realm: {challenge}"))?;
-    let service = parameters
-        .get("service")
-        .ok_or_else(|| format!("Auth challenge is missing a service: {challenge}"))?;
-    let scope = parameters
-        .get("scope")
-        .ok_or_else(|| format!("Auth challenge is missing a scope: {challenge}"))?;
-    let token_url = format!("{realm}?service={service}&scope={scope}");
-    let response = run_curl(&[
-        "-fsSL".to_string(),
-        "--max-time".to_string(),
-        "15".to_string(),
-        token_url,
-    ])?;
-    let payload: Value = serde_json::from_str(&response).map_err(|error| error.to_string())?;
-    payload["token"]
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(|| "GHCR token response did not include a token".to_string())
-}
-
-fn fetch_http_headers(
-    url: &str,
-    authorization: Option<&str>,
-    accept: Option<&str>,
-) -> Result<HttpHeaders, String> {
-    let mut args = vec![
-        "-sSI".to_string(),
-        "--max-time".to_string(),
-        "15".to_string(),
-    ];
-    if let Some(accept) = accept {
-        args.push("-H".to_string());
-        args.push(format!("Accept: {accept}"));
-    }
-    if let Some(authorization) = authorization {
-        args.push("-H".to_string());
-        args.push(format!("Authorization: {authorization}"));
-    }
-    args.push(url.to_string());
-
-    let output = run_curl(&args)?;
-    Ok(HttpHeaders {
-        headers: parse_http_headers(&output),
-    })
-}
-
-fn fetch_json_response(
-    url: &str,
-    authorization: Option<&str>,
-    accept: Option<&str>,
-) -> Result<JsonHttpResponse, String> {
-    let mut args = vec![
-        "-fsSL".to_string(),
-        "-D".to_string(),
-        "-".to_string(),
-        "--max-time".to_string(),
-        "15".to_string(),
-    ];
-    if let Some(accept) = accept {
-        args.push("-H".to_string());
-        args.push(format!("Accept: {accept}"));
-    }
-    if let Some(authorization) = authorization {
-        args.push("-H".to_string());
-        args.push(format!("Authorization: {authorization}"));
-    }
-    args.push(url.to_string());
-
-    let output = run_curl(&args)?;
-    let (raw_headers, body) = split_http_response(&output)?;
-    let body = serde_json::from_str(body.trim()).map_err(|error| error.to_string())?;
-    Ok(JsonHttpResponse {
-        headers: parse_http_headers(raw_headers),
-        body,
-    })
-}
-
-fn split_http_response(response: &str) -> Result<(&str, &str), String> {
-    response
-        .split_once("\r\n\r\n")
-        .or_else(|| response.split_once("\n\n"))
-        .ok_or_else(|| "Malformed HTTP response".to_string())
-}
-
-fn parse_http_headers(raw_headers: &str) -> HashMap<String, String> {
-    raw_headers
-        .lines()
-        .filter_map(|line| line.split_once(':'))
-        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
-        .collect()
-}
-
-fn run_curl(args: &[String]) -> Result<String, String> {
-    let result = process_runner::run_process(&ProcessRequest {
-        program: "curl".to_string(),
-        args: args.to_vec(),
-        cwd: None,
-        env: HashMap::new(),
-        log_level: ProcessLogLevel::Info,
-    })
-    .map_err(|error| error.to_string())?;
-    if result.status_code != 0 {
-        return Err(result.stderr);
-    }
-    Ok(result.stdout)
 }
 
 fn workspace_oci_layout_dir(reference: &str, workspace_folder: Option<&Path>) -> Option<PathBuf> {

@@ -1,6 +1,8 @@
 //! Smoke tests for feature-layered native runtime builds.
 
 use std::fs;
+use std::path::Path;
+use std::process::Command;
 
 use crate::support::runtime_harness::{write_devcontainer_config, RuntimeHarness};
 
@@ -45,6 +47,57 @@ fn build_wraps_image_configs_with_feature_layers() {
             .count(),
         1
     );
+}
+
+#[test]
+fn build_materializes_workspace_oci_feature_layout() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    let feature_root = harness.root.join("published-feature-src");
+    let layout_root = workspace
+        .join(".devcontainer")
+        .join("oci-layouts")
+        .join("ghcr.io")
+        .join("acme")
+        .join("features")
+        .join("offline-feature");
+    fs::create_dir_all(feature_root.join("repo")).expect("feature repo dir");
+    fs::write(
+        feature_root.join("devcontainer-feature.json"),
+        "{\n  \"id\": \"offline-feature\",\n  \"name\": \"Offline Feature\",\n  \"version\": \"1.0.0\",\n  \"options\": {\n    \"packages\": { \"type\": \"string\", \"default\": \"\" }\n  }\n}\n",
+    )
+    .expect("feature manifest");
+    fs::write(feature_root.join("install.sh"), "#!/bin/sh\nset -eu\n").expect("install script");
+    fs::write(feature_root.join("repo").join("data.txt"), "offline data\n").expect("repo data");
+    publish_feature_layout(&feature_root, &layout_root);
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/acme/features/offline-feature:1.0.0\": {\n      \"packages\": \"jq\"\n    }\n  }\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "build",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--image-name",
+            "example/native-build:workspace-oci-feature",
+        ],
+        &[(
+            "FAKE_PODMAN_REQUIRE_BUILD_CONTEXT_FILE",
+            "feature-0-offline-feature/repo/data.txt",
+        )],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let dockerfiles = fs::read_to_string(harness.log_dir.join("build-dockerfiles.log"))
+        .expect("build dockerfiles log");
+    assert!(dockerfiles.contains("COPY feature-0-offline-feature"));
+    assert!(dockerfiles.contains("PACKAGES="));
+    assert!(dockerfiles.contains("jq"));
 }
 
 #[test]
@@ -361,4 +414,23 @@ fn build_rejects_outdated_frozen_feature_lockfile() {
     let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
     assert!(stderr.contains("Lockfile"));
     assert!(stderr.contains("out of date"));
+}
+
+fn publish_feature_layout(feature_root: &Path, layout_root: &Path) {
+    let output = Command::new(env!("CARGO_BIN_EXE_devcontainer"))
+        .args([
+            "features",
+            "publish",
+            feature_root.to_string_lossy().as_ref(),
+            "--registry",
+            "ghcr.io",
+            "--namespace",
+            "acme/features",
+            "--output-dir",
+            layout_root.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("features publish");
+
+    assert!(output.status.success(), "{output:?}");
 }

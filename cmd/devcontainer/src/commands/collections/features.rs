@@ -3,14 +3,10 @@
 use std::path::Path;
 
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
-use super::registry::{
-    live_ghcr_feature_manifest, normalize_collection_reference, published_feature_manifest,
-    published_feature_oci_manifest,
-};
+use super::oci;
+use super::registry::normalize_collection_reference;
 use crate::commands::common;
-use crate::commands::configuration::{catalog_versions, published_feature_canonical_id};
 
 pub(super) fn build_features_resolve_dependencies_payload(
     args: &[String],
@@ -51,17 +47,27 @@ pub(super) fn build_features_resolve_dependencies_payload(
     }))
 }
 
+#[cfg(test)]
 pub(super) fn build_feature_info_payload(mode: &str, feature_path: &str) -> Result<Value, String> {
-    let manifest = feature_manifest(feature_path)?;
+    build_feature_info_payload_with_workspace(mode, feature_path, None)
+}
+
+pub(super) fn build_feature_info_payload_with_workspace(
+    mode: &str,
+    feature_path: &str,
+    workspace_folder: Option<&Path>,
+) -> Result<Value, String> {
     match mode {
         "manifest" => {
-            if feature_path.starts_with("ghcr.io/") {
-                let (manifest, canonical_id) = published_feature_manifest_payload(feature_path)?;
+            if oci::is_registry_qualified_reference(feature_path) {
+                let (manifest, canonical_id) =
+                    published_feature_manifest_payload(feature_path, workspace_folder)?;
                 Ok(json!({
                     "manifest": manifest,
                     "canonicalId": canonical_id,
                 }))
             } else {
+                let manifest = feature_manifest(feature_path, workspace_folder)?;
                 Ok(json!({
                     "id": manifest.get("id").cloned().unwrap_or_else(|| Value::String("unknown".to_string())),
                     "name": manifest.get("name").cloned().unwrap_or_else(|| Value::String("unknown".to_string())),
@@ -71,38 +77,43 @@ pub(super) fn build_feature_info_payload(mode: &str, feature_path: &str) -> Resu
             }
         }
         "tags" => {
-            if feature_path.starts_with("ghcr.io/") {
+            if oci::is_registry_qualified_reference(feature_path) {
                 Ok(json!({
                     "feature": normalize_collection_reference(feature_path),
-                    "publishedTags": feature_tags(feature_path, &manifest),
+                    "publishedTags": published_feature_tags(feature_path, workspace_folder)?,
                 }))
             } else {
+                let manifest = feature_manifest(feature_path, workspace_folder)?;
                 Ok(json!({
                     "feature": normalize_collection_reference(feature_path),
-                    "tags": feature_tags(feature_path, &manifest),
+                    "tags": feature_tags(feature_path, &manifest, workspace_folder)?,
                 }))
             }
         }
-        "dependencies" => Ok(json!({
-            "feature": normalize_collection_reference(feature_path),
-            "dependsOn": manifest.get("dependsOn").cloned().unwrap_or_else(|| json!({})),
-        })),
+        "dependencies" => {
+            let manifest = feature_manifest(feature_path, workspace_folder)?;
+            Ok(json!({
+                "feature": normalize_collection_reference(feature_path),
+                "dependsOn": manifest.get("dependsOn").cloned().unwrap_or_else(|| json!({})),
+            }))
+        }
         "verbose" => {
-            if feature_path.starts_with("ghcr.io/") {
+            let manifest = feature_manifest(feature_path, workspace_folder)?;
+            if oci::is_registry_qualified_reference(feature_path) {
                 let (oci_manifest, canonical_id) =
-                    published_feature_manifest_payload(feature_path)?;
+                    published_feature_manifest_payload(feature_path, workspace_folder)?;
                 Ok(json!({
                     "feature": normalize_collection_reference(feature_path),
                     "manifest": oci_manifest,
                     "canonicalId": canonical_id,
-                    "publishedTags": feature_tags(feature_path, &manifest),
+                    "publishedTags": feature_tags(feature_path, &manifest, workspace_folder)?,
                     "dependsOn": manifest.get("dependsOn").cloned().unwrap_or_else(|| json!({})),
                 }))
             } else {
                 Ok(json!({
                     "feature": normalize_collection_reference(feature_path),
                     "manifest": manifest,
-                    "tags": feature_tags(feature_path, &manifest),
+                    "tags": feature_tags(feature_path, &manifest, workspace_folder)?,
                     "dependsOn": manifest.get("dependsOn").cloned().unwrap_or_else(|| json!({})),
                 }))
             }
@@ -111,62 +122,46 @@ pub(super) fn build_feature_info_payload(mode: &str, feature_path: &str) -> Resu
     }
 }
 
-fn feature_manifest(feature_path: &str) -> Result<Value, String> {
-    if feature_path.starts_with("ghcr.io/") {
-        published_feature_manifest(feature_path)
-            .ok_or_else(|| format!("Unknown published feature: {feature_path}"))
+fn feature_manifest(feature_path: &str, workspace_folder: Option<&Path>) -> Result<Value, String> {
+    if oci::is_registry_qualified_reference(feature_path) {
+        oci::resolve_feature_artifact(feature_path, workspace_folder)
+            .map(|artifact| artifact.metadata)
     } else {
         common::parse_manifest(Path::new(feature_path), "devcontainer-feature.json")
     }
 }
 
-fn feature_tags(feature_path: &str, manifest: &Value) -> Vec<Value> {
-    if feature_path.starts_with("ghcr.io/") {
-        let normalized = normalize_collection_reference(feature_path);
-        let tags = catalog_versions(&normalized)
-            .into_iter()
-            .map(Value::String)
-            .collect::<Vec<_>>();
-        if !tags.is_empty() {
-            return tags;
-        }
+fn feature_tags(
+    feature_path: &str,
+    manifest: &Value,
+    workspace_folder: Option<&Path>,
+) -> Result<Vec<Value>, String> {
+    if oci::is_registry_qualified_reference(feature_path) {
+        return published_feature_tags(feature_path, workspace_folder);
     }
 
-    manifest
+    Ok(manifest
         .get("version")
         .cloned()
         .map(|version| vec![version])
-        .unwrap_or_default()
+        .unwrap_or_default())
 }
 
-fn published_feature_manifest_payload(feature_path: &str) -> Result<(Value, String), String> {
-    if let Some(live_manifest) = live_ghcr_feature_manifest(feature_path)? {
-        return Ok((
-            live_manifest.manifest,
-            format!(
-                "{}@{}",
-                normalize_collection_reference(feature_path),
-                live_manifest.digest
-            ),
-        ));
-    }
-
-    let manifest = published_feature_oci_manifest(feature_path)
-        .ok_or_else(|| format!("Unknown published feature: {feature_path}"))?;
-    let canonical_id = match published_feature_canonical_id(feature_path) {
-        Some(canonical_id) => canonical_id,
-        None => canonical_feature_id(feature_path, &manifest)?,
-    };
-    Ok((manifest, canonical_id))
+fn published_feature_tags(
+    feature_path: &str,
+    workspace_folder: Option<&Path>,
+) -> Result<Vec<Value>, String> {
+    oci::list_feature_tags(feature_path, workspace_folder)
+        .map(|tags| tags.into_iter().map(Value::String).collect())
 }
 
-fn canonical_feature_id(feature_path: &str, manifest: &Value) -> Result<String, String> {
-    let bytes = serde_json::to_vec(manifest).map_err(|error| error.to_string())?;
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    Ok(format!(
-        "{}@sha256:{:x}",
-        normalize_collection_reference(feature_path),
-        hasher.finalize()
+fn published_feature_manifest_payload(
+    feature_path: &str,
+    workspace_folder: Option<&Path>,
+) -> Result<(Value, String), String> {
+    let artifact = oci::resolve_feature_artifact(feature_path, workspace_folder)?;
+    Ok((
+        artifact.manifest.clone(),
+        oci::canonical_feature_id(&artifact),
     ))
 }
