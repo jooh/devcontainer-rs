@@ -193,6 +193,7 @@ ${2:-}"
   build)
     printf 'DOCKER_BUILDKIT=%s\n' "${DOCKER_BUILDKIT:-}" >> "$LOG_DIR/build-env.log"
     build_file=""
+    build_context=""
     while [ "$#" -gt 0 ]; do
       case "${1:-}" in
         --file)
@@ -200,6 +201,7 @@ ${2:-}"
           shift 2
           ;;
         *)
+          build_context="${1:-}"
           shift
           ;;
       esac
@@ -210,6 +212,10 @@ ${2:-}"
         cat "$build_file"
         printf '%s\n' "END"
       } >> "$LOG_DIR/build-dockerfiles.log"
+    fi
+    if [ -n "${FAKE_PODMAN_REQUIRE_BUILD_CONTEXT_FILE:-}" ] && [ ! -f "$build_context/${FAKE_PODMAN_REQUIRE_BUILD_CONTEXT_FILE}" ]; then
+      printf 'required build context file missing: %s/%s\n' "$build_context" "${FAKE_PODMAN_REQUIRE_BUILD_CONTEXT_FILE}" >&2
+      exit 1
     fi
     exit 0
     ;;

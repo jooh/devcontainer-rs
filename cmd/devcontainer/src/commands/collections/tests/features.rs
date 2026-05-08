@@ -216,7 +216,7 @@ fn feature_dependency_resolution_preserves_digest_pinned_oci_install_order() {
     fs::create_dir_all(&config_dir).expect("failed to create config directory");
     fs::write(
         config_dir.join("devcontainer.json"),
-        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/acme/features/foo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\": {}\n  }\n}\n",
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/devcontainers/features/git-lfs@sha256:24d5802c837b2519b666a8403a9514c7296d769c9607048e9f1e040e7d7e331c\": {}\n  }\n}\n",
     )
     .expect("failed to write config");
 
@@ -230,7 +230,7 @@ fn feature_dependency_resolution_preserves_digest_pinned_oci_install_order() {
     assert_eq!(
         actual,
         vec![(
-            "ghcr.io/acme/features/foo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "ghcr.io/devcontainers/features/git-lfs@sha256:24d5802c837b2519b666a8403a9514c7296d769c9607048e9f1e040e7d7e331c"
                 .to_string(),
             serde_json::json!({})
         )]

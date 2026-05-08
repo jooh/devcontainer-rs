@@ -70,14 +70,6 @@ pub(crate) fn build_read_configuration_payload(args: &[String]) -> Result<Value,
     read::build_read_configuration_payload(args)
 }
 
-pub(crate) fn catalog_versions(base: &str) -> Vec<String> {
-    catalog::catalog_versions(base)
-}
-
-pub(crate) fn published_feature_canonical_id(feature_id: &str) -> Option<String> {
-    catalog::published_feature_canonical_id(feature_id, None)
-}
-
 pub(crate) fn resolve_feature_support(
     args: &[String],
     workspace_folder: &std::path::Path,

@@ -2,6 +2,7 @@
 
 mod feature_tests;
 mod features;
+pub(crate) mod oci;
 mod publish;
 pub(crate) mod registry;
 mod templates;
@@ -21,7 +22,13 @@ pub(crate) fn run_features(args: &[String]) -> ExitCode {
                 Err("features info requires manifest <feature>".to_string())
             } else {
                 let _ = common::parse_option_value(&args[3..], "--log-level");
-                match features::build_feature_info_payload(&args[1], &args[2]) {
+                let workspace_folder = common::parse_option_value(&args[3..], "--workspace-folder")
+                    .map(std::path::PathBuf::from);
+                match features::build_feature_info_payload_with_workspace(
+                    &args[1],
+                    &args[2],
+                    workspace_folder.as_deref(),
+                ) {
                     Ok(payload)
                         if common::parse_option_value(&args[3..], "--output-format").as_deref()
                             == Some("text") =>

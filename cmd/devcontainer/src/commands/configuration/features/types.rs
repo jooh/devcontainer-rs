@@ -4,10 +4,12 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+use crate::commands::collections::oci::OciFeatureArtifact;
+
 #[derive(Clone, Debug)]
 pub(crate) enum FeatureInstallationSource {
     Local(PathBuf),
-    Published(String),
+    Published(Box<OciFeatureArtifact>),
     DirectTarball(String),
     GithubRepo(String),
 }

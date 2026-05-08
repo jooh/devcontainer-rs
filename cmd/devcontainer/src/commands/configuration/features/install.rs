@@ -3,9 +3,9 @@
 use std::fs;
 use std::path::Path;
 
+use crate::commands::collections::oci;
 use crate::commands::collections::registry::{
-    collection_slug, direct_tarball_feature_manifest, published_feature_install_script,
-    published_feature_manifest,
+    collection_slug, direct_tarball_feature_manifest, published_feature_manifest,
 };
 use crate::commands::common;
 
@@ -20,14 +20,9 @@ pub(crate) fn materialize_feature_installation(
             common::copy_directory_recursive(path, destination)?;
             ensure_feature_install_script(destination)
         }
-        FeatureInstallationSource::Published(feature_id) => {
-            let manifest = published_feature_manifest(feature_id)
-                .ok_or_else(|| format!("Unknown published feature: {feature_id}"))?;
-            materialize_manifest_and_script(
-                &manifest,
-                published_feature_install_script(feature_id),
-                destination,
-            )
+        FeatureInstallationSource::Published(artifact) => {
+            oci::materialize_feature_artifact(artifact, destination)?;
+            ensure_feature_install_script(destination)
         }
         FeatureInstallationSource::DirectTarball(uri) => {
             let manifest = direct_tarball_feature_manifest(uri)
@@ -55,9 +50,13 @@ pub(crate) fn feature_installation_name(installation: &FeatureInstallation) -> S
             .and_then(|value| value.to_str())
             .unwrap_or("feature")
             .to_string(),
-        FeatureInstallationSource::Published(feature_id) => {
-            collection_slug(feature_id).unwrap_or_else(|| "published-feature".to_string())
-        }
+        FeatureInstallationSource::Published(artifact) => artifact
+            .metadata
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .or_else(|| collection_slug(&artifact.resource))
+            .unwrap_or_else(|| "published-feature".to_string()),
         FeatureInstallationSource::DirectTarball(uri) => {
             collection_slug(uri).unwrap_or_else(|| "tarball-feature".to_string())
         }

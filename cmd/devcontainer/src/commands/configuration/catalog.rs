@@ -7,43 +7,84 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use super::{CatalogEntry, FeatureReference, Lockfile, ParsedVersion};
+use crate::commands::collections::oci;
 
 pub(super) fn build_feature_version_info(
     feature: &FeatureReference,
     lockfile: Option<&Lockfile>,
     workspace_folder: Option<&Path>,
-) -> Option<Value> {
+) -> Result<Option<Value>, String> {
     let current = lockfile
         .and_then(|value| value.features.get(&feature.original))
         .map(|entry| entry.version.clone());
+
+    if oci::is_registry_qualified_reference(&feature.base) {
+        let wanted_artifact = oci::resolve_feature_artifact(&feature.original, workspace_folder)?;
+        let wanted = wanted_artifact
+            .metadata
+            .get("version")
+            .and_then(Value::as_str)
+            .or(wanted_artifact.tag.as_deref())
+            .unwrap_or("latest")
+            .to_string();
+        let latest = latest_oci_version(&feature.base, workspace_folder)?;
+        return Ok(Some(version_info_json(
+            current.or_else(|| Some(wanted.clone())),
+            Some(wanted.clone()),
+            latest.clone(),
+            major_string(&wanted),
+            latest.as_deref().and_then(major_string),
+        )));
+    }
 
     if feature.digest.is_some() {
         let wanted = current.clone().or_else(|| {
             exact_catalog_entry(&feature.original, workspace_folder).map(|entry| entry.version)
         });
         let latest = latest_version(&feature.base, workspace_folder);
-        return Some(version_info_json(
+        return Ok(Some(version_info_json(
             current.or_else(|| wanted.clone()),
             wanted.clone(),
             latest.clone(),
             wanted.as_deref().and_then(major_string),
             latest.as_deref().and_then(major_string),
-        ));
+        )));
     }
 
     let latest = latest_version(&feature.base, workspace_folder);
     let wanted = resolve_wanted_version(feature, lockfile, workspace_folder);
     if latest.is_none() && wanted.is_none() && current.is_none() {
-        return Some(version_info_json(None, None, None, None, None));
+        return Ok(Some(version_info_json(None, None, None, None, None)));
     }
 
-    Some(version_info_json(
+    Ok(Some(version_info_json(
         current.or_else(|| wanted.clone()),
         wanted.clone(),
         latest.clone(),
         wanted.as_deref().and_then(major_string),
         latest.as_deref().and_then(major_string),
-    ))
+    )))
+}
+
+fn latest_oci_version(
+    base: &str,
+    workspace_folder: Option<&Path>,
+) -> Result<Option<String>, String> {
+    let mut tags = oci::list_feature_tags(base, workspace_folder)?
+        .into_iter()
+        .filter(|tag| parse_version(tag).is_some())
+        .collect::<Vec<_>>();
+    tags.sort_by(|left, right| compare_versions_desc(left, right));
+    if let Some(tag) = tags.into_iter().next() {
+        return Ok(Some(tag));
+    }
+    oci::resolve_feature_artifact(base, workspace_folder).map(|artifact| {
+        artifact
+            .metadata
+            .get("version")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
 }
 
 pub(super) fn resolve_wanted_version(
@@ -129,36 +170,6 @@ pub(crate) fn catalog_entries(
     } else {
         Some(entries)
     }
-}
-
-pub(crate) fn catalog_versions(base: &str) -> Vec<String> {
-    catalog_entries(base, None)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|entry| entry.version)
-        .collect()
-}
-
-pub(crate) fn published_feature_canonical_id(
-    feature_id: &str,
-    workspace_folder: Option<&Path>,
-) -> Option<String> {
-    if let Some(entry) = exact_catalog_entry(feature_id, workspace_folder) {
-        return Some(entry.resolved);
-    }
-
-    let reference = super::upgrade::parse_feature_reference(feature_id)?;
-    if let Some(digest) = reference.digest {
-        return Some(format!("{}@{digest}", reference.base));
-    }
-
-    let version = if reference.tag.is_none() {
-        latest_version(&reference.base, workspace_folder)?
-    } else {
-        resolve_wanted_version(&reference, None, workspace_folder)?
-    };
-    catalog_entry_for_version(&reference.base, &version, workspace_folder)
-        .map(|entry| entry.resolved)
 }
 
 pub(super) fn latest_version(base: &str, workspace_folder: Option<&Path>) -> Option<String> {
