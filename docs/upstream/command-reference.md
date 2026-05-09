@@ -2,7 +2,7 @@
 
 Generated from the pinned upstream CLI command matrix. This is a compatibility baseline, not a native behavior reference.
 
-- Upstream commit: `2d81ee3c9ed96a7312c18c7513a17933f8f66d41`
+- Upstream commit: `6293ce5879399316f06287e42e710c0f8e5edfef`
 - Source: `upstream/src/spec-node/devContainersSpecCLI.ts`
 
 ## Top-Level Commands
