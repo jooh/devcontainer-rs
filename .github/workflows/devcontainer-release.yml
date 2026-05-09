@@ -71,7 +71,7 @@ jobs:
           - target: linux-arm64-musl
             runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-musl
-            pypi_wheel_builder: host
+            pypi_wheel_builder: none
             pypi_manylinux_container: ''
           - target: darwin-x64
             runner: macos-15-intel
@@ -192,7 +192,24 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: true
+
+      - name: Check release artifact names
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -A seen=()
+          while IFS= read -r -d '' file; do
+            name="$(basename "$file")"
+            if [[ -n "${seen[$name]:-}" ]]; then
+              printf 'duplicate release artifact basename: %s\n  %s\n  %s\n' "$name" "${seen[$name]}" "$file" >&2
+              exit 1
+            fi
+            seen["$name"]="$file"
+
+            if [[ "$name" == *.whl ]]; then
+              unzip -t "$file" >/dev/null
+            fi
+          done < <(find artifacts -type f -print0)
 
       - name: Create GitHub release
         shell: bash
@@ -229,7 +246,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
-          merge-multiple: true
 
       - name: Collect PyPI wheels
         shell: bash
@@ -242,6 +258,17 @@ jobs:
             echo "no PyPI wheels found" >&2
             exit 1
           fi
+
+          declare -A wheel_names=()
+          for wheel in "${wheels[@]}"; do
+            name="$(basename "$wheel")"
+            if [[ -n "${wheel_names[$name]:-}" ]]; then
+              printf 'duplicate PyPI wheel basename: %s\n  %s\n  %s\n' "$name" "${wheel_names[$name]}" "$wheel" >&2
+              exit 1
+            fi
+            wheel_names["$name"]="$wheel"
+            unzip -t "$wheel" >/dev/null
+          done
 
           cp "${wheels[@]}" pypi-dist/
 
@@ -314,7 +341,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: true
 
       - name: Prepare npm packages
         shell: bash
