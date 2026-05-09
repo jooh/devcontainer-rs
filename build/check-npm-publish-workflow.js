@@ -109,8 +109,23 @@ assert.match(
 );
 assert.match(
   arm64MuslMatrixEntry,
+  /pypi_wheel_builder:\s*host\b/,
+  "Linux arm64 musl should build a PyPI wheel",
+);
+assert.match(
+  arm64MuslMatrixEntry,
+  /pypi_compatibility:\s*musllinux_1_2\b/,
+  "Linux arm64 musl should publish a unique musllinux PyPI wheel",
+);
+assert.doesNotMatch(
+  arm64MuslMatrixEntry,
   /pypi_wheel_builder:\s*none\b/,
-  "Linux arm64 musl should not build a duplicate PyPI wheel basename",
+  "Linux arm64 musl should not skip the documented PyPI wheel",
+);
+assert.match(
+  buildJob,
+  /--compatibility '\$\{\{ matrix\.pypi_compatibility \}\}'/,
+  "host-built PyPI wheels should use the matrix compatibility tag",
 );
 assert.match(
   npmJob,

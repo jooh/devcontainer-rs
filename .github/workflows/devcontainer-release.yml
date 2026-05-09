@@ -57,31 +57,37 @@ jobs:
             runner: ubuntu-latest
             rust_target: x86_64-unknown-linux-gnu
             pypi_wheel_builder: manylinux
+            pypi_compatibility: pypi
             pypi_manylinux_container: quay.io/pypa/manylinux2014_x86_64
           - target: linux-x64-musl
             runner: ubuntu-latest
             rust_target: x86_64-unknown-linux-musl
             pypi_wheel_builder: host
+            pypi_compatibility: musllinux_1_2
             pypi_manylinux_container: ''
           - target: linux-arm64
             runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
             pypi_wheel_builder: manylinux
+            pypi_compatibility: pypi
             pypi_manylinux_container: quay.io/pypa/manylinux2014_aarch64
           - target: linux-arm64-musl
             runner: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-musl
-            pypi_wheel_builder: none
+            pypi_wheel_builder: host
+            pypi_compatibility: musllinux_1_2
             pypi_manylinux_container: ''
           - target: darwin-x64
             runner: macos-15-intel
             rust_target: x86_64-apple-darwin
             pypi_wheel_builder: host
+            pypi_compatibility: pypi
             pypi_manylinux_container: ''
           - target: darwin-arm64
             runner: macos-15
             rust_target: aarch64-apple-darwin
             pypi_wheel_builder: host
+            pypi_compatibility: pypi
             pypi_manylinux_container: ''
     runs-on: ${{ matrix.runner }}
     env:
@@ -151,7 +157,7 @@ jobs:
           target: ${{ matrix.rust_target }}
           manylinux: 2014
           container: ${{ matrix.pypi_manylinux_container }}
-          args: --release --out dist/wheels --compatibility pypi
+          args: --release --out dist/wheels --compatibility ${{ matrix.pypi_compatibility }}
 
       - name: Setup uv
         if: matrix.pypi_wheel_builder == 'host'
@@ -166,7 +172,7 @@ jobs:
             --release \
             --target '${{ matrix.rust_target }}' \
             --out dist/wheels \
-            --compatibility pypi
+            --compatibility '${{ matrix.pypi_compatibility }}'
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
