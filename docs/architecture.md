@@ -48,13 +48,13 @@ Dependency direction: `commands/*` may depend on `runtime/*`, but `runtime/*` sh
 - The runtime smoke suite is split by concern: build, container lifecycle, context resolution, exec behavior, and lifecycle behavior.
 - `acceptance/` holds repo-owned manual acceptance fixtures and the suite manifest for contributor-guided runtime checks.
 - Repo-owned compatibility fixtures live under `src/test/parity/`.
-- Node guard scripts in `build/` cover upstream/spec drift, command-matrix drift, native-only startup, no-node-runtime regressions, and the parity harness.
+- Node scripts in `build/` are repository maintenance tooling. They cover upstream/spec drift, generated CLI metadata/reference files, parity inventory/dashboard files, upstream test coverage, acceptance fixture manifests, native-only startup, no-node-runtime regressions, the parity harness, distribution package checks, and repo-owned devcontainer config validation.
 
 ## Compatibility assets
 
 - `upstream/` is the only canonical location for upstream CLI TypeScript sources.
 - `spec/` is the only canonical location for upstream schemas and normative spec docs.
-- Root-level Node scripts are compatibility tooling only; they must not become part of runtime execution or release packaging.
+- Node maintenance scripts must not become part of runtime execution. Release packaging should consume built artifacts through the dedicated package-preparation scripts rather than adding a Node bridge to the native CLI.
 
 ## Maintenance rules
 
