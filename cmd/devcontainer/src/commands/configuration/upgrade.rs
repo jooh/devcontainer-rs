@@ -84,8 +84,12 @@ pub(super) fn ensure_native_lockfile(
         .or_else(|| config_file.parent().map(Path::to_path_buf));
     let generated = generate_lockfile(configuration, workspace_folder.as_deref())?;
     let path = lockfile_path(config_file);
+    let existing = if path.exists() || common::has_flag(args, "--experimental-frozen-lockfile") {
+        read_lockfile(path.clone())?
+    } else {
+        None
+    };
     if common::has_flag(args, "--experimental-frozen-lockfile") {
-        let existing = read_lockfile(path.clone())?;
         let Some(existing) = existing else {
             return Err("Lockfile does not exist.".to_string());
         };
@@ -104,7 +108,9 @@ pub(super) fn ensure_native_lockfile(
 }
 
 fn serialized_lockfile(lockfile: &Lockfile) -> Result<String, String> {
-    serde_json::to_string_pretty(lockfile).map_err(|error| error.to_string())
+    serde_json::to_string_pretty(lockfile)
+        .map(|json| format!("{json}\n"))
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

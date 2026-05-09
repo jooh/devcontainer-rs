@@ -382,6 +382,46 @@ fn build_writes_feature_lockfile_when_requested() {
 }
 
 #[test]
+fn build_omits_additional_only_features_from_generated_lockfile() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/devcontainers/features/git:1.0\": {}\n  }\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "build",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--additional-features",
+            "{\"ghcr.io/devcontainers/features/github-cli\":{}}",
+            "--experimental-lockfile",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let lockfile: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(
+            workspace
+                .join(".devcontainer")
+                .join("devcontainer-lock.json"),
+        )
+        .expect("lockfile"),
+    )
+    .expect("lockfile json");
+    let features = lockfile["features"].as_object().expect("features object");
+    assert!(features.contains_key("ghcr.io/devcontainers/features/git:1.0"));
+    assert!(!features.contains_key("ghcr.io/devcontainers/features/github-cli"));
+}
+
+#[test]
 fn build_rejects_outdated_frozen_feature_lockfile() {
     let harness = RuntimeHarness::new();
     let workspace = harness.workspace();
