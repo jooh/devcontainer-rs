@@ -60,6 +60,11 @@ pub(crate) fn build_image(resolved: &ResolvedConfig, args: &[String]) -> Result<
                     .to_string()
             })?;
         return if let Some(feature_support) = feature_support {
+            configuration::validate_native_lockfile(
+                args,
+                &resolved.config_file,
+                &resolved.configuration,
+            )?;
             let image_name = common::parse_option_value(args, "--image-name")
                 .unwrap_or_else(|| default_image_name(&resolved.workspace_folder));
             let built =
@@ -79,6 +84,11 @@ pub(crate) fn build_image(resolved: &ResolvedConfig, args: &[String]) -> Result<
     let image_name = common::parse_option_value(args, "--image-name")
         .unwrap_or_else(|| default_image_name(&resolved.workspace_folder));
     if let Some(feature_support) = feature_support {
+        configuration::validate_native_lockfile(
+            args,
+            &resolved.config_file,
+            &resolved.configuration,
+        )?;
         let base_image = format!("{image_name}-base");
         build_base_image(resolved, args, &base_image)?;
         let built = build_feature_image(

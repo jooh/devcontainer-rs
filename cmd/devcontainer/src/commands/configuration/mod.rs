@@ -110,6 +110,14 @@ pub(crate) fn ensure_native_lockfile(
     upgrade::ensure_native_lockfile(args, config_file, configuration)
 }
 
+pub(crate) fn validate_native_lockfile(
+    args: &[String],
+    config_file: &std::path::Path,
+    configuration: &Value,
+) -> Result<(), String> {
+    upgrade::validate_native_lockfile(args, config_file, configuration)
+}
+
 pub(crate) fn should_use_native_read_configuration(args: &[String]) -> bool {
     read::should_use_native_read_configuration(args)
 }

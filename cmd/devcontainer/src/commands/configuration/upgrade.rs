@@ -73,9 +73,7 @@ pub(super) fn ensure_native_lockfile(
     config_file: &Path,
     configuration: &Value,
 ) -> Result<(), String> {
-    let wants_lockfile = common::has_flag(args, "--experimental-lockfile")
-        || common::has_flag(args, "--experimental-frozen-lockfile");
-    if !wants_lockfile {
+    if !wants_native_lockfile(args) {
         return Ok(());
     }
 
@@ -84,11 +82,7 @@ pub(super) fn ensure_native_lockfile(
         .or_else(|| config_file.parent().map(Path::to_path_buf));
     let generated = generate_lockfile(configuration, workspace_folder.as_deref())?;
     let path = lockfile_path(config_file);
-    let existing = if path.exists() || common::has_flag(args, "--experimental-frozen-lockfile") {
-        read_lockfile(path.clone())?
-    } else {
-        None
-    };
+    let existing = existing_native_lockfile(args, &path)?;
     if common::has_flag(args, "--experimental-frozen-lockfile") {
         let Some(existing) = existing else {
             return Err("Lockfile does not exist.".to_string());
@@ -105,6 +99,48 @@ pub(super) fn ensure_native_lockfile(
         fs::write(&path, lockfile).map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+pub(super) fn validate_native_lockfile(
+    args: &[String],
+    config_file: &Path,
+    configuration: &Value,
+) -> Result<(), String> {
+    if !wants_native_lockfile(args) {
+        return Ok(());
+    }
+
+    let path = lockfile_path(config_file);
+    let existing = existing_native_lockfile(args, &path)?;
+    if common::has_flag(args, "--experimental-frozen-lockfile") {
+        let Some(existing) = existing else {
+            return Err("Lockfile does not exist.".to_string());
+        };
+        let workspace_folder = common::parse_option_value(args, "--workspace-folder")
+            .map(PathBuf::from)
+            .or_else(|| config_file.parent().map(Path::to_path_buf));
+        let generated = generate_lockfile(configuration, workspace_folder.as_deref())?;
+        if existing != generated {
+            return Err(format!(
+                "Lockfile at {} is out of date for the current feature configuration",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn wants_native_lockfile(args: &[String]) -> bool {
+    common::has_flag(args, "--experimental-lockfile")
+        || common::has_flag(args, "--experimental-frozen-lockfile")
+}
+
+fn existing_native_lockfile(args: &[String], path: &Path) -> Result<Option<Lockfile>, String> {
+    if path.exists() || common::has_flag(args, "--experimental-frozen-lockfile") {
+        read_lockfile(path.to_path_buf())
+    } else {
+        Ok(None)
+    }
 }
 
 fn serialized_lockfile(lockfile: &Lockfile) -> Result<String, String> {

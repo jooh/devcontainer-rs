@@ -79,6 +79,13 @@ pub(crate) fn build_service(resolved: &ResolvedConfig, args: &[String]) -> Resul
         &resolved.config_file,
         &resolved.configuration,
     )?;
+    if feature_support.is_some() {
+        configuration::validate_native_lockfile(
+            args,
+            &resolved.config_file,
+            &resolved.configuration,
+        )?;
+    }
 
     if spec.has_build {
         let build_override_file = override_file::compose_build_override_file(&spec, args)?;
