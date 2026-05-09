@@ -241,6 +241,49 @@ fn compose_build_layers_features_on_top_of_service_images() {
 }
 
 #[test]
+fn compose_build_rejects_corrupt_existing_feature_lockfile_before_build() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    let config_dir = workspace.join(".devcontainer");
+    fs::create_dir_all(&config_dir).expect("workspace config dir");
+    fs::write(
+        config_dir.join("docker-compose.yml"),
+        "services:\n  app:\n    image: example/native-compose:featured\n",
+    )
+    .expect("compose");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"dockerComposeFile\": \"docker-compose.yml\",\n  \"service\": \"app\",\n  \"workspaceFolder\": \"/workspace\",\n  \"features\": {\n    \"ghcr.io/devcontainers/features/git:1.0\": {}\n  }\n}\n",
+    );
+    fs::write(
+        config_dir.join("devcontainer-lock.json"),
+        "this is not json",
+    )
+    .expect("corrupt lockfile");
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "build",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--experimental-lockfile",
+        ],
+        &[],
+    );
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(stderr.contains("line 1 column"), "{stderr}");
+    let invocations =
+        fs::read_to_string(harness.log_dir.join("invocations.log")).unwrap_or_default();
+    assert!(!invocations.contains("build "), "{invocations}");
+    assert!(!invocations.contains("push "), "{invocations}");
+}
+
+#[test]
 fn build_rejects_cache_to_for_compose_builds() {
     let harness = RuntimeHarness::new();
     let workspace = harness.workspace();

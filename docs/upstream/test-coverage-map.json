@@ -1,5 +1,5 @@
 {
-	"upstreamCommit": "2d81ee3c9ed96a7312c18c7513a17933f8f66d41",
+	"upstreamCommit": "6293ce5879399316f06287e42e710c0f8e5edfef",
 	"suites": [
 		{
 			"upstreamTest": "upstream/src/test/cli.build.test.ts",
@@ -164,6 +164,15 @@
 				"cmd/devcontainer/tests/runtime_build_smoke/features.rs"
 			],
 			"notes": "Native read-configuration coverage validates generated local Feature sets, option values, published Feature customizations, metadata merge behavior, and runtime build smoke coverage validates install materialization."
+		},
+		{
+			"upstreamTest": "upstream/src/test/container-features/generateLockfile.test.ts",
+			"status": "covered",
+			"nativeTests": [
+				"cmd/devcontainer/src/commands/configuration/tests/upgrade.rs",
+				"cmd/devcontainer/tests/runtime_build_smoke/features.rs"
+			],
+			"notes": "Native lockfile generation coverage validates configured Feature filtering, additional-only Feature exclusion, trailing-newline writes, semantic frozen comparisons, corrupt lockfile failures, and build-path lockfile generation."
 		},
 		{
 			"upstreamTest": "upstream/src/test/container-features/lifecycleHooks.test.ts",
