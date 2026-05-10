@@ -18,6 +18,7 @@
 	npm-wrapper-check \
 	npm-publish-script-check \
 	npm-package-smoke \
+	tap-check \
 	homebrew-distribution-check \
 	npm-publish-workflow-check \
 	check-parity-inventory \
@@ -29,7 +30,7 @@
 RUST_MANIFEST := cmd/devcontainer/Cargo.toml
 RELEASE_BINARY := ./cmd/devcontainer/target/release/devcontainer
 
-tests: rust-fmt rust-clippy rust-check rust-tests build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check command-matrix-drift-check schema-drift-check parity-harness no-node-runtime npm-wrapper-check npm-publish-script-check npm-package-smoke homebrew-distribution-check npm-publish-workflow-check check-parity-inventory check-cli-metadata check-compatibility-dashboard check-upstream-test-coverage upstream-compatibility
+tests: rust-fmt rust-clippy rust-check rust-tests build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check command-matrix-drift-check schema-drift-check parity-harness no-node-runtime npm-wrapper-check npm-publish-script-check npm-package-smoke tap-check homebrew-distribution-check npm-publish-workflow-check check-parity-inventory check-cli-metadata check-compatibility-dashboard check-upstream-test-coverage upstream-compatibility
 
 rust-fmt:
 	cargo fmt --manifest-path $(RUST_MANIFEST) --all -- --check
@@ -87,6 +88,9 @@ npm-publish-script-check:
 npm-package-smoke:
 	node --test build/test-npm-package-smoke.js
 	node build/check-npm-packages.js
+
+tap-check:
+	npm --prefix tap test
 
 homebrew-distribution-check:
 	node build/check-homebrew-distribution.js
