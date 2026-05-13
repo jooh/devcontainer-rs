@@ -6,7 +6,8 @@ use std::fs;
 use super::build_service;
 use super::override_file::compose_metadata_override_file;
 use super::project::{
-    compose_name_from_file, compose_project_name, sanitize_project_name, substitute_compose_env,
+    compose_name_from_file, compose_project_name, sanitize_project_name,
+    substitute_compose_env_with,
 };
 use super::service::{
     compose_image_name_separator, inspect_service_definition, parse_semver_prefix,
@@ -232,19 +233,13 @@ fn compose_name_from_file_supports_dash_default_interpolation() {
 
 #[test]
 fn substitute_compose_env_supports_plain_variable_interpolation() {
-    let variable = format!("DEVCONTAINER_COMPOSE_TEST_PRESENT_{}", std::process::id());
-    unsafe {
-        std::env::set_var(&variable, "MyProject");
-    }
+    let variable = "DEVCONTAINER_COMPOSE_TEST_PRESENT";
+    let lookup = |name: &str| (name == variable).then_some("MyProject".to_string());
 
     assert_eq!(
-        substitute_compose_env(&format!("prefix-${variable}")),
+        substitute_compose_env_with(&format!("prefix-${variable}"), &lookup),
         "prefix-MyProject"
     );
-
-    unsafe {
-        std::env::remove_var(variable);
-    }
 }
 
 #[test]

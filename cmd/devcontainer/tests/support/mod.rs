@@ -1,5 +1,5 @@
 //! Shared integration-test support modules.
 
-pub mod runtime_harness;
-pub mod test_support;
-pub mod workspace_fixture;
+pub(crate) mod runtime_harness;
+pub(crate) mod test_support;
+pub(crate) mod workspace_fixture;

@@ -37,7 +37,7 @@ jobs:
           if [[ -z "$latest_tag" ]]; then
             base_version="0.0.0"
           else
-            base_version="${latest_tag#${TAG_PREFIX}}"
+            base_version="${latest_tag#"$TAG_PREFIX"}"
           fi
 
           IFS='.' read -r major minor patch <<< "$base_version"

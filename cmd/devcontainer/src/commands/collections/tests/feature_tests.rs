@@ -10,17 +10,19 @@ use crate::commands::collections::feature_tests::{
 
 const DEFAULT_FEATURE_TEST_BASE_IMAGE: &str = "docker.io/library/debian:bookworm-slim";
 
+type ExecCall = (
+    String,
+    PathBuf,
+    Option<String>,
+    Vec<(String, String)>,
+    String,
+);
+
 #[derive(Default)]
 struct FakeFeatureTestRuntime {
     build_calls: Vec<(String, PathBuf, PathBuf)>,
     start_calls: Vec<(String, PathBuf)>,
-    exec_calls: Vec<(
-        String,
-        PathBuf,
-        Option<String>,
-        Vec<(String, String)>,
-        String,
-    )>,
+    exec_calls: Vec<ExecCall>,
     remove_calls: Vec<String>,
 }
 

@@ -60,18 +60,35 @@ If `upstream/` or `spec/` is missing or uninitialized, run the same command agai
 
 ## Local development
 
+Run the complete local gate before pushing:
+
+```bash
+make tests
+```
+
 Rust validation:
 
 ```bash
 cargo fmt --manifest-path cmd/devcontainer/Cargo.toml --all -- --check
-cargo clippy --manifest-path cmd/devcontainer/Cargo.toml -- -D warnings
-cargo test --manifest-path cmd/devcontainer/Cargo.toml
+cargo clippy --manifest-path cmd/devcontainer/Cargo.toml --all-targets --all-features -- -D warnings
+cargo check --manifest-path cmd/devcontainer/Cargo.toml --all-targets --all-features
+cargo doc --manifest-path cmd/devcontainer/Cargo.toml --no-deps --document-private-items
+cargo test --manifest-path cmd/devcontainer/Cargo.toml --locked
+cargo deny --manifest-path cmd/devcontainer/Cargo.toml check -A license-not-encountered
+```
+
+CI also enforces the current Rust line coverage baseline:
+
+```bash
+cargo llvm-cov --manifest-path cmd/devcontainer/Cargo.toml --all-features --workspace --fail-under-lines 88
 ```
 
 Compatibility/tooling validation:
 
 ```bash
 npm test
+make actionlint-check
+make shellcheck
 ```
 
 Manual acceptance suite shape:

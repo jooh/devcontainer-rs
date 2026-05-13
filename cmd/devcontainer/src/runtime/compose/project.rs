@@ -77,6 +77,13 @@ pub(super) fn compose_name_from_file(compose_file: &Path) -> Result<Option<Strin
 }
 
 pub(super) fn substitute_compose_env(value: &str) -> String {
+    substitute_compose_env_with(value, &|name| env::var(name).ok())
+}
+
+pub(super) fn substitute_compose_env_with(
+    value: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> String {
     let trimmed = value.trim_matches('"').trim_matches('\'');
     let characters = trimmed.chars().collect::<Vec<_>>();
     let mut output = String::with_capacity(trimmed.len());
@@ -106,6 +113,7 @@ pub(super) fn substitute_compose_env(value: &str) -> String {
             }
             output.push_str(&expand_compose_variable(
                 &characters[index + 2..end].iter().collect::<String>(),
+                lookup,
             ));
             index = end + 1;
             continue;
@@ -127,6 +135,7 @@ pub(super) fn substitute_compose_env(value: &str) -> String {
         }
         output.push_str(&expand_compose_variable(
             &characters[index + 1..end].iter().collect::<String>(),
+            lookup,
         ));
         index = end;
     }
@@ -134,21 +143,21 @@ pub(super) fn substitute_compose_env(value: &str) -> String {
     output
 }
 
-fn expand_compose_variable(expression: &str) -> String {
+fn expand_compose_variable(expression: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
     if let Some((name, default)) = expression.split_once(":-") {
-        return match env::var(name) {
-            Ok(value) if !value.is_empty() => value,
-            _ => substitute_compose_env(default),
+        return match lookup(name) {
+            Some(value) if !value.is_empty() => value,
+            _ => substitute_compose_env_with(default, lookup),
         };
     }
     if let Some((name, default)) = expression.split_once('-') {
-        return match env::var(name) {
-            Ok(value) => value,
-            Err(_) => substitute_compose_env(default),
+        return match lookup(name) {
+            Some(value) => value,
+            None => substitute_compose_env_with(default, lookup),
         };
     }
 
-    env::var(expression).unwrap_or_default()
+    lookup(expression).unwrap_or_default()
 }
 
 pub(super) fn sanitize_project_name(value: &str) -> String {

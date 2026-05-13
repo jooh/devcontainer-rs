@@ -17,6 +17,20 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 tar = "0.4"
 
+[lints.rust]
+rust_2018_idioms = { level = "deny", priority = -1 }
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+
+[lints.rustdoc]
+bare_urls = "deny"
+broken_intra_doc_links = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+
 [package.metadata.dist]
 dist = true
 

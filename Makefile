@@ -2,7 +2,12 @@
 	rust-fmt \
 	rust-clippy \
 	rust-check \
+	rust-doc \
 	rust-tests \
+	cargo-deny-check \
+	rust-coverage \
+	actionlint-check \
+	shellcheck \
 	build-release \
 	real-engine-lifecycle-smoke \
 	real-engine-lifecycle-smoke-docker \
@@ -11,7 +16,9 @@
 	pypi-wheel-smoke \
 	native-only-startup-contract \
 	acceptance-fixtures-check \
+	check-upstream-submodule \
 	command-matrix-drift-check \
+	check-cli-reference \
 	schema-drift-check \
 	parity-harness \
 	no-node-runtime \
@@ -25,27 +32,48 @@
 	check-cli-metadata \
 	check-compatibility-dashboard \
 	check-upstream-test-coverage \
+	check-devcontainer-config \
 	upstream-compatibility
 
 RUST_MANIFEST := cmd/devcontainer/Cargo.toml
 RELEASE_BINARY := ./cmd/devcontainer/target/release/devcontainer
+CARGO_LLVM_COV ?= cargo llvm-cov
+COVERAGE_LINE_THRESHOLD := 88
+ACTIONLINT := uv tool run --from actionlint-py actionlint
+SHELLCHECK := uv tool run --from shellcheck-py shellcheck
+SHELLCHECK_FILES := $(shell git ls-files -- '*.sh' '.githooks/pre-commit' ':(exclude)upstream/**' ':(exclude)spec/**' ':(exclude)target/**' ':(exclude)node_modules/**')
 
-tests: rust-fmt rust-clippy rust-check rust-tests build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check command-matrix-drift-check schema-drift-check parity-harness no-node-runtime npm-wrapper-check npm-publish-script-check npm-package-smoke tap-check homebrew-distribution-check npm-publish-workflow-check check-parity-inventory check-cli-metadata check-compatibility-dashboard check-upstream-test-coverage upstream-compatibility
+tests: rust-fmt rust-tests rust-clippy rust-check rust-doc rust-coverage cargo-deny-check actionlint-check shellcheck build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check check-upstream-submodule command-matrix-drift-check check-cli-reference schema-drift-check parity-harness no-node-runtime npm-wrapper-check npm-publish-script-check npm-package-smoke tap-check homebrew-distribution-check npm-publish-workflow-check check-parity-inventory check-cli-metadata check-compatibility-dashboard check-upstream-test-coverage check-devcontainer-config upstream-compatibility
 
 rust-fmt:
 	cargo fmt --manifest-path $(RUST_MANIFEST) --all -- --check
 
 rust-clippy:
-	cargo clippy --manifest-path $(RUST_MANIFEST) -- -D warnings
+	cargo clippy --manifest-path $(RUST_MANIFEST) --locked --all-targets --all-features -- -D warnings
 
 rust-check:
-	cargo check --manifest-path $(RUST_MANIFEST)
+	cargo check --manifest-path $(RUST_MANIFEST) --locked --all-targets --all-features
+
+rust-doc:
+	cargo doc --manifest-path $(RUST_MANIFEST) --locked --no-deps --document-private-items
 
 rust-tests:
-	cargo test --manifest-path $(RUST_MANIFEST)
+	cargo test --manifest-path $(RUST_MANIFEST) --locked
+
+cargo-deny-check:
+	cargo deny --manifest-path $(RUST_MANIFEST) check -A license-not-encountered
+
+rust-coverage:
+	$(CARGO_LLVM_COV) --manifest-path $(RUST_MANIFEST) --locked --all-features --workspace --fail-under-lines $(COVERAGE_LINE_THRESHOLD)
+
+actionlint-check:
+	$(ACTIONLINT) .github/workflows/*.yml
+
+shellcheck:
+	$(SHELLCHECK) $(SHELLCHECK_FILES)
 
 build-release:
-	cargo build --release --manifest-path $(RUST_MANIFEST)
+	cargo build --release --manifest-path $(RUST_MANIFEST) --locked
 
 real-engine-lifecycle-smoke: real-engine-lifecycle-smoke-docker real-engine-lifecycle-smoke-podman
 
@@ -67,8 +95,14 @@ native-only-startup-contract:
 acceptance-fixtures-check:
 	node build/check-acceptance-fixtures.js
 
+check-upstream-submodule:
+	node build/check-upstream-submodule.js
+
 command-matrix-drift-check:
 	node build/generate-command-matrix.js --check
+
+check-cli-reference:
+	node build/generate-cli-reference.js --check
 
 schema-drift-check:
 	node build/check-spec-drift.js
@@ -109,6 +143,9 @@ check-compatibility-dashboard:
 
 check-upstream-test-coverage:
 	node build/check-upstream-test-coverage.js
+
+check-devcontainer-config:
+	node build/check-devcontainer-config.js
 
 upstream-compatibility:
 	node build/check-upstream-compatibility.js

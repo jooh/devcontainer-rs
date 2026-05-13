@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static NEXT_TEMP_DIR_ID: AtomicU64 = AtomicU64::new(0);
 
-pub fn unique_temp_dir(prefix: &str) -> PathBuf {
+pub(crate) fn unique_temp_dir(prefix: &str) -> PathBuf {
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time went backwards")
@@ -22,7 +22,7 @@ pub fn unique_temp_dir(prefix: &str) -> PathBuf {
     ))
 }
 
-pub fn repo_root() -> PathBuf {
+pub(crate) fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
@@ -30,7 +30,7 @@ pub fn repo_root() -> PathBuf {
         .expect("repo root")
 }
 
-pub fn copy_recursive(source: &Path, destination: &Path) {
+pub(crate) fn copy_recursive(source: &Path, destination: &Path) {
     let metadata = fs::metadata(source).expect("metadata");
     if metadata.is_dir() {
         fs::create_dir_all(destination).expect("create dir");
@@ -46,7 +46,7 @@ pub fn copy_recursive(source: &Path, destination: &Path) {
     }
 }
 
-pub fn devcontainer_command(cwd: Option<&Path>) -> Command {
+pub(crate) fn devcontainer_command(cwd: Option<&Path>) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_devcontainer"));
     if let Some(cwd) = cwd {
         command.current_dir(cwd);

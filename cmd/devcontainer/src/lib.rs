@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Crate entry points and shared module wiring for the native devcontainer CLI.
 
 use std::env;
@@ -18,14 +20,13 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn native_only_mode_enabled() -> bool {
     env::var(NATIVE_ONLY_ENV_VAR)
-        .map(|value| {
-            let normalized = value.trim().to_ascii_lowercase();
-            !normalized.is_empty()
-                && normalized != "0"
-                && normalized != "false"
-                && normalized != "no"
-        })
+        .map(|value| native_only_mode_value_enabled(&value))
         .unwrap_or(false)
+}
+
+fn native_only_mode_value_enabled(value: &str) -> bool {
+    let normalized = value.trim().to_ascii_lowercase();
+    !normalized.is_empty() && normalized != "0" && normalized != "false" && normalized != "no"
 }
 
 pub fn run_from_env() -> ExitCode {
@@ -110,21 +111,15 @@ pub fn run(raw_args: Vec<String>) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::native_only_mode_enabled;
+    use super::native_only_mode_value_enabled;
 
     #[test]
     fn native_only_mode_uses_environment_switch() {
-        let original = std::env::var("DEVCONTAINER_NATIVE_ONLY").ok();
-        std::env::set_var("DEVCONTAINER_NATIVE_ONLY", "1");
-        assert!(native_only_mode_enabled());
-
-        std::env::set_var("DEVCONTAINER_NATIVE_ONLY", "false");
-        assert!(!native_only_mode_enabled());
-
-        if let Some(value) = original {
-            std::env::set_var("DEVCONTAINER_NATIVE_ONLY", value);
-        } else {
-            std::env::remove_var("DEVCONTAINER_NATIVE_ONLY");
-        }
+        assert!(native_only_mode_value_enabled("1"));
+        assert!(native_only_mode_value_enabled("yes"));
+        assert!(!native_only_mode_value_enabled(""));
+        assert!(!native_only_mode_value_enabled("0"));
+        assert!(!native_only_mode_value_enabled("false"));
+        assert!(!native_only_mode_value_enabled("no"));
     }
 }

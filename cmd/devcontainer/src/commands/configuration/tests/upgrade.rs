@@ -357,7 +357,7 @@ fn write_workspace_layout_version(
     let metadata = json!({
         "id": "published-feature",
         "version": version,
-        "dependsOn": depends_on.map(|entries| entries.iter().copied().collect::<Vec<_>>()),
+        "dependsOn": depends_on.map(<[_]>::to_vec),
     });
     let manifest = json!({
         "schemaVersion": 2,
