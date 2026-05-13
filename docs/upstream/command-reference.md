@@ -2,7 +2,7 @@
 
 Generated from the pinned upstream CLI command matrix. This is a compatibility baseline, not a native behavior reference.
 
-- Upstream commit: `6293ce5879399316f06287e42e710c0f8e5edfef`
+- Upstream commit: `65f98a518a1f62355a08e6f38e9d6bfb9a0d8ac9`
 - Source: `upstream/src/spec-node/devContainersSpecCLI.ts`
 
 ## Top-Level Commands
@@ -45,6 +45,7 @@ Options:
 - `--expect-existing-container`
 - `--experimental-frozen-lockfile`
 - `--experimental-lockfile`
+- `--frozen-lockfile`
 - `--gpu-availability`
 - `--id-label`
 - `--include-configuration`
@@ -54,6 +55,7 @@ Options:
 - `--mount`
 - `--mount-git-worktree-common-dir`
 - `--mount-workspace-git-root`
+- `--no-lockfile`
 - `--omit-config-remote-env-from-metadata`
 - `--omit-syntax-directive`
 - `--override-config`
@@ -111,11 +113,13 @@ Options:
 - `--docker-path`
 - `--experimental-frozen-lockfile`
 - `--experimental-lockfile`
+- `--frozen-lockfile`
 - `--image-name`
 - `--label`
 - `--log-format`
 - `--log-level`
 - `--no-cache`
+- `--no-lockfile`
 - `--omit-syntax-directive`
 - `--output`
 - `--platform`
