@@ -5,6 +5,7 @@
 	rust-doc \
 	rust-tests \
 	cargo-deny-check \
+	rust-coverage \
 	actionlint-check \
 	shellcheck \
 	build-release \
@@ -36,6 +37,8 @@
 
 RUST_MANIFEST := cmd/devcontainer/Cargo.toml
 RELEASE_BINARY := ./cmd/devcontainer/target/release/devcontainer
+CARGO_LLVM_COV ?= cargo llvm-cov
+COVERAGE_LINE_THRESHOLD := 88
 ACTIONLINT := uv tool run --from actionlint-py actionlint
 SHELLCHECK := uv tool run --from shellcheck-py shellcheck
 SHELLCHECK_FILES := $(shell git ls-files -- '*.sh' ':(exclude)upstream/**' ':(exclude)spec/**' ':(exclude)target/**' ':(exclude)node_modules/**')
@@ -59,6 +62,9 @@ rust-tests:
 
 cargo-deny-check:
 	cargo deny --manifest-path $(RUST_MANIFEST) check -A license-not-encountered
+
+rust-coverage:
+	$(CARGO_LLVM_COV) --manifest-path $(RUST_MANIFEST) --all-features --workspace --fail-under-lines $(COVERAGE_LINE_THRESHOLD)
 
 actionlint-check:
 	$(ACTIONLINT) .github/workflows/*.yml

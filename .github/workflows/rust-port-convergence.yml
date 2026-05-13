@@ -72,7 +72,7 @@ jobs:
         run: make pypi-wheel-smoke
 
       - name: Rust coverage
-        run: cargo llvm-cov --manifest-path cmd/devcontainer/Cargo.toml --lcov --output-path cmd/devcontainer/target/coverage.lcov
+        run: make rust-coverage
 
       - name: Native-only startup contract
         run: node build/check-native-only.js

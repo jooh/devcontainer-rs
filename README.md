@@ -77,6 +77,12 @@ cargo test --manifest-path cmd/devcontainer/Cargo.toml --locked
 cargo deny --manifest-path cmd/devcontainer/Cargo.toml check -A license-not-encountered
 ```
 
+CI also enforces the current Rust line coverage baseline:
+
+```bash
+cargo llvm-cov --manifest-path cmd/devcontainer/Cargo.toml --all-features --workspace --fail-under-lines 88
+```
+
 Compatibility/tooling validation:
 
 ```bash
