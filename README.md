@@ -60,6 +60,12 @@ If `upstream/` or `spec/` is missing or uninitialized, run the same command agai
 
 ## Local development
 
+Run the complete local gate before pushing:
+
+```bash
+make tests
+```
+
 Rust validation:
 
 ```bash

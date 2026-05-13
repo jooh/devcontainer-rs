@@ -11,11 +11,15 @@
 - `cargo check --manifest-path cmd/devcontainer/Cargo.toml --all-targets --all-features`
 - `cargo doc --manifest-path cmd/devcontainer/Cargo.toml --no-deps --document-private-items`
 - `cargo test --manifest-path cmd/devcontainer/Cargo.toml --locked`
+- `node build/check-upstream-submodule.js`
 - `node build/check-native-only.js`
 - `node build/check-no-node-runtime.js`
 - `node build/check-parity-harness.js`
+- `node build/generate-command-matrix.js --check`
 - `node build/generate-cli-reference.js --check`
 - `node build/generate-parity-inventory.js --check`
+- `node build/check-spec-drift.js`
+- `node build/check-devcontainer-config.js`
 
 ## Current parity scope
 

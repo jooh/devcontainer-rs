@@ -12,7 +12,9 @@
 	pypi-wheel-smoke \
 	native-only-startup-contract \
 	acceptance-fixtures-check \
+	check-upstream-submodule \
 	command-matrix-drift-check \
+	check-cli-reference \
 	schema-drift-check \
 	parity-harness \
 	no-node-runtime \
@@ -26,12 +28,13 @@
 	check-cli-metadata \
 	check-compatibility-dashboard \
 	check-upstream-test-coverage \
+	check-devcontainer-config \
 	upstream-compatibility
 
 RUST_MANIFEST := cmd/devcontainer/Cargo.toml
 RELEASE_BINARY := ./cmd/devcontainer/target/release/devcontainer
 
-tests: rust-fmt rust-clippy rust-check rust-doc rust-tests build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check command-matrix-drift-check schema-drift-check parity-harness no-node-runtime npm-wrapper-check npm-publish-script-check npm-package-smoke tap-check homebrew-distribution-check npm-publish-workflow-check check-parity-inventory check-cli-metadata check-compatibility-dashboard check-upstream-test-coverage upstream-compatibility
+tests: rust-fmt rust-clippy rust-check rust-doc rust-tests build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check check-upstream-submodule command-matrix-drift-check check-cli-reference schema-drift-check parity-harness no-node-runtime npm-wrapper-check npm-publish-script-check npm-package-smoke tap-check homebrew-distribution-check npm-publish-workflow-check check-parity-inventory check-cli-metadata check-compatibility-dashboard check-upstream-test-coverage check-devcontainer-config upstream-compatibility
 
 rust-fmt:
 	cargo fmt --manifest-path $(RUST_MANIFEST) --all -- --check
@@ -71,8 +74,14 @@ native-only-startup-contract:
 acceptance-fixtures-check:
 	node build/check-acceptance-fixtures.js
 
+check-upstream-submodule:
+	node build/check-upstream-submodule.js
+
 command-matrix-drift-check:
 	node build/generate-command-matrix.js --check
+
+check-cli-reference:
+	node build/generate-cli-reference.js --check
 
 schema-drift-check:
 	node build/check-spec-drift.js
@@ -113,6 +122,9 @@ check-compatibility-dashboard:
 
 check-upstream-test-coverage:
 	node build/check-upstream-test-coverage.js
+
+check-devcontainer-config:
+	node build/check-devcontainer-config.js
 
 upstream-compatibility:
 	node build/check-upstream-compatibility.js
