@@ -118,6 +118,14 @@ pub(crate) fn validate_native_lockfile(
     upgrade::validate_native_lockfile(args, config_file, configuration)
 }
 
+pub(crate) fn validate_lockfile_options(args: &[String]) -> Result<(), String> {
+    upgrade::validate_lockfile_options(args)
+}
+
+pub(crate) fn warn_deprecated_lockfile_flags(args: &[String]) {
+    upgrade::warn_deprecated_lockfile_flags(args);
+}
+
 pub(crate) fn should_use_native_read_configuration(args: &[String]) -> bool {
     read::should_use_native_read_configuration(args)
 }

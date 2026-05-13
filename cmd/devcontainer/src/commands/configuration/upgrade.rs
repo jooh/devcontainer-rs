@@ -16,6 +16,11 @@ use crate::commands::collections::oci;
 use crate::commands::common;
 use crate::output::{CommandLogLevel, CommandLogger, LogFormat, TerminalDimensions};
 
+const NO_LOCKFILE_FLAG: &str = "--no-lockfile";
+const FROZEN_LOCKFILE_FLAG: &str = "--frozen-lockfile";
+const EXPERIMENTAL_LOCKFILE_FLAG: &str = "--experimental-lockfile";
+const EXPERIMENTAL_FROZEN_LOCKFILE_FLAG: &str = "--experimental-frozen-lockfile";
+
 pub(super) fn run_outdated(args: &[String]) -> ExitCode {
     let logger = outdated_logger(args);
     match validate_outdated_options(args)
@@ -73,7 +78,8 @@ pub(super) fn ensure_native_lockfile(
     config_file: &Path,
     configuration: &Value,
 ) -> Result<(), String> {
-    if !wants_native_lockfile(args) {
+    validate_lockfile_options(args)?;
+    if lockfile_disabled(args) {
         return Ok(());
     }
 
@@ -83,7 +89,7 @@ pub(super) fn ensure_native_lockfile(
     let generated = generate_lockfile(configuration, workspace_folder.as_deref())?;
     let path = lockfile_path(config_file);
     let existing = existing_native_lockfile(args, &path)?;
-    if common::has_flag(args, "--experimental-frozen-lockfile") {
+    if lockfile_frozen(args) {
         let Some(existing) = existing else {
             return Err("Lockfile does not exist.".to_string());
         };
@@ -93,11 +99,10 @@ pub(super) fn ensure_native_lockfile(
                 path.display()
             ));
         }
+        return Ok(());
     }
-    if common::has_flag(args, "--experimental-lockfile") {
-        let lockfile = serialized_lockfile(&generated)?;
-        fs::write(&path, lockfile).map_err(|error| error.to_string())?;
-    }
+    let lockfile = serialized_lockfile(&generated)?;
+    fs::write(&path, lockfile).map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -106,13 +111,14 @@ pub(super) fn validate_native_lockfile(
     config_file: &Path,
     configuration: &Value,
 ) -> Result<(), String> {
-    if !wants_native_lockfile(args) {
+    validate_lockfile_options(args)?;
+    if lockfile_disabled(args) {
         return Ok(());
     }
 
     let path = lockfile_path(config_file);
     let existing = existing_native_lockfile(args, &path)?;
-    if common::has_flag(args, "--experimental-frozen-lockfile") {
+    if lockfile_frozen(args) {
         let Some(existing) = existing else {
             return Err("Lockfile does not exist.".to_string());
         };
@@ -130,13 +136,47 @@ pub(super) fn validate_native_lockfile(
     Ok(())
 }
 
-fn wants_native_lockfile(args: &[String]) -> bool {
-    common::has_flag(args, "--experimental-lockfile")
-        || common::has_flag(args, "--experimental-frozen-lockfile")
+pub(super) fn validate_lockfile_options(args: &[String]) -> Result<(), String> {
+    if common::has_flag(args, NO_LOCKFILE_FLAG) {
+        for flag in [
+            FROZEN_LOCKFILE_FLAG,
+            EXPERIMENTAL_FROZEN_LOCKFILE_FLAG,
+            EXPERIMENTAL_LOCKFILE_FLAG,
+        ] {
+            if common::has_flag(args, flag) {
+                return Err(format!(
+                    "{NO_LOCKFILE_FLAG} and {flag} are mutually exclusive."
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn warn_deprecated_lockfile_flags(args: &[String]) {
+    if common::has_flag(args, EXPERIMENTAL_LOCKFILE_FLAG) {
+        eprintln!(
+            "Warning: {EXPERIMENTAL_LOCKFILE_FLAG} is deprecated. Lockfiles are now enabled by default."
+        );
+    }
+    if common::has_flag(args, EXPERIMENTAL_FROZEN_LOCKFILE_FLAG) {
+        eprintln!(
+            "Warning: {EXPERIMENTAL_FROZEN_LOCKFILE_FLAG} is deprecated. Use {FROZEN_LOCKFILE_FLAG} instead."
+        );
+    }
+}
+
+fn lockfile_disabled(args: &[String]) -> bool {
+    common::has_flag(args, NO_LOCKFILE_FLAG)
+}
+
+fn lockfile_frozen(args: &[String]) -> bool {
+    common::has_flag(args, FROZEN_LOCKFILE_FLAG)
+        || common::has_flag(args, EXPERIMENTAL_FROZEN_LOCKFILE_FLAG)
 }
 
 fn existing_native_lockfile(args: &[String], path: &Path) -> Result<Option<Lockfile>, String> {
-    if path.exists() || common::has_flag(args, "--experimental-frozen-lockfile") {
+    if path.exists() || lockfile_frozen(args) {
         read_lockfile(path.to_path_buf())
     } else {
         Ok(None)
