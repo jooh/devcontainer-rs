@@ -35,6 +35,9 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
       - name: Rust fmt
         run: make rust-fmt
 
@@ -49,6 +52,9 @@ jobs:
 
       - name: Rust tests
         run: make rust-tests
+
+      - name: Dependency policy
+        run: make cargo-deny-check
 
       - name: Build release binary
         run: cargo build --release --manifest-path cmd/devcontainer/Cargo.toml

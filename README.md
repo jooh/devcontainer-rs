@@ -74,6 +74,7 @@ cargo clippy --manifest-path cmd/devcontainer/Cargo.toml --all-targets --all-fea
 cargo check --manifest-path cmd/devcontainer/Cargo.toml --all-targets --all-features
 cargo doc --manifest-path cmd/devcontainer/Cargo.toml --no-deps --document-private-items
 cargo test --manifest-path cmd/devcontainer/Cargo.toml --locked
+cargo deny --manifest-path cmd/devcontainer/Cargo.toml check -A license-not-encountered
 ```
 
 Compatibility/tooling validation:

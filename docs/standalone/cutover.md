@@ -11,6 +11,7 @@
 - `cargo check --manifest-path cmd/devcontainer/Cargo.toml --all-targets --all-features`
 - `cargo doc --manifest-path cmd/devcontainer/Cargo.toml --no-deps --document-private-items`
 - `cargo test --manifest-path cmd/devcontainer/Cargo.toml --locked`
+- `cargo deny --manifest-path cmd/devcontainer/Cargo.toml check -A license-not-encountered`
 - `node build/check-upstream-submodule.js`
 - `node build/check-native-only.js`
 - `node build/check-no-node-runtime.js`

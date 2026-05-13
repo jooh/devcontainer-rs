@@ -4,6 +4,7 @@
 	rust-check \
 	rust-doc \
 	rust-tests \
+	cargo-deny-check \
 	build-release \
 	real-engine-lifecycle-smoke \
 	real-engine-lifecycle-smoke-docker \
@@ -34,7 +35,7 @@
 RUST_MANIFEST := cmd/devcontainer/Cargo.toml
 RELEASE_BINARY := ./cmd/devcontainer/target/release/devcontainer
 
-tests: rust-fmt rust-clippy rust-check rust-doc rust-tests build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check check-upstream-submodule command-matrix-drift-check check-cli-reference schema-drift-check parity-harness no-node-runtime npm-wrapper-check npm-publish-script-check npm-package-smoke tap-check homebrew-distribution-check npm-publish-workflow-check check-parity-inventory check-cli-metadata check-compatibility-dashboard check-upstream-test-coverage check-devcontainer-config upstream-compatibility
+tests: rust-fmt rust-clippy rust-check rust-doc rust-tests cargo-deny-check build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check check-upstream-submodule command-matrix-drift-check check-cli-reference schema-drift-check parity-harness no-node-runtime npm-wrapper-check npm-publish-script-check npm-package-smoke tap-check homebrew-distribution-check npm-publish-workflow-check check-parity-inventory check-cli-metadata check-compatibility-dashboard check-upstream-test-coverage check-devcontainer-config upstream-compatibility
 
 rust-fmt:
 	cargo fmt --manifest-path $(RUST_MANIFEST) --all -- --check
@@ -50,6 +51,9 @@ rust-doc:
 
 rust-tests:
 	cargo test --manifest-path $(RUST_MANIFEST) --locked
+
+cargo-deny-check:
+	cargo deny --manifest-path $(RUST_MANIFEST) check -A license-not-encountered
 
 build-release:
 	cargo build --release --manifest-path $(RUST_MANIFEST)
