@@ -38,6 +38,12 @@ jobs:
       - name: Install cargo-deny
         uses: taiki-e/install-action@cargo-deny
 
+      - name: Workflow lint
+        run: make actionlint-check
+
+      - name: Shell lint
+        run: make shellcheck
+
       - name: Rust fmt
         run: make rust-fmt
 

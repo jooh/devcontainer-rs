@@ -12,6 +12,8 @@
 - `cargo doc --manifest-path cmd/devcontainer/Cargo.toml --no-deps --document-private-items`
 - `cargo test --manifest-path cmd/devcontainer/Cargo.toml --locked`
 - `cargo deny --manifest-path cmd/devcontainer/Cargo.toml check -A license-not-encountered`
+- `uv tool run --from actionlint-py actionlint .github/workflows/*.yml`
+- `uv tool run --from shellcheck-py shellcheck <repo-owned shell scripts>`
 - `node build/check-upstream-submodule.js`
 - `node build/check-native-only.js`
 - `node build/check-no-node-runtime.js`

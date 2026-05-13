@@ -81,6 +81,8 @@ Compatibility/tooling validation:
 
 ```bash
 npm test
+make actionlint-check
+make shellcheck
 ```
 
 Manual acceptance suite shape:
