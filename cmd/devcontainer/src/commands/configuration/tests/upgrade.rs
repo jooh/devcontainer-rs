@@ -196,11 +196,7 @@ fn ensure_native_lockfile_uses_shared_lockfile_format() {
     let config_file = root.join(".devcontainer.json");
 
     ensure_native_lockfile(
-        &[
-            "--workspace-folder".to_string(),
-            root.display().to_string(),
-            "--experimental-lockfile".to_string(),
-        ],
+        &["--workspace-folder".to_string(), root.display().to_string()],
         &config_file,
         &json!({
             "image": "debian:bookworm",
@@ -213,6 +209,32 @@ fn ensure_native_lockfile_uses_shared_lockfile_format() {
 
     let lockfile = fs::read_to_string(root.join(".devcontainer-lock.json")).expect("lockfile");
     assert!(lockfile.ends_with('\n'));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn ensure_native_lockfile_skips_generation_when_no_lockfile_is_set() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    let config_file = root.join(".devcontainer.json");
+
+    ensure_native_lockfile(
+        &[
+            "--workspace-folder".to_string(),
+            root.display().to_string(),
+            "--no-lockfile".to_string(),
+        ],
+        &config_file,
+        &json!({
+            "image": "debian:bookworm",
+            "features": {
+                "ghcr.io/devcontainers/features/github-cli": {}
+            }
+        }),
+    )
+    .expect("lockfile skip");
+
+    assert!(!root.join(".devcontainer-lock.json").exists());
     let _ = fs::remove_dir_all(root);
 }
 
@@ -244,11 +266,7 @@ fn ensure_native_lockfile_rejects_corrupt_existing_lockfile_when_generating() {
     fs::write(&lockfile_path, "this is not json").expect("corrupt lockfile");
 
     let error = ensure_native_lockfile(
-        &[
-            "--workspace-folder".to_string(),
-            root.display().to_string(),
-            "--experimental-lockfile".to_string(),
-        ],
+        &["--workspace-folder".to_string(), root.display().to_string()],
         &config_file,
         &json!({
             "image": "debian:bookworm",
@@ -277,7 +295,7 @@ fn ensure_native_lockfile_reports_missing_frozen_lockfile() {
         &[
             "--workspace-folder".to_string(),
             root.display().to_string(),
-            "--experimental-frozen-lockfile".to_string(),
+            "--frozen-lockfile".to_string(),
         ],
         &config_file,
         &json!({
@@ -299,11 +317,7 @@ fn ensure_native_lockfile_accepts_semantically_identical_existing_json() {
     fs::create_dir_all(&root).expect("failed to create root");
     let config_file = root.join(".devcontainer.json");
     ensure_native_lockfile(
-        &[
-            "--workspace-folder".to_string(),
-            root.display().to_string(),
-            "--experimental-lockfile".to_string(),
-        ],
+        &["--workspace-folder".to_string(), root.display().to_string()],
         &config_file,
         &json!({
             "image": "debian:bookworm",
@@ -322,7 +336,7 @@ fn ensure_native_lockfile_accepts_semantically_identical_existing_json() {
         &[
             "--workspace-folder".to_string(),
             root.display().to_string(),
-            "--experimental-frozen-lockfile".to_string(),
+            "--frozen-lockfile".to_string(),
         ],
         &config_file,
         &json!({

@@ -348,7 +348,102 @@ fn build_pushes_final_feature_image_instead_of_intermediate_base_image() {
 }
 
 #[test]
-fn build_writes_feature_lockfile_when_requested() {
+fn build_writes_feature_lockfile_by_default() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/devcontainers/features/git:1.0\": {}\n  }\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "build",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let lockfile = fs::read_to_string(
+        workspace
+            .join(".devcontainer")
+            .join("devcontainer-lock.json"),
+    )
+    .expect("lockfile");
+    assert!(lockfile.contains("ghcr.io/devcontainers/features/git:1.0"));
+    assert!(lockfile.contains("\"resolved\":"));
+}
+
+#[test]
+fn build_no_lockfile_skips_feature_lockfile_write() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/devcontainers/features/git:1.0\": {}\n  }\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "build",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--no-lockfile",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert!(!workspace
+        .join(".devcontainer")
+        .join("devcontainer-lock.json")
+        .exists());
+}
+
+#[test]
+fn build_rejects_mutually_exclusive_lockfile_flags() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/devcontainers/features/git:1.0\": {}\n  }\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "build",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--no-lockfile",
+            "--frozen-lockfile",
+        ],
+        &[],
+    );
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(stderr.contains("mutually exclusive"), "{stderr}");
+    let invocations =
+        fs::read_to_string(harness.log_dir.join("invocations.log")).unwrap_or_default();
+    assert!(!invocations.contains("build "), "{invocations}");
+}
+
+#[test]
+fn build_experimental_lockfile_flag_emits_deprecation_warning() {
     let harness = RuntimeHarness::new();
     let workspace = harness.workspace();
     fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
@@ -371,14 +466,11 @@ fn build_writes_feature_lockfile_when_requested() {
     );
 
     assert!(output.status.success(), "{output:?}");
-    let lockfile = fs::read_to_string(
-        workspace
-            .join(".devcontainer")
-            .join("devcontainer-lock.json"),
-    )
-    .expect("lockfile");
-    assert!(lockfile.contains("ghcr.io/devcontainers/features/git:1.0"));
-    assert!(lockfile.contains("\"resolved\":"));
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("--experimental-lockfile is deprecated"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -408,7 +500,6 @@ fn build_rejects_corrupt_existing_feature_lockfile_before_build_or_push() {
             "--image-name",
             "example/native-build:corrupt-lockfile",
             "--push",
-            "--experimental-lockfile",
         ],
         &[],
     );
@@ -442,7 +533,6 @@ fn build_omits_additional_only_features_from_generated_lockfile() {
             workspace.to_string_lossy().as_ref(),
             "--additional-features",
             "{\"ghcr.io/devcontainers/features/github-cli\":{}}",
-            "--experimental-lockfile",
         ],
         &[],
     );
@@ -486,7 +576,7 @@ fn build_rejects_outdated_frozen_feature_lockfile() {
             fake_podman.as_str(),
             "--workspace-folder",
             workspace.to_string_lossy().as_ref(),
-            "--experimental-frozen-lockfile",
+            "--frozen-lockfile",
         ],
         &[],
     );
