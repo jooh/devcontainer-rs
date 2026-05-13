@@ -64,8 +64,10 @@ Rust validation:
 
 ```bash
 cargo fmt --manifest-path cmd/devcontainer/Cargo.toml --all -- --check
-cargo clippy --manifest-path cmd/devcontainer/Cargo.toml -- -D warnings
-cargo test --manifest-path cmd/devcontainer/Cargo.toml
+cargo clippy --manifest-path cmd/devcontainer/Cargo.toml --all-targets --all-features -- -D warnings
+cargo check --manifest-path cmd/devcontainer/Cargo.toml --all-targets --all-features
+cargo doc --manifest-path cmd/devcontainer/Cargo.toml --no-deps --document-private-items
+cargo test --manifest-path cmd/devcontainer/Cargo.toml --locked
 ```
 
 Compatibility/tooling validation:

@@ -2,6 +2,7 @@
 	rust-fmt \
 	rust-clippy \
 	rust-check \
+	rust-doc \
 	rust-tests \
 	build-release \
 	real-engine-lifecycle-smoke \
@@ -30,19 +31,22 @@
 RUST_MANIFEST := cmd/devcontainer/Cargo.toml
 RELEASE_BINARY := ./cmd/devcontainer/target/release/devcontainer
 
-tests: rust-fmt rust-clippy rust-check rust-tests build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check command-matrix-drift-check schema-drift-check parity-harness no-node-runtime npm-wrapper-check npm-publish-script-check npm-package-smoke tap-check homebrew-distribution-check npm-publish-workflow-check check-parity-inventory check-cli-metadata check-compatibility-dashboard check-upstream-test-coverage upstream-compatibility
+tests: rust-fmt rust-clippy rust-check rust-doc rust-tests build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check command-matrix-drift-check schema-drift-check parity-harness no-node-runtime npm-wrapper-check npm-publish-script-check npm-package-smoke tap-check homebrew-distribution-check npm-publish-workflow-check check-parity-inventory check-cli-metadata check-compatibility-dashboard check-upstream-test-coverage upstream-compatibility
 
 rust-fmt:
 	cargo fmt --manifest-path $(RUST_MANIFEST) --all -- --check
 
 rust-clippy:
-	cargo clippy --manifest-path $(RUST_MANIFEST) -- -D warnings
+	cargo clippy --manifest-path $(RUST_MANIFEST) --all-targets --all-features -- -D warnings
 
 rust-check:
-	cargo check --manifest-path $(RUST_MANIFEST)
+	cargo check --manifest-path $(RUST_MANIFEST) --all-targets --all-features
+
+rust-doc:
+	cargo doc --manifest-path $(RUST_MANIFEST) --no-deps --document-private-items
 
 rust-tests:
-	cargo test --manifest-path $(RUST_MANIFEST)
+	cargo test --manifest-path $(RUST_MANIFEST) --locked
 
 build-release:
 	cargo build --release --manifest-path $(RUST_MANIFEST)

@@ -532,6 +532,18 @@ impl VersionSelector {
     }
 }
 
+impl Ord for ParsedVersion {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.major, self.minor, self.patch).cmp(&(other.major, other.minor, other.patch))
+    }
+}
+
+impl PartialOrd for ParsedVersion {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -561,7 +573,7 @@ mod tests {
         let metadata = json!({
             "id": "published-feature",
             "version": version,
-            "dependsOn": depends_on.map(|entries| entries.iter().copied().collect::<Vec<_>>()),
+            "dependsOn": depends_on.map(<[_]>::to_vec),
         });
         let manifest = json!({
             "schemaVersion": 2,
@@ -729,17 +741,5 @@ mod tests {
             Some(vec!["ghcr.io/acme/features/dependency".to_string()])
         );
         let _ = fs::remove_dir_all(workspace);
-    }
-}
-
-impl Ord for ParsedVersion {
-    fn cmp(&self, other: &Self) -> Ordering {
-        (self.major, self.minor, self.patch).cmp(&(other.major, other.minor, other.patch))
-    }
-}
-
-impl PartialOrd for ParsedVersion {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
     }
 }

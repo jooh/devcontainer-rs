@@ -6,25 +6,25 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub struct WorkspaceFixture {
+pub(crate) struct WorkspaceFixture {
     root: PathBuf,
 }
 
 impl WorkspaceFixture {
-    pub fn new(root: PathBuf) -> Self {
+    pub(crate) fn new(root: PathBuf) -> Self {
         fs::create_dir_all(&root).expect("workspace dir");
         Self { root }
     }
 
-    pub fn root(&self) -> &Path {
+    pub(crate) fn root(&self) -> &Path {
         &self.root
     }
 
-    pub fn config_dir(&self) -> PathBuf {
+    pub(crate) fn config_dir(&self) -> PathBuf {
         self.root.join(".devcontainer")
     }
 
-    pub fn write_devcontainer_config(&self, body: &str) -> PathBuf {
+    pub(crate) fn write_devcontainer_config(&self, body: &str) -> PathBuf {
         let config_dir = self.config_dir();
         fs::create_dir_all(&config_dir).expect("config dir");
         let config_path = config_dir.join("devcontainer.json");
@@ -32,13 +32,13 @@ impl WorkspaceFixture {
         config_path
     }
 
-    pub fn create_dir(&self, relative: &str) -> PathBuf {
+    pub(crate) fn create_dir(&self, relative: &str) -> PathBuf {
         let path = self.root.join(relative);
         fs::create_dir_all(&path).expect("dir");
         path
     }
 
-    pub fn write_file(&self, relative: &str, contents: &str) -> PathBuf {
+    pub(crate) fn write_file(&self, relative: &str, contents: &str) -> PathBuf {
         let path = self.root.join(relative);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).expect("parent dir");
@@ -47,7 +47,7 @@ impl WorkspaceFixture {
         path
     }
 
-    pub fn create_local_feature(
+    pub(crate) fn create_local_feature(
         &self,
         name: &str,
         manifest: &str,
@@ -59,7 +59,7 @@ impl WorkspaceFixture {
         feature_dir
     }
 
-    pub fn init_dotfiles_repo(&self, relative: &str, install_script: &str) -> PathBuf {
+    pub(crate) fn init_dotfiles_repo(&self, relative: &str, install_script: &str) -> PathBuf {
         let repo = self.create_dir(relative);
         fs::write(repo.join("install.sh"), install_script).expect("install script");
         run_git(&repo, &["init", "-q"]);
@@ -70,13 +70,13 @@ impl WorkspaceFixture {
         repo
     }
 
-    pub fn init_git_repo(&self, relative: &str) -> PathBuf {
+    pub(crate) fn init_git_repo(&self, relative: &str) -> PathBuf {
         let repo = self.create_dir(relative);
         run_git(&repo, &["init", "--quiet"]);
         repo
     }
 
-    pub fn init_git_repo_with_commit(&self, relative: &str) -> PathBuf {
+    pub(crate) fn init_git_repo_with_commit(&self, relative: &str) -> PathBuf {
         let repo = self.init_git_repo(relative);
         fs::write(repo.join("README.md"), "hello\n").expect("readme");
         run_git(&repo, &["add", "README.md"]);
@@ -96,7 +96,7 @@ impl WorkspaceFixture {
         repo
     }
 
-    pub fn add_relative_git_worktree(
+    pub(crate) fn add_relative_git_worktree(
         &self,
         repo_relative: &str,
         worktree_relative: &str,
