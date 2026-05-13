@@ -2,13 +2,14 @@
 
 set -eu
 
-manifest_path="cmd/devcontainer/Cargo.toml"
+echo "Running make rust-fmt..."
+make rust-fmt
 
-echo "Running cargo fmt -- --check..."
-cargo fmt --manifest-path "$manifest_path" --all -- --check
+echo "Running make rust-clippy..."
+make rust-clippy
 
-echo "Running cargo clippy -- -D warnings..."
-cargo clippy --manifest-path "$manifest_path" -- -D warnings
+echo "Running make rust-check..."
+make rust-check
 
-echo "Running cargo check..."
-cargo check --manifest-path "$manifest_path"
+echo "Running make rust-doc..."
+make rust-doc
