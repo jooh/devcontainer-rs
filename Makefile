@@ -41,21 +41,21 @@ CARGO_LLVM_COV ?= cargo llvm-cov
 COVERAGE_LINE_THRESHOLD := 88
 ACTIONLINT := uv tool run --from actionlint-py actionlint
 SHELLCHECK := uv tool run --from shellcheck-py shellcheck
-SHELLCHECK_FILES := $(shell git ls-files -- '*.sh' ':(exclude)upstream/**' ':(exclude)spec/**' ':(exclude)target/**' ':(exclude)node_modules/**')
+SHELLCHECK_FILES := $(shell git ls-files -- '*.sh' '.githooks/pre-commit' ':(exclude)upstream/**' ':(exclude)spec/**' ':(exclude)target/**' ':(exclude)node_modules/**')
 
-tests: rust-fmt rust-clippy rust-check rust-doc rust-tests cargo-deny-check actionlint-check shellcheck build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check check-upstream-submodule command-matrix-drift-check check-cli-reference schema-drift-check parity-harness no-node-runtime npm-wrapper-check npm-publish-script-check npm-package-smoke tap-check homebrew-distribution-check npm-publish-workflow-check check-parity-inventory check-cli-metadata check-compatibility-dashboard check-upstream-test-coverage check-devcontainer-config upstream-compatibility
+tests: rust-fmt rust-tests rust-clippy rust-check rust-doc rust-coverage cargo-deny-check actionlint-check shellcheck build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check check-upstream-submodule command-matrix-drift-check check-cli-reference schema-drift-check parity-harness no-node-runtime npm-wrapper-check npm-publish-script-check npm-package-smoke tap-check homebrew-distribution-check npm-publish-workflow-check check-parity-inventory check-cli-metadata check-compatibility-dashboard check-upstream-test-coverage check-devcontainer-config upstream-compatibility
 
 rust-fmt:
 	cargo fmt --manifest-path $(RUST_MANIFEST) --all -- --check
 
 rust-clippy:
-	cargo clippy --manifest-path $(RUST_MANIFEST) --all-targets --all-features -- -D warnings
+	cargo clippy --manifest-path $(RUST_MANIFEST) --locked --all-targets --all-features -- -D warnings
 
 rust-check:
-	cargo check --manifest-path $(RUST_MANIFEST) --all-targets --all-features
+	cargo check --manifest-path $(RUST_MANIFEST) --locked --all-targets --all-features
 
 rust-doc:
-	cargo doc --manifest-path $(RUST_MANIFEST) --no-deps --document-private-items
+	cargo doc --manifest-path $(RUST_MANIFEST) --locked --no-deps --document-private-items
 
 rust-tests:
 	cargo test --manifest-path $(RUST_MANIFEST) --locked
@@ -64,7 +64,7 @@ cargo-deny-check:
 	cargo deny --manifest-path $(RUST_MANIFEST) check -A license-not-encountered
 
 rust-coverage:
-	$(CARGO_LLVM_COV) --manifest-path $(RUST_MANIFEST) --all-features --workspace --fail-under-lines $(COVERAGE_LINE_THRESHOLD)
+	$(CARGO_LLVM_COV) --manifest-path $(RUST_MANIFEST) --locked --all-features --workspace --fail-under-lines $(COVERAGE_LINE_THRESHOLD)
 
 actionlint-check:
 	$(ACTIONLINT) .github/workflows/*.yml
@@ -73,7 +73,7 @@ shellcheck:
 	$(SHELLCHECK) $(SHELLCHECK_FILES)
 
 build-release:
-	cargo build --release --manifest-path $(RUST_MANIFEST)
+	cargo build --release --manifest-path $(RUST_MANIFEST) --locked
 
 real-engine-lifecycle-smoke: real-engine-lifecycle-smoke-docker real-engine-lifecycle-smoke-podman
 
