@@ -36,16 +36,19 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Rust fmt
-        run: cargo fmt --manifest-path cmd/devcontainer/Cargo.toml --all -- --check
+        run: make rust-fmt
 
       - name: Rust clippy
-        run: cargo clippy --manifest-path cmd/devcontainer/Cargo.toml -- -D warnings
+        run: make rust-clippy
 
       - name: Rust check
-        run: cargo check --manifest-path cmd/devcontainer/Cargo.toml
+        run: make rust-check
+
+      - name: Rust doc
+        run: make rust-doc
 
       - name: Rust tests
-        run: cargo test --manifest-path cmd/devcontainer/Cargo.toml
+        run: make rust-tests
 
       - name: Build release binary
         run: cargo build --release --manifest-path cmd/devcontainer/Cargo.toml
