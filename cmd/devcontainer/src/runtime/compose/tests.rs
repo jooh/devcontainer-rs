@@ -171,6 +171,41 @@ fn compose_project_name_defaults_to_compose_working_dir_basename() {
 }
 
 #[test]
+fn compose_project_name_reports_missing_files_and_sanitizes_names() {
+    assert_eq!(sanitize_project_name("My Project! 123"), "myproject123");
+    assert!(compose_project_name(&[])
+        .expect_err("missing compose files should fail")
+        .contains("at least one compose file"));
+}
+
+#[test]
+fn compose_project_name_reads_dotenv_and_reports_read_errors() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    let compose_dir = root.join("compose");
+    let compose_file = compose_dir.join("docker-compose.yml");
+    fs::create_dir_all(&compose_dir).expect("compose dir");
+    fs::write(&compose_file, "services:\n  app:\n    image: alpine:3.20\n").expect("compose");
+    fs::write(
+        compose_dir.join(".env"),
+        "\n# comment\nCOMPOSE_PROJECT_NAME=Env_Project\n",
+    )
+    .expect("env file");
+
+    let project_name =
+        compose_project_name(std::slice::from_ref(&compose_file)).expect("dotenv project name");
+    assert_eq!(project_name, "env_project");
+
+    let unreadable_dir = compose_dir.join(".env");
+    let _ = fs::remove_file(&unreadable_dir);
+    fs::create_dir(&unreadable_dir).expect("env directory");
+    assert!(!compose_project_name(&[compose_file])
+        .expect_err("directory env file should fail")
+        .is_empty());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn compose_name_from_file_reads_top_level_name() {
     let root = unique_temp_dir("devcontainer-compose-test");
     let compose_file = root.join("docker-compose.yml");
@@ -239,6 +274,27 @@ fn substitute_compose_env_supports_plain_variable_interpolation() {
     assert_eq!(
         substitute_compose_env_with(&format!("prefix-${variable}"), &lookup),
         "prefix-MyProject"
+    );
+    assert_eq!(substitute_compose_env_with("cost-$$5", &lookup), "cost-$5");
+    assert_eq!(
+        substitute_compose_env_with("literal-$", &lookup),
+        "literal-$"
+    );
+    assert_eq!(
+        substitute_compose_env_with("literal-$9", &lookup),
+        "literal-$9"
+    );
+    assert_eq!(
+        substitute_compose_env_with("${UNFINISHED", &lookup),
+        "${UNFINISHED"
+    );
+    assert_eq!(
+        substitute_compose_env_with("${DEVCONTAINER_COMPOSE_TEST_PRESENT:-fallback}", &lookup),
+        "MyProject"
+    );
+    assert_eq!(
+        substitute_compose_env_with("${DEVCONTAINER_COMPOSE_TEST_PRESENT-fallback}", &lookup),
+        "MyProject"
     );
 }
 

@@ -171,7 +171,7 @@ mod tests {
 
     use super::{
         dotfiles::dotfiles_install_command,
-        requests::lifecycle_exec_args,
+        requests::{host_lifecycle_request, lifecycle_exec_args},
         run_process_group,
         selection::{lifecycle_command_group, selected_lifecycle_steps},
         LifecycleCommand, LifecycleMode, LifecycleStep,
@@ -281,6 +281,36 @@ mod tests {
             args.contains(&"/bin/sh".to_string()),
             "expected lifecycle shell command to use /bin/sh: {args:?}"
         );
+    }
+
+    #[test]
+    fn host_lifecycle_request_supports_exec_commands() {
+        let request = host_lifecycle_request(
+            &[
+                "--log-level".to_string(),
+                "trace".to_string(),
+                "--terminal-columns".to_string(),
+                "120".to_string(),
+                "--terminal-rows".to_string(),
+                "40".to_string(),
+            ],
+            std::path::Path::new("/workspace"),
+            LifecycleCommand::Exec(vec![
+                "echo".to_string(),
+                "hello".to_string(),
+                "world".to_string(),
+            ]),
+        );
+
+        assert_eq!(request.program, "echo");
+        assert_eq!(request.args, vec!["hello".to_string(), "world".to_string()]);
+        assert_eq!(
+            request.cwd.as_deref(),
+            Some(std::path::Path::new("/workspace"))
+        );
+        assert_eq!(request.log_level, ProcessLogLevel::Trace);
+        assert_eq!(request.env.get("COLUMNS").map(String::as_str), Some("120"));
+        assert_eq!(request.env.get("LINES").map(String::as_str), Some("40"));
     }
 
     #[test]
