@@ -1,20 +1,23 @@
 //! Configuration upgrade, lockfile, and outdated command helpers.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use serde_json::{json, Map, Value};
 
-use super::catalog::{
-    build_feature_version_info, catalog_entry_for_version, exact_catalog_entry, latest_version,
-    resolve_wanted_version,
-};
+use super::catalog::build_feature_version_info;
+use super::features::ResolvedFeatureSupport;
 use super::load::load_config;
 use super::{FeatureReference, Lockfile, LockfileEntry};
-use crate::commands::collections::oci;
 use crate::commands::common;
 use crate::output::{CommandLogLevel, CommandLogger, LogFormat, TerminalDimensions};
+
+const NO_LOCKFILE_FLAG: &str = "--no-lockfile";
+const FROZEN_LOCKFILE_FLAG: &str = "--frozen-lockfile";
+const EXPERIMENTAL_LOCKFILE_FLAG: &str = "--experimental-lockfile";
+const EXPERIMENTAL_FROZEN_LOCKFILE_FLAG: &str = "--experimental-frozen-lockfile";
 
 pub(super) fn run_outdated(args: &[String]) -> ExitCode {
     let logger = outdated_logger(args);
@@ -72,18 +75,17 @@ pub(super) fn ensure_native_lockfile(
     args: &[String],
     config_file: &Path,
     configuration: &Value,
+    resolved_features: &ResolvedFeatureSupport,
 ) -> Result<(), String> {
-    if !wants_native_lockfile(args) {
+    validate_lockfile_options(args)?;
+    if lockfile_disabled(args) {
         return Ok(());
     }
 
-    let workspace_folder = common::parse_option_value(args, "--workspace-folder")
-        .map(PathBuf::from)
-        .or_else(|| config_file.parent().map(Path::to_path_buf));
-    let generated = generate_lockfile(configuration, workspace_folder.as_deref())?;
+    let generated = generate_lockfile_from_resolved(args, configuration, resolved_features)?;
     let path = lockfile_path(config_file);
     let existing = existing_native_lockfile(args, &path)?;
-    if common::has_flag(args, "--experimental-frozen-lockfile") {
+    if lockfile_frozen(args) {
         let Some(existing) = existing else {
             return Err("Lockfile does not exist.".to_string());
         };
@@ -93,11 +95,10 @@ pub(super) fn ensure_native_lockfile(
                 path.display()
             ));
         }
+        return Ok(());
     }
-    if common::has_flag(args, "--experimental-lockfile") {
-        let lockfile = serialized_lockfile(&generated)?;
-        fs::write(&path, lockfile).map_err(|error| error.to_string())?;
-    }
+    let lockfile = serialized_lockfile(&generated)?;
+    fs::write(&path, lockfile).map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -105,21 +106,20 @@ pub(super) fn validate_native_lockfile(
     args: &[String],
     config_file: &Path,
     configuration: &Value,
+    resolved_features: &ResolvedFeatureSupport,
 ) -> Result<(), String> {
-    if !wants_native_lockfile(args) {
+    validate_lockfile_options(args)?;
+    if lockfile_disabled(args) {
         return Ok(());
     }
 
     let path = lockfile_path(config_file);
     let existing = existing_native_lockfile(args, &path)?;
-    if common::has_flag(args, "--experimental-frozen-lockfile") {
+    if lockfile_frozen(args) {
         let Some(existing) = existing else {
             return Err("Lockfile does not exist.".to_string());
         };
-        let workspace_folder = common::parse_option_value(args, "--workspace-folder")
-            .map(PathBuf::from)
-            .or_else(|| config_file.parent().map(Path::to_path_buf));
-        let generated = generate_lockfile(configuration, workspace_folder.as_deref())?;
+        let generated = generate_lockfile_from_resolved(args, configuration, resolved_features)?;
         if existing != generated {
             return Err(format!(
                 "Lockfile at {} is out of date for the current feature configuration",
@@ -130,17 +130,62 @@ pub(super) fn validate_native_lockfile(
     Ok(())
 }
 
-fn wants_native_lockfile(args: &[String]) -> bool {
-    common::has_flag(args, "--experimental-lockfile")
-        || common::has_flag(args, "--experimental-frozen-lockfile")
+pub(super) fn validate_lockfile_options(args: &[String]) -> Result<(), String> {
+    if common::has_flag(args, NO_LOCKFILE_FLAG) {
+        for flag in [
+            FROZEN_LOCKFILE_FLAG,
+            EXPERIMENTAL_FROZEN_LOCKFILE_FLAG,
+            EXPERIMENTAL_LOCKFILE_FLAG,
+        ] {
+            if common::has_flag(args, flag) {
+                return Err(format!(
+                    "{NO_LOCKFILE_FLAG} and {flag} are mutually exclusive."
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn warn_deprecated_lockfile_flags(args: &[String]) {
+    if common::has_flag(args, EXPERIMENTAL_LOCKFILE_FLAG) {
+        eprintln!(
+            "Warning: {EXPERIMENTAL_LOCKFILE_FLAG} is deprecated. Lockfiles are now enabled by default."
+        );
+    }
+    if common::has_flag(args, EXPERIMENTAL_FROZEN_LOCKFILE_FLAG) {
+        eprintln!(
+            "Warning: {EXPERIMENTAL_FROZEN_LOCKFILE_FLAG} is deprecated. Use {FROZEN_LOCKFILE_FLAG} instead."
+        );
+    }
+}
+
+fn lockfile_disabled(args: &[String]) -> bool {
+    common::has_flag(args, NO_LOCKFILE_FLAG)
+}
+
+fn lockfile_frozen(args: &[String]) -> bool {
+    common::has_flag(args, FROZEN_LOCKFILE_FLAG)
+        || common::has_flag(args, EXPERIMENTAL_FROZEN_LOCKFILE_FLAG)
 }
 
 fn existing_native_lockfile(args: &[String], path: &Path) -> Result<Option<Lockfile>, String> {
-    if path.exists() || common::has_flag(args, "--experimental-frozen-lockfile") {
+    if path.exists() || lockfile_frozen(args) {
         read_lockfile(path.to_path_buf())
     } else {
         Ok(None)
     }
+}
+
+pub(super) fn lockfile_for_resolution(
+    args: &[String],
+    config_file: &Path,
+) -> Result<Option<Lockfile>, String> {
+    validate_lockfile_options(args)?;
+    if lockfile_disabled(args) {
+        return Ok(None);
+    }
+    read_lockfile(lockfile_path(config_file))
 }
 
 fn serialized_lockfile(lockfile: &Lockfile) -> Result<String, String> {
@@ -277,10 +322,19 @@ fn run_upgrade_lockfile_with_logger(
             "Generating lockfile for {feature_count} feature(s)"
         ));
     }
-    let generated = generate_lockfile(
-        &loaded.configuration,
-        Some(loaded.workspace_folder.as_path()),
-    )?;
+    let generated = if let Some(resolved_features) =
+        super::features::resolve_feature_support_without_lockfile(
+            args,
+            &loaded.workspace_folder,
+            &loaded.config_file,
+            &loaded.configuration,
+        )? {
+        generate_lockfile_from_resolved(args, &loaded.configuration, &resolved_features)?
+    } else {
+        Lockfile {
+            features: std::collections::BTreeMap::new(),
+        }
+    };
     if !common::has_flag(args, "--dry-run") {
         let lockfile_path = lockfile_path(&loaded.config_file);
         if let Some(logger) = logger {
@@ -366,120 +420,52 @@ fn validate_upgrade_options(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn generate_lockfile(
+fn generate_lockfile_from_resolved(
+    args: &[String],
     configuration: &Value,
-    workspace_folder: Option<&Path>,
+    resolved_features: &ResolvedFeatureSupport,
 ) -> Result<Lockfile, String> {
-    let features = configuration
-        .get("features")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-
+    let excluded = additional_only_feature_ids(args, configuration)?;
     let mut resolved = std::collections::BTreeMap::new();
-    for feature_id in features.keys() {
-        let Some(reference) = parse_feature_reference(feature_id) else {
+    for feature in &resolved_features.lockfile_features {
+        if excluded.contains(&feature.user_feature_id) {
             continue;
-        };
-
-        let (lockfile_key, entry) = generate_lockfile_entry(&reference, workspace_folder)?
-            .ok_or_else(|| {
-                format!("Unsupported feature for native lockfile generation: {feature_id}")
-            })?;
-        resolved.insert(lockfile_key, entry);
+        }
+        resolved.insert(
+            feature.user_feature_id.clone(),
+            LockfileEntry {
+                version: feature.version.clone(),
+                resolved: feature.resolved.clone(),
+                integrity: feature.integrity.clone(),
+                depends_on: feature.depends_on.clone(),
+            },
+        );
     }
 
     Ok(Lockfile { features: resolved })
 }
 
-fn generate_lockfile_entry(
-    feature: &FeatureReference,
-    workspace_folder: Option<&Path>,
-) -> Result<Option<(String, LockfileEntry)>, String> {
-    if oci::is_registry_qualified_reference(&feature.base) {
-        let artifact = oci::resolve_feature_artifact(&feature.original, workspace_folder)?;
-        return Ok(Some((
-            feature.original.clone(),
-            LockfileEntry {
-                version: artifact
-                    .metadata
-                    .get("version")
-                    .and_then(Value::as_str)
-                    .or(artifact.tag.as_deref())
-                    .unwrap_or("latest")
-                    .to_string(),
-                resolved: oci::canonical_feature_id(&artifact),
-                integrity: artifact.manifest_digest,
-                depends_on: feature_depends_on_entries(&artifact.metadata),
-            },
-        )));
-    }
-
-    if feature.digest.is_some() {
-        return Ok(
-            exact_catalog_entry(&feature.original, workspace_folder).map(|entry| {
-                (
-                    feature.original.clone(),
-                    LockfileEntry {
-                        version: entry.version.clone(),
-                        resolved: entry.resolved.clone(),
-                        integrity: entry.integrity.clone(),
-                        depends_on: entry.depends_on.clone(),
-                    },
-                )
-            }),
-        );
-    }
-
-    let version = if let Some(tag) = feature.tag.as_deref() {
-        if tag == "latest" {
-            let Some(version) = latest_version(&feature.base, workspace_folder) else {
-                return Ok(None);
-            };
-            version
-        } else if tag.matches('.').count() == 2 {
-            tag.to_string()
-        } else {
-            let Some(version) = resolve_wanted_version(feature, None, workspace_folder) else {
-                return Ok(None);
-            };
-            version
-        }
-    } else {
-        let Some(version) = latest_version(&feature.base, workspace_folder) else {
-            return Ok(None);
-        };
-        version
+fn additional_only_feature_ids(
+    args: &[String],
+    configuration: &Value,
+) -> Result<BTreeSet<String>, String> {
+    let config_feature_keys = configuration
+        .get("features")
+        .and_then(Value::as_object)
+        .map(|features| features.keys().cloned().collect::<BTreeSet<_>>())
+        .unwrap_or_default();
+    let Some(raw_additional) = common::parse_option_value(args, "--additional-features") else {
+        return Ok(BTreeSet::new());
     };
-
-    let Some(entry) = catalog_entry_for_version(&feature.base, &version, workspace_folder) else {
-        return Ok(None);
-    };
-    Ok(Some((
-        feature.original.clone(),
-        LockfileEntry {
-            version,
-            resolved: entry.resolved.clone(),
-            integrity: entry.integrity.clone(),
-            depends_on: entry.depends_on.clone(),
-        },
-    )))
-}
-
-fn feature_depends_on_entries(metadata: &Value) -> Option<Vec<String>> {
-    let depends_on = metadata.get("dependsOn")?;
-    let entries = if let Some(object) = depends_on.as_object() {
-        object.keys().cloned().collect::<Vec<_>>()
-    } else if let Some(array) = depends_on.as_array() {
-        array
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-    (!entries.is_empty()).then_some(entries)
+    let additional = crate::config::parse_jsonc_value(&raw_additional)?;
+    let additional = additional
+        .as_object()
+        .ok_or_else(|| "--additional-features must be a JSON object".to_string())?;
+    Ok(additional
+        .keys()
+        .filter(|key| !config_feature_keys.contains(*key))
+        .cloned()
+        .collect())
 }
 
 pub(super) fn lockfile_path(config_file: &Path) -> PathBuf {

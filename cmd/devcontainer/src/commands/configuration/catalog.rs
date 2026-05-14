@@ -178,16 +178,6 @@ pub(super) fn latest_version(base: &str, workspace_folder: Option<&Path>) -> Opt
         .map(|entry| entry.version)
 }
 
-pub(super) fn catalog_entry_for_version(
-    base: &str,
-    version: &str,
-    workspace_folder: Option<&Path>,
-) -> Option<CatalogEntry> {
-    catalog_entries(base, workspace_folder)?
-        .into_iter()
-        .find(|entry| entry.version == version)
-}
-
 fn local_oci_layout_entries(base: &str, workspace_folder: Option<&Path>) -> Vec<CatalogEntry> {
     let Some(layout_dir) = workspace_oci_layout_dir(base, workspace_folder) else {
         return Vec::new();
@@ -461,6 +451,18 @@ fn fixture_catalog() -> Vec<(String, CatalogEntry)> {
                 resolved: "https://github.com/codspace/tgz-features-with-dependson/releases/download/0.0.2/devcontainer-feature-A.tgz".to_string(),
                 integrity: "sha256:f2dd5be682cceedb5497f9a734b5d5e7834424ade75b8cc700927242585ec671".to_string(),
                 depends_on: Some(vec!["ghcr.io/codspace/dependson/E".to_string()]),
+            },
+        ),
+        (
+            "https://github.com/codspace/tgz-features-with-dependson/releases/download/0.0.2/devcontainer-feature-B.tgz".to_string(),
+            CatalogEntry {
+                version: "0.0.2".to_string(),
+                resolved: "https://github.com/codspace/tgz-features-with-dependson/releases/download/0.0.2/devcontainer-feature-B.tgz".to_string(),
+                integrity: "sha256:d130123ba54335a026ab6cd51c8bcbd52d58a0aeaacd8a593512ba61c5117ea0".to_string(),
+                depends_on: Some(vec![
+                    "ghcr.io/codspace/dependson/C".to_string(),
+                    "ghcr.io/codspace/dependson/D".to_string(),
+                ]),
             },
         ),
     ]

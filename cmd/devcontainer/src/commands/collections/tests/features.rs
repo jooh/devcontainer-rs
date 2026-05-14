@@ -64,6 +64,43 @@ fn feature_dependency_resolution_respects_override_order() {
 }
 
 #[test]
+fn feature_dependency_resolution_ignores_existing_lockfile() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    let feature_dir = config_dir.join("local-feature");
+    fs::create_dir_all(&feature_dir).expect("failed to create feature directory");
+    fs::write(
+        feature_dir.join("devcontainer-feature.json"),
+        "{\n  \"id\": \"local-feature\",\n  \"name\": \"Local Feature\",\n  \"version\": \"1.0.0\"\n}\n",
+    )
+    .expect("failed to write feature manifest");
+    fs::write(feature_dir.join("install.sh"), "#!/bin/sh\nset -eu\n")
+        .expect("failed to write feature install script");
+    fs::write(
+        config_dir.join("devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"./local-feature\": {}\n  }\n}\n",
+    )
+    .expect("failed to write config");
+    fs::write(
+        config_dir.join("devcontainer-lock.json"),
+        "this is not json",
+    )
+    .expect("failed to write corrupt lockfile");
+
+    let payload = build_features_resolve_dependencies_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+    ])
+    .expect("payload should not read lockfile");
+
+    let features = payload["resolvedFeatures"]
+        .as_array()
+        .expect("resolved features");
+    assert_eq!(features, &[serde_json::json!("./local-feature")]);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn feature_dependency_resolution_matches_upstream_local_option_round_order() {
     let root = copy_upstream_fixture("feature-dependencies/dependsOn/local-with-options");
 

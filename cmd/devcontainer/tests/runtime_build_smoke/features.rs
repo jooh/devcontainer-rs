@@ -4,6 +4,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+use serde_json::Value;
+
 use crate::support::runtime_harness::{write_devcontainer_config, RuntimeHarness};
 
 #[test]
@@ -98,6 +100,182 @@ fn build_materializes_workspace_oci_feature_layout() {
     assert!(dockerfiles.contains("COPY feature-0-offline-feature"));
     assert!(dockerfiles.contains("PACKAGES="));
     assert!(dockerfiles.contains("jq"));
+}
+
+#[test]
+fn build_writes_lockfile_for_non_ghcr_workspace_oci_feature() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    let feature_root = harness.root.join("published-feature-src");
+    let layout_root = workspace
+        .join(".devcontainer")
+        .join("oci-layouts")
+        .join("example.com")
+        .join("acme")
+        .join("features")
+        .join("offline-feature");
+    fs::create_dir_all(feature_root.join("repo")).expect("feature repo dir");
+    fs::write(
+        feature_root.join("devcontainer-feature.json"),
+        "{\n  \"id\": \"offline-feature\",\n  \"name\": \"Offline Feature\",\n  \"version\": \"1.0.0\"\n}\n",
+    )
+    .expect("feature manifest");
+    fs::write(feature_root.join("install.sh"), "#!/bin/sh\nset -eu\n").expect("install script");
+    publish_feature_layout(&feature_root, &layout_root);
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"example.com/acme/features/offline-feature:1.0.0\": {}\n  }\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "build",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--image-name",
+            "example/native-build:non-ghcr-lockfile",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let lockfile: Value = serde_json::from_str(
+        &fs::read_to_string(
+            workspace
+                .join(".devcontainer")
+                .join("devcontainer-lock.json"),
+        )
+        .expect("lockfile"),
+    )
+    .expect("lockfile json");
+    let entry = &lockfile["features"]["example.com/acme/features/offline-feature:1.0.0"];
+    assert_eq!(entry["version"], "1.0.0");
+    assert!(
+        entry["resolved"].as_str().is_some_and(
+            |value| value.starts_with("example.com/acme/features/offline-feature@sha256:")
+        ),
+        "{entry:?}"
+    );
+}
+
+#[test]
+fn build_uses_existing_lockfile_for_broad_oci_selector() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    let feature_root = harness.root.join("published-feature-src");
+    let layout_root = workspace
+        .join(".devcontainer")
+        .join("oci-layouts")
+        .join("ghcr.io")
+        .join("acme")
+        .join("features")
+        .join("pinned-feature");
+    fs::create_dir_all(&feature_root).expect("feature dir");
+    fs::write(
+        feature_root.join("devcontainer-feature.json"),
+        "{\n  \"id\": \"pinned-feature\",\n  \"name\": \"Pinned Feature\",\n  \"version\": \"1.0.0\"\n}\n",
+    )
+    .expect("feature manifest");
+    fs::write(feature_root.join("install.sh"), "#!/bin/sh\nset -eu\n").expect("install script");
+    publish_feature_layout(&feature_root, &layout_root);
+    let pinned_digest = layout_digest_for_tag(&layout_root, "1.0.0");
+    fs::write(
+        feature_root.join("devcontainer-feature.json"),
+        "{\n  \"id\": \"pinned-feature\",\n  \"name\": \"Pinned Feature\",\n  \"version\": \"1.1.0\"\n}\n",
+    )
+    .expect("feature manifest");
+    publish_feature_layout(&feature_root, &layout_root);
+    let latest_digest = layout_digest_for_tag(&layout_root, "1.1.0");
+    assert_ne!(pinned_digest, latest_digest);
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/acme/features/pinned-feature:1\": {}\n  }\n}\n",
+    );
+    fs::write(
+        workspace.join(".devcontainer").join("devcontainer-lock.json"),
+        format!(
+            "{{\n  \"features\": {{\n    \"ghcr.io/acme/features/pinned-feature:1\": {{\n      \"version\": \"1.0.0\",\n      \"resolved\": \"ghcr.io/acme/features/pinned-feature@{pinned_digest}\",\n      \"integrity\": \"{pinned_digest}\"\n    }}\n  }}\n}}\n"
+        ),
+    )
+    .expect("lockfile");
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "build",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--image-name",
+            "example/native-build:pinned-lockfile",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let lockfile: Value = serde_json::from_str(
+        &fs::read_to_string(
+            workspace
+                .join(".devcontainer")
+                .join("devcontainer-lock.json"),
+        )
+        .expect("lockfile"),
+    )
+    .expect("lockfile json");
+    let entry = &lockfile["features"]["ghcr.io/acme/features/pinned-feature:1"];
+    assert_eq!(entry["version"], "1.0.0");
+    assert_eq!(entry["integrity"], pinned_digest);
+}
+
+#[test]
+fn build_writes_lockfile_for_direct_tarball_feature() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    let feature_uri = "https://github.com/codspace/tgz-features-with-dependson/releases/download/0.0.2/devcontainer-feature-B.tgz";
+    write_devcontainer_config(
+        &workspace,
+        &format!(
+            "{{\n  \"image\": \"debian:bookworm\",\n  \"features\": {{\n    \"{feature_uri}\": {{}}\n  }}\n}}\n"
+        ),
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "build",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--image-name",
+            "example/native-build:tarball-lockfile",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let lockfile: Value = serde_json::from_str(
+        &fs::read_to_string(
+            workspace
+                .join(".devcontainer")
+                .join("devcontainer-lock.json"),
+        )
+        .expect("lockfile"),
+    )
+    .expect("lockfile json");
+    let entry = &lockfile["features"][feature_uri];
+    assert_eq!(entry["version"], "0.0.2");
+    assert_eq!(entry["resolved"], feature_uri);
+    assert!(
+        entry["integrity"]
+            == "sha256:d130123ba54335a026ab6cd51c8bcbd52d58a0aeaacd8a593512ba61c5117ea0",
+        "{entry:?}"
+    );
 }
 
 #[test]
@@ -348,7 +526,102 @@ fn build_pushes_final_feature_image_instead_of_intermediate_base_image() {
 }
 
 #[test]
-fn build_writes_feature_lockfile_when_requested() {
+fn build_writes_feature_lockfile_by_default() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/devcontainers/features/git:1.0\": {}\n  }\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "build",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let lockfile = fs::read_to_string(
+        workspace
+            .join(".devcontainer")
+            .join("devcontainer-lock.json"),
+    )
+    .expect("lockfile");
+    assert!(lockfile.contains("ghcr.io/devcontainers/features/git:1.0"));
+    assert!(lockfile.contains("\"resolved\":"));
+}
+
+#[test]
+fn build_no_lockfile_skips_feature_lockfile_write() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/devcontainers/features/git:1.0\": {}\n  }\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "build",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--no-lockfile",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert!(!workspace
+        .join(".devcontainer")
+        .join("devcontainer-lock.json")
+        .exists());
+}
+
+#[test]
+fn build_rejects_mutually_exclusive_lockfile_flags() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/devcontainers/features/git:1.0\": {}\n  }\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "build",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--no-lockfile",
+            "--frozen-lockfile",
+        ],
+        &[],
+    );
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(stderr.contains("mutually exclusive"), "{stderr}");
+    let invocations =
+        fs::read_to_string(harness.log_dir.join("invocations.log")).unwrap_or_default();
+    assert!(!invocations.contains("build "), "{invocations}");
+}
+
+#[test]
+fn build_experimental_lockfile_flag_emits_deprecation_warning() {
     let harness = RuntimeHarness::new();
     let workspace = harness.workspace();
     fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
@@ -371,14 +644,11 @@ fn build_writes_feature_lockfile_when_requested() {
     );
 
     assert!(output.status.success(), "{output:?}");
-    let lockfile = fs::read_to_string(
-        workspace
-            .join(".devcontainer")
-            .join("devcontainer-lock.json"),
-    )
-    .expect("lockfile");
-    assert!(lockfile.contains("ghcr.io/devcontainers/features/git:1.0"));
-    assert!(lockfile.contains("\"resolved\":"));
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("--experimental-lockfile is deprecated"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -408,7 +678,6 @@ fn build_rejects_corrupt_existing_feature_lockfile_before_build_or_push() {
             "--image-name",
             "example/native-build:corrupt-lockfile",
             "--push",
-            "--experimental-lockfile",
         ],
         &[],
     );
@@ -442,7 +711,6 @@ fn build_omits_additional_only_features_from_generated_lockfile() {
             workspace.to_string_lossy().as_ref(),
             "--additional-features",
             "{\"ghcr.io/devcontainers/features/github-cli\":{}}",
-            "--experimental-lockfile",
         ],
         &[],
     );
@@ -486,7 +754,7 @@ fn build_rejects_outdated_frozen_feature_lockfile() {
             fake_podman.as_str(),
             "--workspace-folder",
             workspace.to_string_lossy().as_ref(),
-            "--experimental-frozen-lockfile",
+            "--frozen-lockfile",
         ],
         &[],
     );
@@ -514,4 +782,21 @@ fn publish_feature_layout(feature_root: &Path, layout_root: &Path) {
         .expect("features publish");
 
     assert!(output.status.success(), "{output:?}");
+}
+
+fn layout_digest_for_tag(layout_root: &Path, tag: &str) -> String {
+    let index: Value = serde_json::from_str(
+        &fs::read_to_string(layout_root.join("index.json")).expect("index json"),
+    )
+    .expect("index");
+    index["manifests"]
+        .as_array()
+        .expect("manifests")
+        .iter()
+        .find_map(|entry| {
+            (entry["annotations"]["org.opencontainers.image.ref.name"].as_str() == Some(tag))
+                .then(|| entry["digest"].as_str().map(str::to_string))
+                .flatten()
+        })
+        .expect("tag digest")
 }

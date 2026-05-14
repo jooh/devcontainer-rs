@@ -1,5 +1,5 @@
 {
-	"upstreamCommit": "6293ce5879399316f06287e42e710c0f8e5edfef",
+	"upstreamCommit": "65f98a518a1f62355a08e6f38e9d6bfb9a0d8ac9",
 	"suites": [
 		{
 			"upstreamTest": "upstream/src/test/cli.build.test.ts",
@@ -172,7 +172,7 @@
 				"cmd/devcontainer/src/commands/configuration/tests/upgrade.rs",
 				"cmd/devcontainer/tests/runtime_build_smoke/features.rs"
 			],
-			"notes": "Native lockfile generation coverage validates configured Feature filtering, additional-only Feature exclusion, trailing-newline writes, semantic frozen comparisons, corrupt lockfile failures, and build-path lockfile generation."
+			"notes": "Native lockfile generation coverage validates default generation, configured Feature filtering, additional-only Feature exclusion, trailing-newline writes, semantic frozen comparisons, corrupt lockfile failures, and build-path lockfile generation."
 		},
 		{
 			"upstreamTest": "upstream/src/test/container-features/lifecycleHooks.test.ts",
@@ -191,7 +191,7 @@
 				"cmd/devcontainer/tests/cli_smoke/lockfile.rs",
 				"cmd/devcontainer/src/commands/configuration/tests/upgrade.rs"
 			],
-			"notes": "Native lockfile coverage includes outdated, upgrade, dry-run, root-relative path handling, trailing-newline writes, missing frozen-lockfile errors, and workspace-local OCI layout mirrors for published Feature version and digest resolution."
+			"notes": "Native lockfile coverage includes stable and deprecated lockfile flags, no-lockfile skips, outdated, upgrade, dry-run, root-relative path handling, trailing-newline writes, missing frozen-lockfile errors, and workspace-local OCI layout mirrors for published Feature version and digest resolution."
 		},
 		{
 			"upstreamTest": "upstream/src/test/container-features/registryCompatibilityOCI.test.ts",

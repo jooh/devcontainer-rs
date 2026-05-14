@@ -1,11 +1,11 @@
 {
-	"upstreamCommit": "6293ce5879399316f06287e42e710c0f8e5edfef",
+	"upstreamCommit": "65f98a518a1f62355a08e6f38e9d6bfb9a0d8ac9",
 	"sourcePath": "upstream/src/spec-node/devContainersSpecCLI.ts",
 	"summary": {
 		"commandPathsTotal": 20,
 		"commandPathsDeclared": 20,
-		"optionsTotal": 200,
-		"optionsReferenced": 200,
+		"optionsTotal": 204,
+		"optionsReferenced": 204,
 		"optionsMissing": 0
 	},
 	"commands": [
@@ -15,8 +15,8 @@
 			"description": "Create and run dev container",
 			"declared": true,
 			"optionSummary": {
-				"total": 43,
-				"referenced": 43,
+				"total": 45,
+				"referenced": 45,
 				"missing": 0
 			},
 			"options": [
@@ -25,7 +25,8 @@
 					"sourceReferenced": true,
 					"evidence": [
 						"cmd/devcontainer/src/commands/configuration/features/resolve.rs",
-						"cmd/devcontainer/src/commands/configuration/read.rs"
+						"cmd/devcontainer/src/commands/configuration/read.rs",
+						"cmd/devcontainer/src/commands/configuration/upgrade.rs"
 					]
 				},
 				{
@@ -166,6 +167,13 @@
 					]
 				},
 				{
+					"name": "frozen-lockfile",
+					"sourceReferenced": true,
+					"evidence": [
+						"cmd/devcontainer/src/commands/configuration/upgrade.rs"
+					]
+				},
+				{
 					"name": "gpu-availability",
 					"sourceReferenced": true,
 					"evidence": [
@@ -242,6 +250,13 @@
 						"cmd/devcontainer/src/commands/configuration/read.rs",
 						"cmd/devcontainer/src/runtime/context/workspace.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
+					]
+				},
+				{
+					"name": "no-lockfile",
+					"sourceReferenced": true,
+					"evidence": [
+						"cmd/devcontainer/src/commands/configuration/upgrade.rs"
 					]
 				},
 				{
@@ -550,8 +565,8 @@
 			"description": "Build a dev container image",
 			"declared": true,
 			"optionSummary": {
-				"total": 22,
-				"referenced": 22,
+				"total": 24,
+				"referenced": 24,
 				"missing": 0
 			},
 			"options": [
@@ -560,7 +575,8 @@
 					"sourceReferenced": true,
 					"evidence": [
 						"cmd/devcontainer/src/commands/configuration/features/resolve.rs",
-						"cmd/devcontainer/src/commands/configuration/read.rs"
+						"cmd/devcontainer/src/commands/configuration/read.rs",
+						"cmd/devcontainer/src/commands/configuration/upgrade.rs"
 					]
 				},
 				{
@@ -634,6 +650,13 @@
 					]
 				},
 				{
+					"name": "frozen-lockfile",
+					"sourceReferenced": true,
+					"evidence": [
+						"cmd/devcontainer/src/commands/configuration/upgrade.rs"
+					]
+				},
+				{
 					"name": "image-name",
 					"sourceReferenced": true,
 					"evidence": [
@@ -672,6 +695,13 @@
 					"evidence": [
 						"cmd/devcontainer/src/runtime/build.rs",
 						"cmd/devcontainer/src/runtime/compose/mod.rs"
+					]
+				},
+				{
+					"name": "no-lockfile",
+					"sourceReferenced": true,
+					"evidence": [
+						"cmd/devcontainer/src/commands/configuration/upgrade.rs"
 					]
 				},
 				{
@@ -990,7 +1020,8 @@
 					"sourceReferenced": true,
 					"evidence": [
 						"cmd/devcontainer/src/commands/configuration/features/resolve.rs",
-						"cmd/devcontainer/src/commands/configuration/read.rs"
+						"cmd/devcontainer/src/commands/configuration/read.rs",
+						"cmd/devcontainer/src/commands/configuration/upgrade.rs"
 					]
 				},
 				{

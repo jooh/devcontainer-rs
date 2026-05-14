@@ -79,11 +79,12 @@ pub(crate) fn build_service(resolved: &ResolvedConfig, args: &[String]) -> Resul
         &resolved.config_file,
         &resolved.configuration,
     )?;
-    if feature_support.is_some() {
+    if let Some(feature_support) = &feature_support {
         configuration::validate_native_lockfile(
             args,
             &resolved.config_file,
             &resolved.configuration,
+            feature_support,
         )?;
     }
 
@@ -131,6 +132,7 @@ pub(crate) fn build_service(resolved: &ResolvedConfig, args: &[String]) -> Resul
             args,
             &resolved.config_file,
             &resolved.configuration,
+            &feature_support,
         )?;
         return Ok(built_image);
     }

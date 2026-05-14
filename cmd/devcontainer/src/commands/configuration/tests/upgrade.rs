@@ -1,16 +1,19 @@
 //! Unit tests for configuration upgrade and lockfile behavior.
 
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::thread;
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::support::unique_temp_dir;
-use crate::commands::configuration::ensure_native_lockfile;
 use crate::commands::configuration::upgrade::{
     build_outdated_payload, feature_id_without_version, lockfile_path, run_upgrade_lockfile,
 };
+use crate::commands::configuration::{ensure_native_lockfile, resolve_feature_support};
 
 #[test]
 fn outdated_payload_reports_remote_feature_versions() {
@@ -66,6 +69,73 @@ fn upgrade_lockfile_uses_root_relative_lockfile_for_dotfile_configs() {
         lockfile.features["ghcr.io/devcontainers/features/github-cli"].version,
         "1.0.9"
     );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn upgrade_lockfile_records_direct_tarball_archive_digest() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    let tarball_bytes = b"feature archive bytes used for lockfile integrity";
+    let server = SingleResponseHttpServer::new(tarball_bytes);
+    let feature_uri = server.url("devcontainer-feature-network.tgz");
+    fs::write(
+        root.join(".devcontainer.json"),
+        format!(
+            "{{\n  \"image\": \"debian:bookworm\",\n  \"features\": {{\n    \"{feature_uri}\": {{}}\n  }}\n}}\n"
+        ),
+    )
+    .expect("failed to write config");
+
+    let lockfile =
+        run_upgrade_lockfile(&["--workspace-folder".to_string(), root.display().to_string()])
+            .expect("lockfile payload");
+
+    let entry = &lockfile.features[&feature_uri];
+    assert_eq!(entry.resolved, feature_uri);
+    assert_eq!(
+        entry.integrity,
+        format!("sha256:{}", sha256_digest(tarball_bytes))
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn ensure_native_lockfile_rejects_changed_direct_tarball_archive() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    let old_tarball_bytes = b"original direct tarball archive bytes";
+    let changed_tarball_bytes = b"changed direct tarball archive bytes";
+    let server = SingleResponseHttpServer::new(changed_tarball_bytes);
+    let feature_uri = server.url("devcontainer-feature-network.tgz");
+    let configuration = json!({
+        "image": "debian:bookworm",
+        "features": {
+            feature_uri.clone(): {},
+        },
+    });
+    let config_file = root.join(".devcontainer.json");
+    fs::write(
+        &config_file,
+        serde_json::to_string_pretty(&configuration).expect("config json"),
+    )
+    .expect("failed to write config");
+    fs::write(
+        root.join(".devcontainer-lock.json"),
+        format!(
+            "{{\n  \"features\": {{\n    \"{feature_uri}\": {{\n      \"version\": \"latest\",\n      \"resolved\": \"{feature_uri}\",\n      \"integrity\": \"sha256:{}\"\n    }}\n  }}\n}}\n",
+            sha256_digest(old_tarball_bytes)
+        ),
+    )
+    .expect("failed to write lockfile");
+
+    let error = ensure_native_lockfile_for_config(&[], &config_file, &configuration)
+        .expect_err("changed direct tarball should fail integrity verification");
+
+    assert!(error.contains("Digest did not match"), "{error}");
+    let lockfile = fs::read_to_string(root.join(".devcontainer-lock.json")).expect("lockfile");
+    assert!(lockfile.contains(&sha256_digest(old_tarball_bytes)));
+    assert!(!lockfile.contains(&sha256_digest(changed_tarball_bytes)));
     let _ = fs::remove_dir_all(root);
 }
 
@@ -195,12 +265,8 @@ fn ensure_native_lockfile_uses_shared_lockfile_format() {
     fs::create_dir_all(&root).expect("failed to create root");
     let config_file = root.join(".devcontainer.json");
 
-    ensure_native_lockfile(
-        &[
-            "--workspace-folder".to_string(),
-            root.display().to_string(),
-            "--experimental-lockfile".to_string(),
-        ],
+    ensure_native_lockfile_for_config(
+        &["--workspace-folder".to_string(), root.display().to_string()],
         &config_file,
         &json!({
             "image": "debian:bookworm",
@@ -213,6 +279,32 @@ fn ensure_native_lockfile_uses_shared_lockfile_format() {
 
     let lockfile = fs::read_to_string(root.join(".devcontainer-lock.json")).expect("lockfile");
     assert!(lockfile.ends_with('\n'));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn ensure_native_lockfile_skips_generation_when_no_lockfile_is_set() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    let config_file = root.join(".devcontainer.json");
+
+    ensure_native_lockfile_for_config(
+        &[
+            "--workspace-folder".to_string(),
+            root.display().to_string(),
+            "--no-lockfile".to_string(),
+        ],
+        &config_file,
+        &json!({
+            "image": "debian:bookworm",
+            "features": {
+                "ghcr.io/devcontainers/features/github-cli": {}
+            }
+        }),
+    )
+    .expect("lockfile skip");
+
+    assert!(!root.join(".devcontainer-lock.json").exists());
     let _ = fs::remove_dir_all(root);
 }
 
@@ -243,12 +335,8 @@ fn ensure_native_lockfile_rejects_corrupt_existing_lockfile_when_generating() {
     let lockfile_path = root.join(".devcontainer-lock.json");
     fs::write(&lockfile_path, "this is not json").expect("corrupt lockfile");
 
-    let error = ensure_native_lockfile(
-        &[
-            "--workspace-folder".to_string(),
-            root.display().to_string(),
-            "--experimental-lockfile".to_string(),
-        ],
+    let error = ensure_native_lockfile_for_config(
+        &["--workspace-folder".to_string(), root.display().to_string()],
         &config_file,
         &json!({
             "image": "debian:bookworm",
@@ -273,11 +361,11 @@ fn ensure_native_lockfile_reports_missing_frozen_lockfile() {
     fs::create_dir_all(&root).expect("failed to create root");
     let config_file = root.join(".devcontainer.json");
 
-    let error = ensure_native_lockfile(
+    let error = ensure_native_lockfile_for_config(
         &[
             "--workspace-folder".to_string(),
             root.display().to_string(),
-            "--experimental-frozen-lockfile".to_string(),
+            "--frozen-lockfile".to_string(),
         ],
         &config_file,
         &json!({
@@ -298,12 +386,8 @@ fn ensure_native_lockfile_accepts_semantically_identical_existing_json() {
     let root = unique_temp_dir();
     fs::create_dir_all(&root).expect("failed to create root");
     let config_file = root.join(".devcontainer.json");
-    ensure_native_lockfile(
-        &[
-            "--workspace-folder".to_string(),
-            root.display().to_string(),
-            "--experimental-lockfile".to_string(),
-        ],
+    ensure_native_lockfile_for_config(
+        &["--workspace-folder".to_string(), root.display().to_string()],
         &config_file,
         &json!({
             "image": "debian:bookworm",
@@ -318,11 +402,11 @@ fn ensure_native_lockfile_accepts_semantically_identical_existing_json() {
     let reformatted = lockfile.trim_end_matches('\n').to_string();
     fs::write(&lockfile_path, reformatted).expect("lockfile rewrite");
 
-    ensure_native_lockfile(
+    ensure_native_lockfile_for_config(
         &[
             "--workspace-folder".to_string(),
             root.display().to_string(),
-            "--experimental-frozen-lockfile".to_string(),
+            "--frozen-lockfile".to_string(),
         ],
         &config_file,
         &json!({
@@ -335,6 +419,18 @@ fn ensure_native_lockfile_accepts_semantically_identical_existing_json() {
     .expect("lockfile match");
 
     let _ = fs::remove_dir_all(root);
+}
+
+fn ensure_native_lockfile_for_config(
+    args: &[String],
+    config_file: &Path,
+    configuration: &serde_json::Value,
+) -> Result<(), String> {
+    let workspace_folder = config_file.parent().unwrap_or_else(|| Path::new("."));
+    let resolved_features =
+        resolve_feature_support(args, workspace_folder, config_file, configuration)?
+            .expect("feature support");
+    ensure_native_lockfile(args, config_file, configuration, &resolved_features)
 }
 
 fn write_workspace_layout_version(
@@ -408,4 +504,36 @@ fn sha256_digest(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+struct SingleResponseHttpServer {
+    base_url: String,
+}
+
+impl SingleResponseHttpServer {
+    fn new(body: &[u8]) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("http listener");
+        let address = listener.local_addr().expect("http listener address");
+        let body = body.to_vec();
+        thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(headers.as_bytes());
+            let _ = stream.write_all(&body);
+        });
+        Self {
+            base_url: format!("http://{address}"),
+        }
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}/{}", self.base_url, path)
+    }
 }

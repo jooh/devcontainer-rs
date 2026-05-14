@@ -46,6 +46,8 @@ fn effective_up_resolved_config(
 }
 
 pub fn run_build(args: &[String]) -> Result<Value, String> {
+    configuration::validate_lockfile_options(args)?;
+    configuration::warn_deprecated_lockfile_flags(args);
     let resolved = context::load_required_config(args)?;
     let feature_support = configuration::resolve_feature_support(
         args,
@@ -78,6 +80,8 @@ pub fn run_build(args: &[String]) -> Result<Value, String> {
 }
 
 pub fn run_up(args: &[String]) -> Result<Value, String> {
+    configuration::validate_lockfile_options(args)?;
+    configuration::warn_deprecated_lockfile_flags(args);
     let _ = mounts::cli_mount_values(args)?;
     let effective_resolved =
         effective_up_resolved_config(args, context::load_required_config(args)?)?;

@@ -44,3 +44,9 @@ When asked to update upstream:
 - Aggregated schema view: `spec/schemas/devContainer.schema.json`.
 - Feature schema: `spec/schemas/devContainerFeature.schema.json`.
 - Normative config behavior reference: `spec/docs/specs/devcontainerjson-reference.md`.
+
+## Reviewing
+- Reviews are by the current feature branch vs main unless told otherwise
+- A common problem is that features are not implemented fully. Always call out if the code is skipping functionality, stubbing things out, or only implementing particular paths
+- Tests should verify actual behaviour. Call out superficial tests that use too many mocks, or boil down to just asserting that functions are called, or that a variable has a particular name in a source file, etc
+- Always check that new functionality tracks upstream/ and spec/ - the solution in our code should be a superset of upstream. Extensions are fine, but missing parity should be brought up

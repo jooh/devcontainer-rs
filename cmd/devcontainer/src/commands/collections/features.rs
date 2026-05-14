@@ -12,7 +12,7 @@ pub(super) fn build_features_resolve_dependencies_payload(
     args: &[String],
 ) -> Result<Value, String> {
     let (workspace_folder, config_file, configuration) = common::load_resolved_config(args)?;
-    let ordered = crate::commands::configuration::resolve_feature_support(
+    let ordered = crate::commands::configuration::resolve_feature_support_without_lockfile(
         args,
         &workspace_folder,
         &config_file,

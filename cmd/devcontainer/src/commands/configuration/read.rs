@@ -4,7 +4,6 @@ use serde_json::{json, Map, Value};
 
 use super::inspect::{merged_configuration_payload, read_configuration_value, workspace_payload};
 use super::load::load_optional_config;
-use super::resolve_feature_support;
 use crate::commands::common;
 
 pub(super) fn build_read_configuration_payload(args: &[String]) -> Result<Value, String> {
@@ -27,7 +26,7 @@ pub(super) fn build_read_configuration_payload(args: &[String]) -> Result<Value,
         loaded
             .as_ref()
             .map(|loaded| {
-                resolve_feature_support(
+                super::features::resolve_feature_support_without_lockfile(
                     args,
                     &loaded.workspace_folder,
                     &loaded.config_file,

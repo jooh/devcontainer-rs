@@ -79,6 +79,20 @@ pub(crate) fn resolve_feature_support(
     features::resolve_feature_support(args, workspace_folder, config_file, configuration)
 }
 
+pub(crate) fn resolve_feature_support_without_lockfile(
+    args: &[String],
+    workspace_folder: &std::path::Path,
+    config_file: &std::path::Path,
+    configuration: &Value,
+) -> Result<Option<features::ResolvedFeatureSupport>, String> {
+    features::resolve_feature_support_without_lockfile(
+        args,
+        workspace_folder,
+        config_file,
+        configuration,
+    )
+}
+
 pub(crate) fn materialize_feature_installation(
     installation: &features::FeatureInstallation,
     destination: &std::path::Path,
@@ -106,16 +120,26 @@ pub(crate) fn ensure_native_lockfile(
     args: &[String],
     config_file: &std::path::Path,
     configuration: &Value,
+    resolved_features: &features::ResolvedFeatureSupport,
 ) -> Result<(), String> {
-    upgrade::ensure_native_lockfile(args, config_file, configuration)
+    upgrade::ensure_native_lockfile(args, config_file, configuration, resolved_features)
 }
 
 pub(crate) fn validate_native_lockfile(
     args: &[String],
     config_file: &std::path::Path,
     configuration: &Value,
+    resolved_features: &features::ResolvedFeatureSupport,
 ) -> Result<(), String> {
-    upgrade::validate_native_lockfile(args, config_file, configuration)
+    upgrade::validate_native_lockfile(args, config_file, configuration, resolved_features)
+}
+
+pub(crate) fn validate_lockfile_options(args: &[String]) -> Result<(), String> {
+    upgrade::validate_lockfile_options(args)
+}
+
+pub(crate) fn warn_deprecated_lockfile_flags(args: &[String]) {
+    upgrade::warn_deprecated_lockfile_flags(args);
 }
 
 pub(crate) fn should_use_native_read_configuration(args: &[String]) -> bool {
