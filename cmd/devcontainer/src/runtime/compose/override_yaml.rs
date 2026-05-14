@@ -111,3 +111,118 @@ fn render_yaml_sequence_item(value: &Value, indent: usize) -> String {
         Value::Null => format!("{padding}- null\n"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, Map, Value};
+
+    use super::super::override_mounts::{
+        ComposeMountDefinition, ComposeNamedVolume, ComposeVolumeEntry,
+    };
+    use super::{
+        escape_compose_label, escape_compose_scalar, render_compose_string_sequence,
+        render_compose_volume_entry, render_named_volume_entry, render_yaml_key_value,
+        render_yaml_sequence_item,
+    };
+
+    #[test]
+    fn compose_scalar_escaping_covers_quotes_and_dollars() {
+        assert_eq!(escape_compose_label("it's $HOME"), "it''s $$HOME");
+        assert_eq!(
+            escape_compose_scalar("can't ${EXPAND}"),
+            "can''t $${EXPAND}"
+        );
+        assert_eq!(
+            render_compose_string_sequence(&["one".to_string(), "two".to_string()])
+                .expect("sequence"),
+            r#"["one","two"]"#
+        );
+    }
+
+    #[test]
+    fn render_volume_entries_support_short_long_and_named_shapes() {
+        assert_eq!(
+            render_compose_volume_entry(&ComposeVolumeEntry::Short(
+                "/tmp/src:/tmp/dst:$cached".to_string()
+            )),
+            "      - '/tmp/src:/tmp/dst:$$cached'\n"
+        );
+
+        let mut fields = Map::new();
+        fields.insert("type".to_string(), Value::String("volume".to_string()));
+        fields.insert("source".to_string(), Value::String("cache".to_string()));
+        fields.insert("target".to_string(), Value::String("/cache".to_string()));
+        fields.insert("read_only".to_string(), Value::Bool(true));
+        fields.insert("uid".to_string(), json!(1000));
+        fields.insert("optional".to_string(), Value::Null);
+        fields.insert(
+            "volume".to_string(),
+            json!({
+                "nocopy": true,
+                "labels": ["one", "two"],
+                "driver_opts": {
+                    "o": "addr='host'"
+                }
+            }),
+        );
+
+        let rendered =
+            render_compose_volume_entry(&ComposeVolumeEntry::Long(ComposeMountDefinition {
+                fields,
+            }));
+
+        assert!(rendered.contains("- optional: null"), "{rendered}");
+        assert!(rendered.contains("type: 'volume'"), "{rendered}");
+        assert!(rendered.contains("read_only: true"), "{rendered}");
+        assert!(rendered.contains("uid: 1000"), "{rendered}");
+        assert!(rendered.contains("labels:"), "{rendered}");
+        assert!(rendered.contains("- 'one'"), "{rendered}");
+        assert!(rendered.contains("driver_opts:"), "{rendered}");
+        assert!(rendered.contains("o: 'addr=''host'''"), "{rendered}");
+
+        assert_eq!(
+            render_named_volume_entry(&ComposeNamedVolume {
+                name: "cache".to_string(),
+                external: true,
+            }),
+            "  cache:\n    external: true\n"
+        );
+        assert_eq!(
+            render_named_volume_entry(&ComposeNamedVolume {
+                name: "scratch".to_string(),
+                external: false,
+            }),
+            "  scratch:\n"
+        );
+    }
+
+    #[test]
+    fn render_yaml_helpers_cover_nested_arrays_and_scalars() {
+        let rendered = render_yaml_key_value(
+            "root",
+            &json!({
+                "child": [
+                    { "name": "one", "enabled": true },
+                    ["nested", null, 42],
+                    false
+                ]
+            }),
+            2,
+            "",
+        );
+
+        assert!(rendered.contains("  root:"), "{rendered}");
+        assert!(rendered.contains("    child:"), "{rendered}");
+        assert!(rendered.contains("      - enabled: true"), "{rendered}");
+        assert!(rendered.contains("        name: 'one'"), "{rendered}");
+        assert!(rendered.contains("      -"), "{rendered}");
+        assert!(rendered.contains("        - 'nested'"), "{rendered}");
+        assert!(rendered.contains("        - null"), "{rendered}");
+        assert!(rendered.contains("        - 42"), "{rendered}");
+        assert!(rendered.contains("      - false"), "{rendered}");
+
+        assert_eq!(render_yaml_sequence_item(&json!(null), 4), "    - null\n");
+        assert_eq!(render_yaml_sequence_item(&json!(false), 4), "    - false\n");
+        assert_eq!(render_yaml_sequence_item(&json!(7), 4), "    - 7\n");
+    }
+}
