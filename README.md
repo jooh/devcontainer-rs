@@ -80,7 +80,7 @@ cargo deny --manifest-path cmd/devcontainer/Cargo.toml check -A license-not-enco
 CI also enforces the current Rust line coverage baseline:
 
 ```bash
-cargo llvm-cov --manifest-path cmd/devcontainer/Cargo.toml --all-features --workspace --fail-under-lines 88
+cargo llvm-cov --manifest-path cmd/devcontainer/Cargo.toml --all-features --workspace --fail-under-lines 95
 ```
 
 Compatibility/tooling validation:

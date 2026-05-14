@@ -120,3 +120,43 @@ pub fn parse_jsonc_value(text: &str) -> Result<Value, String> {
     let sanitized = strip_trailing_commas(&strip_jsonc_comments(text));
     serde_json::from_str(&sanitized).map_err(|error| error.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{parse_jsonc_value, strip_jsonc_comments};
+
+    #[test]
+    fn strips_block_comments_and_preserves_comment_like_strings() {
+        let parsed = parse_jsonc_value(
+            r#"{
+                /* block comment */
+                "url": "https://example.com/a//b",
+                "escaped": "quote: \" // still string",
+                "values": [
+                    1,
+                    2,
+                ],
+            }"#,
+        )
+        .expect("jsonc");
+
+        assert_eq!(
+            parsed,
+            json!({
+                "url": "https://example.com/a//b",
+                "escaped": "quote: \" // still string",
+                "values": [1, 2]
+            })
+        );
+    }
+
+    #[test]
+    fn unterminated_block_comment_consumes_the_remainder() {
+        assert_eq!(
+            strip_jsonc_comments(r#"{"keep": true} /* unfinished"#),
+            r#"{"keep": true} "#
+        );
+    }
+}

@@ -1412,11 +1412,13 @@ fn parse_http_headers(raw_headers: &str) -> HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::env;
     use std::fs;
     use std::io::Write;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
+    use base64::Engine as _;
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use serde_json::json;
@@ -1424,12 +1426,16 @@ mod tests {
 
     use super::{
         canonical_feature_id, challenge_parameters, compare_versions_asc, compare_versions_desc,
-        exact_semver, extract_feature_layer, feature_ref_json, fixture_tags,
+        configured_basic_authorization, configured_bearer_authorization, docker_config_auth,
+        exact_semver, extract_feature_layer, feature_ref_json, fetch_bearer_token, fixture_tags,
         is_registry_qualified_reference, list_feature_tags, materialize_feature_artifact,
-        parse_http_headers, parse_oci_reference, registry_blob, resolve_feature_artifact,
+        parse_http_headers, parse_oci_reference, platform_default_credential_helper, registry_blob,
+        registry_config_keys, registry_feature_artifact, registry_tags, resolve_feature_artifact,
         resolve_feature_artifact_for_reference, safe_archive_path, OciFeatureArtifact,
-        OciFeatureLayer, OciHttpResponse, OciReference, OciTransport, VersionSelector,
+        OciFeatureLayer, OciHttpResponse, OciReference, OciTransport, VersionSelector, BASE64,
     };
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[derive(Clone, Default)]
     struct FakeTransport {
@@ -1859,6 +1865,233 @@ mod tests {
         let error = registry_blob(&artifact, "sha256:layer", &transport).expect_err("blob error");
 
         assert!(error.contains("HTTP 503"), "{error}");
+    }
+
+    #[test]
+    fn registry_tag_manifest_and_token_errors_are_reported() {
+        let reference = OciReference {
+            original: "registry.example.com/acme/features/fake:1.0.0".to_string(),
+            resource: "registry.example.com/acme/features/fake".to_string(),
+            registry: "registry.example.com".to_string(),
+            repository: "acme/features/fake".to_string(),
+            tag: Some("1.0.0".to_string()),
+            digest: None,
+        };
+        let transport = FakeTransport::default();
+        transport.add(
+            "https://registry.example.com/v2/acme/features/fake/tags/list",
+            OciHttpResponse {
+                status: 500,
+                headers: HashMap::new(),
+                body: Vec::new(),
+            },
+        );
+        let error = registry_tags(&reference, &transport).expect_err("tag status");
+        assert!(error.contains("HTTP 500"), "{error}");
+
+        let transport = FakeTransport::default();
+        transport.add(
+            "https://registry.example.com/v2/acme/features/fake/tags/list",
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: b"not-json".to_vec(),
+            },
+        );
+        let error = registry_tags(&reference, &transport).expect_err("tag json");
+        assert!(error.contains("invalid tag list"), "{error}");
+
+        let transport = FakeTransport::default();
+        transport.add(
+            "https://registry.example.com/v2/acme/features/fake/manifests/1.0.0",
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: b"not-json".to_vec(),
+            },
+        );
+        let error = registry_feature_artifact(&reference, &transport).expect_err("manifest json");
+        assert!(error.contains("invalid manifest"), "{error}");
+
+        let error = fetch_bearer_token(
+            &FakeTransport::default(),
+            "registry.example.com",
+            "Basic realm",
+            None,
+        )
+        .expect_err("unsupported challenge");
+        assert!(error.contains("Unsupported OCI auth challenge"), "{error}");
+        let error = fetch_bearer_token(
+            &FakeTransport::default(),
+            "registry.example.com",
+            r#"Bearer service="registry.example.com""#,
+            None,
+        )
+        .expect_err("missing realm");
+        assert!(error.contains("missing a realm"), "{error}");
+
+        let transport = FakeTransport::default();
+        transport.add(
+            "https://issuer.example/token?service=registry.example.com",
+            OciHttpResponse {
+                status: 503,
+                headers: HashMap::new(),
+                body: Vec::new(),
+            },
+        );
+        let error = fetch_bearer_token(
+            &transport,
+            "registry.example.com",
+            r#"Bearer realm="https://issuer.example/token""#,
+            None,
+        )
+        .expect_err("token status");
+        assert!(error.contains("HTTP 503"), "{error}");
+
+        let transport = FakeTransport::default();
+        transport.add(
+            "https://issuer.example/token?service=registry.example.com",
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: b"{}".to_vec(),
+            },
+        );
+        let error = fetch_bearer_token(
+            &transport,
+            "registry.example.com",
+            r#"Bearer realm="https://issuer.example/token""#,
+            None,
+        )
+        .expect_err("missing token");
+        assert!(error.contains("did not include a token"), "{error}");
+
+        let transport = FakeTransport::default();
+        transport.add(
+            "https://issuer.example/token?service=registry.example.com&scope=repository:fake:pull",
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: br#"{"access_token":"access-1"}"#.to_vec(),
+            },
+        );
+        let token = fetch_bearer_token(
+            &transport,
+            "registry.example.com",
+            r#"Bearer realm="https://issuer.example/token",scope="repository:fake:pull""#,
+            Some("Basic abc"),
+        )
+        .expect("access token");
+        assert_eq!(token, "access-1");
+    }
+
+    #[test]
+    fn configured_registry_authorization_reads_env_and_docker_config_shapes() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let original_oci_auth = env::var_os("DEVCONTAINERS_OCI_AUTH");
+        let original_github_token = env::var_os("GITHUB_TOKEN");
+        let original_docker_config = env::var_os("DOCKER_CONFIG");
+        let config_dir = crate::test_support::unique_temp_dir("devcontainer-oci-auth");
+        fs::create_dir_all(&config_dir).expect("config dir");
+
+        env::set_var("DEVCONTAINERS_OCI_AUTH", "registry.example.com|user|token");
+        assert_eq!(
+            configured_basic_authorization("registry.example.com").as_deref(),
+            Some("Basic dXNlcjp0b2tlbg==")
+        );
+        assert_eq!(super::env_oci_auth("other.example.com"), None);
+        env::remove_var("DEVCONTAINERS_OCI_AUTH");
+
+        env::set_var("GITHUB_TOKEN", "github-token");
+        assert_eq!(
+            configured_basic_authorization("ghcr.io").as_deref(),
+            Some("Basic eC1hY2Nlc3MtdG9rZW46Z2l0aHViLXRva2Vu")
+        );
+        env::remove_var("GITHUB_TOKEN");
+
+        env::set_var("DOCKER_CONFIG", &config_dir);
+        fs::write(
+            config_dir.join("config.json"),
+            json!({
+                "auths": {
+                    "registry.example.com": {
+                        "identitytoken": "identity-1"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("identity config");
+        assert_eq!(
+            configured_bearer_authorization("registry.example.com").as_deref(),
+            Some("Bearer identity-1")
+        );
+
+        fs::write(
+            config_dir.join("config.json"),
+            json!({
+                "auths": {
+                    "https://registry.example.com": {
+                        "auth": BASE64.encode("docker-user:docker-secret")
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("auth config");
+        assert_eq!(
+            configured_basic_authorization("registry.example.com").as_deref(),
+            Some("Basic ZG9ja2VyLXVzZXI6ZG9ja2VyLXNlY3JldA==")
+        );
+
+        fs::write(
+            config_dir.join("config.json"),
+            json!({
+                "auths": {
+                    "https://registry.example.com/v1/": {
+                        "username": "plain-user",
+                        "password": "plain-secret"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("plain config");
+        let auth = docker_config_auth("registry.example.com").expect("docker config auth");
+        assert_eq!(auth.username.as_deref(), Some("plain-user"));
+        assert_eq!(auth.secret.as_deref(), Some("plain-secret"));
+        assert_eq!(
+            registry_config_keys("registry.example.com"),
+            vec![
+                "registry.example.com".to_string(),
+                "https://registry.example.com".to_string(),
+                "https://registry.example.com/v1/".to_string()
+            ]
+        );
+        if cfg!(target_os = "macos") {
+            assert_eq!(platform_default_credential_helper(), Some("osxkeychain"));
+        } else if cfg!(target_os = "windows") {
+            assert_eq!(platform_default_credential_helper(), Some("wincred"));
+        } else {
+            assert_eq!(platform_default_credential_helper(), None);
+        }
+
+        if let Some(value) = original_oci_auth {
+            env::set_var("DEVCONTAINERS_OCI_AUTH", value);
+        } else {
+            env::remove_var("DEVCONTAINERS_OCI_AUTH");
+        }
+        if let Some(value) = original_github_token {
+            env::set_var("GITHUB_TOKEN", value);
+        } else {
+            env::remove_var("GITHUB_TOKEN");
+        }
+        if let Some(value) = original_docker_config {
+            env::set_var("DOCKER_CONFIG", value);
+        } else {
+            env::remove_var("DOCKER_CONFIG");
+        }
+        let _ = fs::remove_dir_all(config_dir);
     }
 
     #[test]

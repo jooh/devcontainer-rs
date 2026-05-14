@@ -548,12 +548,46 @@ impl PartialOrd for ParsedVersion {
 
 #[cfg(test)]
 mod tests {
+    use std::cmp::Ordering;
+    use std::collections::BTreeMap;
     use std::fs;
 
     use serde_json::json;
     use sha2::{Digest, Sha256};
 
-    use super::{catalog_entries, exact_catalog_entry, latest_oci_version};
+    use super::super::{FeatureReference, Lockfile, LockfileEntry, ParsedVersion};
+    use super::{
+        build_feature_version_info, catalog_entries, compare_versions_desc, exact_catalog_entry,
+        latest_oci_version, major_string, parse_selector, parse_version, resolve_wanted_version,
+    };
+
+    fn feature_ref(
+        original: &str,
+        base: &str,
+        tag: Option<&str>,
+        digest: Option<&str>,
+    ) -> FeatureReference {
+        FeatureReference {
+            original: original.to_string(),
+            base: base.to_string(),
+            tag: tag.map(str::to_string),
+            digest: digest.map(str::to_string),
+        }
+    }
+
+    fn lockfile_with(feature_id: &str, version: &str) -> Lockfile {
+        Lockfile {
+            features: BTreeMap::from([(
+                feature_id.to_string(),
+                LockfileEntry {
+                    version: version.to_string(),
+                    resolved: format!("{feature_id}@sha256:locked"),
+                    integrity: "sha256:locked".to_string(),
+                    depends_on: None,
+                },
+            )]),
+        }
+    }
 
     fn write_layout_version(
         workspace_root: &std::path::Path,
@@ -700,6 +734,35 @@ mod tests {
     }
 
     #[test]
+    fn workspace_oci_layout_entries_ignore_moving_tags_and_append_versions() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-catalog-test");
+        let base = "ghcr.io/acme/features/published-feature";
+        let first_digest = write_layout_version(&workspace, base, "1.0.0", None);
+        let second_digest = write_layout_version(&workspace, base, "1.1.0", None);
+        replace_layout_tags(
+            &workspace,
+            base,
+            &[
+                ("latest", &second_digest),
+                ("1.0", &first_digest),
+                ("1.0.0", &first_digest),
+                ("1.1.0", &second_digest),
+            ],
+        );
+
+        let entries = catalog_entries(base, Some(workspace.as_path())).expect("layout entries");
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.version.as_str())
+                .collect::<Vec<_>>(),
+            vec!["1.1.0", "1.0.0"]
+        );
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
     fn latest_oci_version_ignores_moving_semantic_tags() {
         let workspace = crate::test_support::unique_temp_dir("devcontainer-catalog-test");
         let base = "ghcr.io/acme/features/published-feature";
@@ -743,5 +806,138 @@ mod tests {
             Some(vec!["ghcr.io/acme/features/dependency".to_string()])
         );
         let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn exact_catalog_entry_exposes_static_digest_pinned_entries() {
+        let entry = exact_catalog_entry(
+            "ghcr.io/devcontainers/features/git-lfs@sha256:24d5802c837b2519b666a8403a9514c7296d769c9607048e9f1e040e7d7e331c",
+            None,
+        )
+        .expect("git-lfs entry");
+
+        assert_eq!(entry.version, "1.0.6");
+        assert_eq!(
+            entry.integrity,
+            "sha256:24d5802c837b2519b666a8403a9514c7296d769c9607048e9f1e040e7d7e331c"
+        );
+    }
+
+    #[test]
+    fn resolve_wanted_version_prefers_lockfile_latest_and_selectors() {
+        let locked = lockfile_with("ghcr.io/devcontainers/features/git", "1.0.4");
+        let untagged = feature_ref(
+            "ghcr.io/devcontainers/features/git",
+            "ghcr.io/devcontainers/features/git",
+            None,
+            None,
+        );
+        let latest = feature_ref(
+            "ghcr.io/devcontainers/features/git:latest",
+            "ghcr.io/devcontainers/features/git",
+            Some("latest"),
+            None,
+        );
+        let exact = feature_ref(
+            "ghcr.io/devcontainers/features/git:1.1.5",
+            "ghcr.io/devcontainers/features/git",
+            Some("1.1.5"),
+            None,
+        );
+        let major_minor = feature_ref(
+            "ghcr.io/devcontainers/features/git:1.0",
+            "ghcr.io/devcontainers/features/git",
+            Some("1.0"),
+            None,
+        );
+        let invalid = feature_ref(
+            "ghcr.io/devcontainers/features/git:not-a-version",
+            "ghcr.io/devcontainers/features/git",
+            Some("not-a-version"),
+            None,
+        );
+
+        assert_eq!(
+            resolve_wanted_version(&untagged, Some(&locked), None).as_deref(),
+            Some("1.0.4")
+        );
+        assert_eq!(
+            resolve_wanted_version(&latest, None, None).as_deref(),
+            Some("1.2.0")
+        );
+        assert_eq!(
+            resolve_wanted_version(&exact, None, None).as_deref(),
+            Some("1.1.5")
+        );
+        assert_eq!(
+            resolve_wanted_version(&major_minor, None, None).as_deref(),
+            Some("1.0.5")
+        );
+        assert_eq!(resolve_wanted_version(&invalid, None, None), None);
+    }
+
+    #[test]
+    fn build_feature_version_info_handles_oci_digest_and_unknown_features() {
+        let oci = feature_ref(
+            "ghcr.io/devcontainers/features/common-utils:2",
+            "ghcr.io/devcontainers/features/common-utils",
+            Some("2"),
+            None,
+        );
+        let digest = feature_ref(
+            "https://example.com/feature.tgz@sha256:abc",
+            "https://example.com/feature.tgz",
+            None,
+            Some("sha256:abc"),
+        );
+        let unknown = feature_ref("example-feature", "example-feature", None, None);
+
+        let oci_info = build_feature_version_info(&oci, None, None)
+            .expect("oci info")
+            .expect("oci payload");
+        let digest_info = build_feature_version_info(&digest, None, None)
+            .expect("digest info")
+            .expect("digest payload");
+        let unknown_info = build_feature_version_info(&unknown, None, None)
+            .expect("unknown info")
+            .expect("unknown payload");
+
+        assert!(oci_info.get("wanted").is_some());
+        assert!(oci_info.get("latest").is_some());
+        assert_eq!(digest_info, json!({}));
+        assert_eq!(unknown_info, json!({}));
+    }
+
+    #[test]
+    fn version_parsing_and_comparison_cover_selector_shapes() {
+        assert_eq!(
+            parse_version("1"),
+            Some(ParsedVersion {
+                major: 1,
+                minor: 0,
+                patch: 0
+            })
+        );
+        assert_eq!(
+            parse_version("1.2"),
+            Some(ParsedVersion {
+                major: 1,
+                minor: 2,
+                patch: 0
+            })
+        );
+        assert!(parse_selector("1.2.3.4").is_none());
+        assert!(parse_selector("1")
+            .expect("major selector")
+            .matches("1.9.0"));
+        assert!(parse_selector("1.2")
+            .expect("major minor selector")
+            .matches("1.2.9"));
+        assert!(!parse_selector("1.2")
+            .expect("major minor selector")
+            .matches("not-semver"));
+        assert_eq!(major_string("2.3.4").as_deref(), Some("2"));
+        assert_eq!(compare_versions_desc("beta", "alpha"), Ordering::Less);
+        assert!(parse_version("1.0.0") < parse_version("2.0.0"));
     }
 }

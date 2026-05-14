@@ -513,9 +513,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        applied_template_config_path, apply_generic_published_template,
-        merge_extra_features_into_template, substitute_template_options, template_option_string,
-        template_option_values, template_path_is_omitted,
+        applied_template_config_path, apply_catalog_template_with_options,
+        apply_embedded_published_template, apply_generic_published_template,
+        merge_extra_features_into_template, run_template_apply, substitute_template_options,
+        template_option_string, template_option_values, template_path_is_omitted,
     };
 
     #[test]
@@ -621,6 +622,141 @@ mod tests {
             Some(config_path.as_path())
         );
 
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn docker_from_docker_catalog_template_merges_args_and_extra_features() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-template-test");
+        let payload = apply_catalog_template_with_options(
+            "ghcr.io/devcontainers/templates/docker-from-docker",
+            &workspace,
+            &[
+                "--template-args".to_string(),
+                r#"{"installZsh":"false","dockerVersion":"24.0","moby":"false"}"#.to_string(),
+                "--features".to_string(),
+                r#"[{"name":"missing-id"},{"id":"ghcr.io/devcontainers/features/git:1","options":{"ppa":true}}]"#
+                    .to_string(),
+            ],
+            &[],
+            None,
+        )
+        .expect("apply docker-from-docker template");
+
+        assert_eq!(
+            payload["files"],
+            json!(["./.devcontainer/devcontainer.json"])
+        );
+        let config: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(workspace.join(".devcontainer").join("devcontainer.json"))
+                .expect("config"),
+        )
+        .expect("config json");
+        assert_eq!(
+            config["features"]["ghcr.io/devcontainers/features/common-utils:1"]["installZsh"],
+            "false"
+        );
+        assert_eq!(
+            config["features"]["ghcr.io/devcontainers/features/docker-from-docker:1"]["version"],
+            "24.0"
+        );
+        assert_eq!(
+            config["features"]["ghcr.io/devcontainers/features/docker-from-docker:1"]["moby"],
+            "false"
+        );
+        assert_eq!(
+            config["features"]["ghcr.io/devcontainers/features/git:1"]["ppa"],
+            true
+        );
+        assert!(config["features"].get("missing-id").is_none());
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn embedded_template_copy_uses_tmp_dir_omit_patterns_and_binary_copy() {
+        let source = crate::test_support::unique_temp_dir("devcontainer-template-source");
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-template-workspace");
+        let tmp = crate::test_support::unique_temp_dir("devcontainer-template-tmp");
+        fs::create_dir_all(source.join(".devcontainer")).expect("config dir");
+        fs::create_dir_all(source.join("nested")).expect("nested dir");
+        fs::write(source.join("devcontainer-template.json"), "{}").expect("template marker");
+        fs::write(
+            source.join(".devcontainer").join("devcontainer.json"),
+            r#"{"features":{}}"#,
+        )
+        .expect("config");
+        fs::write(
+            source.join("nested").join("message.txt"),
+            "channel=${templateOption:channel}",
+        )
+        .expect("message");
+        fs::write(source.join("omit.txt"), "omit").expect("omit");
+        fs::write(source.join("binary.bin"), [0xff, 0x00, 0x9f]).expect("binary");
+
+        let payload = apply_embedded_published_template(
+            &json!({
+                "id": "embedded",
+                "options": {
+                    "channel": {
+                        "type": "string",
+                        "default": "stable"
+                    }
+                }
+            }),
+            &source,
+            &workspace,
+            &json!({
+                "channel": "nightly"
+            }),
+            json!([
+                {"name": "missing-id"},
+                {"id": "ghcr.io/devcontainers/features/git:1", "options": {"ppa": true}}
+            ]),
+            &["omit.txt".to_string()],
+            Some(&tmp),
+        )
+        .expect("apply embedded");
+
+        assert_eq!(payload["id"], "embedded");
+        assert_eq!(
+            fs::read_to_string(workspace.join("nested").join("message.txt")).expect("message"),
+            "channel=nightly"
+        );
+        assert_eq!(
+            fs::read(workspace.join("binary.bin")).expect("binary"),
+            vec![0xff, 0x00, 0x9f]
+        );
+        assert!(!workspace.join("omit.txt").exists());
+        let config: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(workspace.join(".devcontainer").join("devcontainer.json"))
+                .expect("config"),
+        )
+        .expect("config json");
+        assert_eq!(
+            config["features"]["ghcr.io/devcontainers/features/git:1"]["ppa"],
+            true
+        );
+        assert!(config["features"].get("missing-id").is_none());
+        assert!(fs::read_dir(&tmp).expect("tmp dir").next().is_some());
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(tmp);
+    }
+
+    #[test]
+    fn run_template_apply_reports_missing_target_and_unknown_catalog_template() {
+        let missing_target = run_template_apply(&[]).expect_err("missing target");
+        assert_eq!(missing_target, "templates apply requires <target>");
+
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-template-test");
+        let unknown = run_template_apply(&[
+            "--template-id".to_string(),
+            "ghcr.io/devcontainers/not-templates/unknown".to_string(),
+            "--workspace-folder".to_string(),
+            workspace.display().to_string(),
+        ])
+        .expect_err("unknown template");
+        assert!(unknown.contains("Unknown published template"), "{unknown}");
         let _ = fs::remove_dir_all(workspace);
     }
 
