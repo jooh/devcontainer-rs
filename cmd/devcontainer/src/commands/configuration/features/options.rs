@@ -110,7 +110,7 @@ mod tests {
 
     use crate::commands::common;
 
-    use super::feature_option_values_from_manifest;
+    use super::{feature_object, feature_option_values_from_manifest, feature_options};
 
     #[test]
     fn feature_option_env_names_match_upstream_safe_id_cases() {
@@ -152,5 +152,83 @@ mod tests {
         assert!(values.contains(&("_NAME".to_string(), "override-value".to_string())));
         assert!(values.contains(&("OPTION_NAME".to_string(), "default-option".to_string())));
         assert!(!values.iter().any(|(key, _)| key == "1NAME"));
+    }
+
+    #[test]
+    fn feature_object_migrates_legacy_vscode_customizations() {
+        let feature = feature_object(
+            &json!({
+                "id": "demo",
+                "extensions": ["legacy.extension"],
+                "settings": {
+                    "legacy.setting": true
+                },
+                "customizations": {
+                    "vscode": {
+                        "extensions": ["existing.extension"],
+                        "settings": {
+                            "existing.setting": "value"
+                        }
+                    }
+                }
+            }),
+            &json!({
+                "enabled": true
+            }),
+            &json!({
+                "enabled": false
+            }),
+        );
+
+        assert_eq!(feature["included"], true);
+        assert_eq!(feature["options"]["enabled"], true);
+        assert_eq!(feature["value"]["enabled"], false);
+        assert!(feature.get("extensions").is_none());
+        assert!(feature.get("settings").is_none());
+        assert_eq!(
+            feature["customizations"]["vscode"]["extensions"],
+            json!(["existing.extension", "legacy.extension"])
+        );
+        assert_eq!(
+            feature["customizations"]["vscode"]["settings"],
+            json!({
+                "existing.setting": "value",
+                "legacy.setting": true
+            })
+        );
+    }
+
+    #[test]
+    fn feature_options_merge_non_object_manifests_and_json_env_values() {
+        assert_eq!(
+            feature_options(
+                &json!("not-an-object"),
+                &json!({
+                    "enabled": true
+                })
+            ),
+            json!({
+                "enabled": true
+            })
+        );
+
+        let values = feature_option_values_from_manifest(
+            &json!({
+                "options": {
+                    "array": { "default": ["a", "b"] },
+                    "boolean": { "default": false },
+                    "null": { "default": null },
+                    "number": { "default": 42 },
+                    "object": { "default": { "nested": true } }
+                }
+            }),
+            &json!({}),
+        );
+
+        assert!(values.contains(&("ARRAY".to_string(), r#"["a","b"]"#.to_string())));
+        assert!(values.contains(&("BOOLEAN".to_string(), "false".to_string())));
+        assert!(values.contains(&("NULL".to_string(), String::new())));
+        assert!(values.contains(&("NUMBER".to_string(), "42".to_string())));
+        assert!(values.contains(&("OBJECT".to_string(), r#"{"nested":true}"#.to_string())));
     }
 }

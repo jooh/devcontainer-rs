@@ -375,13 +375,45 @@ pub(super) fn shell_single_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
 
     use serde_json::json;
 
     use super::{
         alternate_feature_option_values, choose_alternate_string_candidate, feature_option_values,
-        unique_feature_test_dir,
+        scenario_base_image, scenario_feature_installations, shell_single_quote,
+        unique_feature_test_dir, write_feature_test_dockerfile, BaseImageSource,
+        FeatureInstallation, FeatureInstallationSource, FeatureTestOptions,
     };
+
+    fn test_options(project_folder: &Path) -> FeatureTestOptions {
+        FeatureTestOptions {
+            project_folder: project_folder.to_path_buf(),
+            base_image: "example/base:latest".to_string(),
+            remote_user: None,
+            preserve_test_containers: false,
+            permit_randomization: false,
+            quiet: true,
+        }
+    }
+
+    fn write_feature_manifest(feature_dir: &Path) {
+        fs::create_dir_all(feature_dir).expect("feature dir");
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            r#"{
+  "id": "demo",
+  "version": "1.0.0",
+  "options": {
+    "flag": {
+      "type": "boolean",
+      "default": false
+    }
+  }
+}"#,
+        )
+        .expect("manifest");
+    }
 
     #[test]
     fn choose_alternate_string_candidate_prefers_first_non_default_without_randomization() {
@@ -413,6 +445,19 @@ mod tests {
     }
 
     #[test]
+    fn choose_alternate_string_candidate_handles_empty_and_single_candidate_lists() {
+        let empty = choose_alternate_string_candidate(&[], None, false);
+        let single = choose_alternate_string_candidate(
+            &json!(["only"]).as_array().expect("array").clone(),
+            Some("only"),
+            false,
+        );
+
+        assert_eq!(empty, None);
+        assert_eq!(single.as_deref(), Some("only"));
+    }
+
+    #[test]
     fn alternate_feature_option_values_uses_first_non_default_by_default() {
         let feature_dir = unique_feature_test_dir();
         fs::create_dir_all(&feature_dir).expect("feature dir");
@@ -435,6 +480,68 @@ mod tests {
         let values = alternate_feature_option_values(&feature_dir, false).expect("values");
 
         assert_eq!(values, vec![("COLOR".to_string(), "green".to_string())]);
+        let _ = fs::remove_dir_all(feature_dir);
+    }
+
+    #[test]
+    fn alternate_feature_option_values_handles_boolean_and_json_defaults() {
+        let feature_dir = unique_feature_test_dir();
+        fs::create_dir_all(&feature_dir).expect("feature dir");
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            r#"{
+  "id": "demo",
+  "version": "1.0.0",
+  "options": {
+    "array": {
+      "default": ["a", "b"]
+    },
+    "disabled": {
+      "type": "boolean",
+      "default": true
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": false
+    },
+    "emptyEnum": {
+      "type": "string",
+      "enum": []
+    },
+    "nullDefault": {
+      "default": null
+    },
+    "number": {
+      "default": 7
+    },
+    "object": {
+      "default": { "nested": true }
+    },
+    "single": {
+      "type": "string",
+      "enum": ["only"],
+      "default": "only"
+    },
+    "stringDefault": {
+      "type": "string",
+      "default": "plain"
+    }
+  }
+}"#,
+        )
+        .expect("manifest");
+
+        let values = alternate_feature_option_values(&feature_dir, false).expect("values");
+
+        assert!(values.contains(&("ARRAY".to_string(), r#"["a","b"]"#.to_string())));
+        assert!(values.contains(&("DISABLED".to_string(), "false".to_string())));
+        assert!(values.contains(&("ENABLED".to_string(), "true".to_string())));
+        assert!(values.contains(&("NUMBER".to_string(), "7".to_string())));
+        assert!(values.contains(&("OBJECT".to_string(), r#"{"nested":true}"#.to_string())));
+        assert!(values.contains(&("SINGLE".to_string(), "only".to_string())));
+        assert!(values.contains(&("STRINGDEFAULT".to_string(), "plain".to_string())));
+        assert!(!values.iter().any(|(key, _)| key == "EMPTYENUM"));
+        assert!(!values.iter().any(|(key, _)| key == "NULLDEFAULT"));
         let _ = fs::remove_dir_all(feature_dir);
     }
 
@@ -473,5 +580,225 @@ mod tests {
         assert!(values.contains(&("OPTION_NAME".to_string(), "default-option".to_string())));
         assert!(!values.iter().any(|(key, _)| key == "1NAME"));
         let _ = fs::remove_dir_all(feature_dir);
+    }
+
+    #[test]
+    fn scenario_base_image_resolves_image_default_and_build_paths() {
+        let workspace = unique_feature_test_dir();
+        let scenario_dir = workspace.join("scenarios").join("basic");
+        fs::create_dir_all(&scenario_dir).expect("scenario dir");
+        let options = test_options(&workspace);
+        let explicit = scenario_base_image(
+            &options,
+            "scenarios/basic",
+            &json!({
+                "image": "ubuntu:24.04"
+            }),
+            &workspace,
+        )
+        .expect("explicit image");
+        let default = scenario_base_image(&options, "scenarios/basic", &json!({}), &workspace)
+            .expect("default image");
+        let build = scenario_base_image(
+            &options,
+            "scenarios/basic",
+            &json!({
+                "build": {
+                    "dockerFile": "Dockerfile.feature",
+                    "context": ".."
+                }
+            }),
+            &workspace,
+        )
+        .expect("build image");
+        let escaped = scenario_base_image(
+            &options,
+            "../outside",
+            &json!({
+                "build": {}
+            }),
+            &workspace,
+        )
+        .expect("escaped scenario");
+
+        assert_eq!(explicit, BaseImageSource::Image("ubuntu:24.04".to_string()));
+        assert_eq!(
+            default,
+            BaseImageSource::Image("example/base:latest".to_string())
+        );
+        assert_eq!(
+            build,
+            BaseImageSource::Build {
+                dockerfile_path: scenario_dir.join("Dockerfile.feature"),
+                context_path: scenario_dir.join("..")
+            }
+        );
+        assert_eq!(
+            escaped,
+            BaseImageSource::Build {
+                dockerfile_path: workspace.join("Dockerfile"),
+                context_path: workspace.join(".")
+            }
+        );
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn scenario_feature_installations_resolve_default_local_and_published_features() {
+        let project = unique_feature_test_dir();
+        write_feature_manifest(&project.join("src").join("demo"));
+
+        let default = scenario_feature_installations(&project, Some("demo"), &json!({}))
+            .expect("default feature");
+        let configured = scenario_feature_installations(
+            &project,
+            None,
+            &json!({
+                "features": {
+                    "demo": {
+                        "flag": true
+                    },
+                    "ghcr.io/devcontainers/features/common-utils:2": {
+                        "installZsh": "false"
+                    }
+                }
+            }),
+        )
+        .expect("configured features");
+
+        assert_eq!(default.len(), 1);
+        assert!(matches!(
+            default[0].source,
+            FeatureInstallationSource::Local(_)
+        ));
+        assert!(default[0]
+            .env
+            .contains(&("FLAG".to_string(), "false".to_string())));
+        assert_eq!(configured.len(), 2);
+        assert!(configured.iter().any(|installation| matches!(
+            installation.source,
+            FeatureInstallationSource::Local(_)
+        )));
+        assert!(configured.iter().any(|installation| matches!(
+            installation.source,
+            FeatureInstallationSource::Published(_)
+        )));
+        assert!(configured.iter().any(|installation| installation
+            .env
+            .contains(&("INSTALLZSH".to_string(), "false".to_string()))));
+        let _ = fs::remove_dir_all(project);
+    }
+
+    #[test]
+    fn scenario_feature_installations_report_missing_and_unsupported_sources() {
+        let project = unique_feature_test_dir();
+        let missing_features =
+            scenario_feature_installations(&project, None, &json!({})).unwrap_err();
+        let relative_feature = scenario_feature_installations(
+            &project,
+            None,
+            &json!({
+                "features": {
+                    "./demo": {}
+                }
+            }),
+        )
+        .unwrap_err();
+        let missing_local = scenario_feature_installations(
+            &project,
+            None,
+            &json!({
+                "features": {
+                    "demo": {}
+                }
+            }),
+        )
+        .unwrap_err();
+        let unknown_published = scenario_feature_installations(
+            &project,
+            None,
+            &json!({
+                "features": {
+                    "ghcr.io/example/notfeatures/missing": {}
+                }
+            }),
+        )
+        .unwrap_err();
+
+        assert_eq!(missing_features, "Scenario is missing features");
+        assert_eq!(
+            relative_feature,
+            "Unsupported relative feature in test scenario: ./demo"
+        );
+        assert!(missing_local.contains("Feature source directory not found at"));
+        assert_eq!(
+            unknown_published,
+            "Unknown published feature: ghcr.io/example/notfeatures/missing"
+        );
+    }
+
+    #[test]
+    fn write_feature_test_dockerfile_materializes_local_and_published_features() {
+        let workspace = unique_feature_test_dir();
+        let build_context = workspace.join("build");
+        let local_feature = workspace.join("local-feature");
+        fs::create_dir_all(&build_context).expect("build context");
+        write_feature_manifest(&local_feature);
+        let dockerfile_path = write_feature_test_dockerfile(
+            &build_context,
+            "debian:bookworm-slim",
+            &[
+                FeatureInstallation {
+                    source: FeatureInstallationSource::Local(local_feature),
+                    env: vec![("GREETING".to_string(), "it's fine".to_string())],
+                },
+                FeatureInstallation {
+                    source: FeatureInstallationSource::Published(
+                        "ghcr.io/devcontainers/features/common-utils:2".to_string(),
+                    ),
+                    env: Vec::new(),
+                },
+            ],
+        )
+        .expect("dockerfile");
+
+        let dockerfile = fs::read_to_string(dockerfile_path).expect("dockerfile contents");
+        assert!(dockerfile.starts_with("FROM debian:bookworm-slim\n"));
+        assert!(dockerfile.contains("COPY feature-0-local-feature"));
+        assert!(dockerfile.contains("COPY feature-1-common-utils"));
+        assert!(dockerfile.contains("GREETING="));
+        assert!(build_context
+            .join("feature-0-local-feature")
+            .join("install.sh")
+            .is_file());
+        assert!(build_context
+            .join("feature-1-common-utils")
+            .join("devcontainer-feature.json")
+            .is_file());
+        assert_eq!(shell_single_quote("it's fine"), "'it'\"'\"'s fine'");
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn write_feature_test_dockerfile_reports_unknown_published_feature() {
+        let workspace = unique_feature_test_dir();
+        fs::create_dir_all(&workspace).expect("workspace");
+        let error = write_feature_test_dockerfile(
+            &workspace,
+            "debian:bookworm-slim",
+            &[FeatureInstallation {
+                source: FeatureInstallationSource::Published(
+                    "ghcr.io/example/notfeatures/missing".to_string(),
+                ),
+                env: Vec::new(),
+            }],
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "Unknown published feature: ghcr.io/example/notfeatures/missing"
+        );
+        let _ = fs::remove_dir_all(workspace);
     }
 }
