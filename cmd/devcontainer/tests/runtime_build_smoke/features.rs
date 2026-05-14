@@ -273,8 +273,7 @@ fn build_writes_lockfile_for_direct_tarball_feature() {
     assert_eq!(entry["resolved"], feature_uri);
     assert!(
         entry["integrity"]
-            .as_str()
-            .is_some_and(|value| value.starts_with("sha256:")),
+            == "sha256:d130123ba54335a026ab6cd51c8bcbd52d58a0aeaacd8a593512ba61c5117ea0",
         "{entry:?}"
     );
 }

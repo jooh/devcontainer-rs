@@ -1,7 +1,10 @@
 //! Unit tests for configuration upgrade and lockfile behavior.
 
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::thread;
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -65,6 +68,34 @@ fn upgrade_lockfile_uses_root_relative_lockfile_for_dotfile_configs() {
     assert_eq!(
         lockfile.features["ghcr.io/devcontainers/features/github-cli"].version,
         "1.0.9"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn upgrade_lockfile_records_direct_tarball_archive_digest() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    let tarball_bytes = b"feature archive bytes used for lockfile integrity";
+    let server = SingleResponseHttpServer::new(tarball_bytes);
+    let feature_uri = server.url("devcontainer-feature-network.tgz");
+    fs::write(
+        root.join(".devcontainer.json"),
+        format!(
+            "{{\n  \"image\": \"debian:bookworm\",\n  \"features\": {{\n    \"{feature_uri}\": {{}}\n  }}\n}}\n"
+        ),
+    )
+    .expect("failed to write config");
+
+    let lockfile =
+        run_upgrade_lockfile(&["--workspace-folder".to_string(), root.display().to_string()])
+            .expect("lockfile payload");
+
+    let entry = &lockfile.features[&feature_uri];
+    assert_eq!(entry.resolved, feature_uri);
+    assert_eq!(
+        entry.integrity,
+        format!("sha256:{}", sha256_digest(tarball_bytes))
     );
     let _ = fs::remove_dir_all(root);
 }
@@ -434,4 +465,36 @@ fn sha256_digest(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+struct SingleResponseHttpServer {
+    base_url: String,
+}
+
+impl SingleResponseHttpServer {
+    fn new(body: &[u8]) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("http listener");
+        let address = listener.local_addr().expect("http listener address");
+        let body = body.to_vec();
+        thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(headers.as_bytes());
+            let _ = stream.write_all(&body);
+        });
+        Self {
+            base_url: format!("http://{address}"),
+        }
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}/{}", self.base_url, path)
+    }
 }

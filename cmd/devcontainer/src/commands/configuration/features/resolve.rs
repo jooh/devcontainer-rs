@@ -1,8 +1,12 @@
 //! Feature declaration parsing, dependency ordering, and source resolution helpers.
 
 use std::cmp::Ordering;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -13,6 +17,7 @@ use crate::commands::collections::registry::{
     normalize_collection_reference, published_feature_manifest,
 };
 use crate::commands::common;
+use crate::process_runner::{self, ProcessLogLevel, ProcessRequest};
 
 use super::super::{catalog::exact_catalog_entry, Lockfile};
 use super::control::{ensure_no_disallowed_features, feature_advisories_for_oci_features};
@@ -689,7 +694,7 @@ fn resolved_lockfile_feature(
                 user_feature_id: feature_id.to_string(),
                 version: manifest_version(manifest, None),
                 resolved: uri.clone(),
-                integrity: synthetic_direct_tarball_integrity(uri, manifest)?,
+                integrity: direct_tarball_archive_integrity(uri)?,
                 depends_on: manifest_depends_on_entries(manifest),
             }))
         }
@@ -722,15 +727,69 @@ fn manifest_depends_on_entries(manifest: &Value) -> Option<Vec<String>> {
     (!entries.is_empty()).then_some(entries)
 }
 
-fn synthetic_direct_tarball_integrity(uri: &str, manifest: &Value) -> Result<String, String> {
-    let payload = json!({
-        "uri": uri,
-        "manifest": manifest,
-    });
-    let bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
+fn direct_tarball_archive_integrity(uri: &str) -> Result<String, String> {
+    let temp = TempDownloadedTarball::new();
+    let result = process_runner::run_process(&ProcessRequest {
+        program: "curl".to_string(),
+        args: vec![
+            "-fsSL".to_string(),
+            "--max-time".to_string(),
+            "30".to_string(),
+            "-o".to_string(),
+            temp.path.display().to_string(),
+            uri.to_string(),
+        ],
+        cwd: None,
+        env: HashMap::new(),
+        log_level: ProcessLogLevel::Info,
+    })
+    .map_err(|error| error.to_string())?;
+    if result.status_code != 0 {
+        let stderr = result.stderr.trim();
+        return if stderr.is_empty() {
+            Err(format!(
+                "Failed to fetch direct tarball {uri}: curl exited with status {}",
+                result.status_code
+            ))
+        } else {
+            Err(format!("Failed to fetch direct tarball {uri}: {stderr}"))
+        };
+    }
+    let bytes = fs::read(&temp.path).map_err(|error| error.to_string())?;
+    Ok(sha256_integrity(&bytes))
+}
+
+fn sha256_integrity(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    Ok(format!("sha256:{:x}", hasher.finalize()))
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+struct TempDownloadedTarball {
+    path: PathBuf,
+}
+
+impl TempDownloadedTarball {
+    fn new() -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nonce = COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        Self {
+            path: env::temp_dir().join(format!(
+                "devcontainer-direct-tarball-{}-{now}-{nonce}.tgz",
+                std::process::id()
+            )),
+        }
+    }
+}
+
+impl Drop for TempDownloadedTarball {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 fn feature_depends_on(manifest: &Value) -> Vec<FeatureRequest> {

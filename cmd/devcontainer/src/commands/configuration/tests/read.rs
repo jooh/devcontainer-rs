@@ -285,6 +285,38 @@ fn read_configuration_payload_includes_optional_sections() {
 }
 
 #[test]
+fn read_configuration_include_features_ignores_existing_lockfile() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    fs::create_dir_all(&config_dir).expect("failed to create config directory");
+    fs::write(
+        config_dir.join("devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": { \"ghcr.io/devcontainers/features/git:1\": {} }\n}\n",
+    )
+    .expect("failed to write config");
+    fs::write(
+        config_dir.join("devcontainer-lock.json"),
+        "this is not json",
+    )
+    .expect("failed to write lockfile");
+
+    let payload = build_read_configuration_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--include-features-configuration".to_string(),
+    ])
+    .expect("payload should not read lockfile");
+
+    let feature_sets = payload["featuresConfiguration"]["featureSets"]
+        .as_array()
+        .expect("feature sets");
+    assert_eq!(feature_sets.len(), 1);
+    assert_eq!(feature_sets[0]["features"][0]["id"], "git");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn read_configuration_resolves_feature_sets_and_feature_metadata() {
     let root = unique_temp_dir();
     let config_dir = root.join(".devcontainer");

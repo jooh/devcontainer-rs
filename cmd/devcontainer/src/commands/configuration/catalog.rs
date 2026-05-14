@@ -453,6 +453,18 @@ fn fixture_catalog() -> Vec<(String, CatalogEntry)> {
                 depends_on: Some(vec!["ghcr.io/codspace/dependson/E".to_string()]),
             },
         ),
+        (
+            "https://github.com/codspace/tgz-features-with-dependson/releases/download/0.0.2/devcontainer-feature-B.tgz".to_string(),
+            CatalogEntry {
+                version: "0.0.2".to_string(),
+                resolved: "https://github.com/codspace/tgz-features-with-dependson/releases/download/0.0.2/devcontainer-feature-B.tgz".to_string(),
+                integrity: "sha256:d130123ba54335a026ab6cd51c8bcbd52d58a0aeaacd8a593512ba61c5117ea0".to_string(),
+                depends_on: Some(vec![
+                    "ghcr.io/codspace/dependson/C".to_string(),
+                    "ghcr.io/codspace/dependson/D".to_string(),
+                ]),
+            },
+        ),
     ]
 }
 
