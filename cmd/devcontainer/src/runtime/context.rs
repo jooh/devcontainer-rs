@@ -154,7 +154,7 @@ fn configuration_with_feature_metadata(
     args: &[String],
     resolved: &ResolvedConfig,
 ) -> Result<Value, String> {
-    let feature_support = configuration::resolve_feature_support(
+    let feature_support = configuration::resolve_feature_support_without_lockfile(
         args,
         &resolved.workspace_folder,
         &resolved.config_file,
@@ -184,9 +184,55 @@ mod tests {
     use crate::test_support::unique_temp_dir;
 
     use super::{
-        default_remote_workspace_folder, derived_workspace_mount, remote_workspace_folder_for_args,
-        workspace_mount_for_args, ResolvedConfig,
+        configuration_with_feature_metadata, default_remote_workspace_folder,
+        derived_workspace_mount, remote_workspace_folder_for_args, workspace_mount_for_args,
+        ResolvedConfig,
     };
+
+    #[test]
+    fn existing_container_feature_metadata_ignores_corrupt_lockfile() {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        let config_dir = root.join(".devcontainer");
+        let feature_dir = config_dir.join("local-feature");
+        fs::create_dir_all(&feature_dir).expect("failed to create feature directory");
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            "{\n  \"id\": \"local-feature\",\n  \"name\": \"Local Feature\",\n  \"version\": \"1.0.0\",\n  \"containerEnv\": {\n    \"LOCAL_FEATURE_ENV\": \"enabled\"\n  }\n}\n",
+        )
+        .expect("failed to write feature manifest");
+        fs::write(feature_dir.join("install.sh"), "#!/bin/sh\nset -eu\n")
+            .expect("failed to write feature install script");
+        let config_file = config_dir.join("devcontainer.json");
+        fs::write(
+            &config_file,
+            "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"./local-feature\": {}\n  }\n}\n",
+        )
+        .expect("failed to write config");
+        fs::write(
+            config_dir.join("devcontainer-lock.json"),
+            "this is not json",
+        )
+        .expect("failed to write corrupt lockfile");
+        let resolved = ResolvedConfig {
+            workspace_folder: root.clone(),
+            config_file,
+            configuration: json!({
+                "image": "debian:bookworm",
+                "features": {
+                    "./local-feature": {},
+                },
+            }),
+        };
+
+        let configuration = configuration_with_feature_metadata(&[], &resolved)
+            .expect("existing container metadata should not parse lockfile");
+
+        assert_eq!(
+            configuration["containerEnv"]["LOCAL_FEATURE_ENV"],
+            "enabled"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn remote_workspace_folder_prefers_configured_workspace_folder() {

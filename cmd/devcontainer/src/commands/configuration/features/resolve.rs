@@ -19,7 +19,7 @@ use crate::commands::collections::registry::{
 use crate::commands::common;
 use crate::process_runner::{self, ProcessLogLevel, ProcessRequest};
 
-use super::super::{catalog::exact_catalog_entry, Lockfile};
+use super::super::{catalog::exact_catalog_entry, Lockfile, LockfileEntry};
 use super::control::{ensure_no_disallowed_features, feature_advisories_for_oci_features};
 use super::metadata::feature_metadata_entry;
 use super::options::{feature_object, feature_option_values_from_manifest, feature_options};
@@ -513,6 +513,7 @@ fn resolve_feature_spec(
     workspace_folder: &Path,
     lockfile: Option<&Lockfile>,
 ) -> Result<FeatureSpec, String> {
+    let locked_entry = lockfile.and_then(|value| value.features.get(feature_id));
     let (manifest, source_information, installation, source, install_order_id) =
         if is_local_feature_reference(feature_id) {
             let feature_dir = resolve_local_feature_path(config_root, feature_id);
@@ -594,8 +595,7 @@ fn resolve_feature_spec(
                 feature_id.to_string(),
             )
         } else {
-            let locked_digest = lockfile
-                .and_then(|value| value.features.get(feature_id))
+            let locked_digest = locked_entry
                 .map(|entry| entry.integrity.as_str())
                 .filter(|integrity| !integrity.is_empty());
             let artifact = if let Some(digest) = locked_digest {
@@ -637,8 +637,13 @@ fn resolve_feature_spec(
             )
         };
 
-    let lockfile_feature =
-        resolved_lockfile_feature(feature_id, &manifest, &source, workspace_folder)?;
+    let lockfile_feature = resolved_lockfile_feature(
+        feature_id,
+        &manifest,
+        &source,
+        workspace_folder,
+        locked_entry,
+    )?;
     let options = feature_options(&manifest, value);
     let metadata_entry = feature_metadata_entry(&manifest);
     let aliases = feature_aliases(&manifest);
@@ -667,6 +672,7 @@ fn resolved_lockfile_feature(
     manifest: &Value,
     source: &FeatureSource,
     workspace_folder: &Path,
+    locked_entry: Option<&LockfileEntry>,
 ) -> Result<Option<ResolvedLockfileFeature>, String> {
     match source {
         FeatureSource::Oci {
@@ -681,12 +687,16 @@ fn resolved_lockfile_feature(
             depends_on: manifest_depends_on_entries(manifest),
         })),
         FeatureSource::DirectTarball { uri } => {
+            let verified_integrity = locked_entry
+                .map(|entry| verify_direct_tarball_lockfile_integrity(uri, entry))
+                .transpose()?
+                .flatten();
             if let Some(entry) = exact_catalog_entry(uri, Some(workspace_folder)) {
                 return Ok(Some(ResolvedLockfileFeature {
                     user_feature_id: feature_id.to_string(),
                     version: entry.version,
                     resolved: entry.resolved,
-                    integrity: entry.integrity,
+                    integrity: verified_integrity.unwrap_or(entry.integrity),
                     depends_on: entry.depends_on,
                 }));
             }
@@ -694,12 +704,31 @@ fn resolved_lockfile_feature(
                 user_feature_id: feature_id.to_string(),
                 version: manifest_version(manifest, None),
                 resolved: uri.clone(),
-                integrity: direct_tarball_archive_integrity(uri)?,
+                integrity: verified_integrity
+                    .map(Ok)
+                    .unwrap_or_else(|| direct_tarball_archive_integrity(uri))?,
                 depends_on: manifest_depends_on_entries(manifest),
             }))
         }
         FeatureSource::Local { .. } | FeatureSource::GithubRepo { .. } => Ok(None),
     }
+}
+
+fn verify_direct_tarball_lockfile_integrity(
+    uri: &str,
+    locked_entry: &LockfileEntry,
+) -> Result<Option<String>, String> {
+    if locked_entry.integrity.is_empty() {
+        return Ok(None);
+    }
+    let actual_integrity = direct_tarball_archive_integrity(uri)?;
+    if actual_integrity == locked_entry.integrity {
+        return Ok(Some(actual_integrity));
+    }
+    Err(format!(
+        "Digest did not match for {uri}. Expected {}, got {actual_integrity}.",
+        locked_entry.integrity
+    ))
 }
 
 fn manifest_version(manifest: &Value, fallback: Option<&str>) -> String {

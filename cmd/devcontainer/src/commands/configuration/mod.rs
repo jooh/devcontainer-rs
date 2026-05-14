@@ -79,6 +79,20 @@ pub(crate) fn resolve_feature_support(
     features::resolve_feature_support(args, workspace_folder, config_file, configuration)
 }
 
+pub(crate) fn resolve_feature_support_without_lockfile(
+    args: &[String],
+    workspace_folder: &std::path::Path,
+    config_file: &std::path::Path,
+    configuration: &Value,
+) -> Result<Option<features::ResolvedFeatureSupport>, String> {
+    features::resolve_feature_support_without_lockfile(
+        args,
+        workspace_folder,
+        config_file,
+        configuration,
+    )
+}
+
 pub(crate) fn materialize_feature_installation(
     installation: &features::FeatureInstallation,
     destination: &std::path::Path,

@@ -101,6 +101,45 @@ fn upgrade_lockfile_records_direct_tarball_archive_digest() {
 }
 
 #[test]
+fn ensure_native_lockfile_rejects_changed_direct_tarball_archive() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    let old_tarball_bytes = b"original direct tarball archive bytes";
+    let changed_tarball_bytes = b"changed direct tarball archive bytes";
+    let server = SingleResponseHttpServer::new(changed_tarball_bytes);
+    let feature_uri = server.url("devcontainer-feature-network.tgz");
+    let configuration = json!({
+        "image": "debian:bookworm",
+        "features": {
+            feature_uri.clone(): {},
+        },
+    });
+    let config_file = root.join(".devcontainer.json");
+    fs::write(
+        &config_file,
+        serde_json::to_string_pretty(&configuration).expect("config json"),
+    )
+    .expect("failed to write config");
+    fs::write(
+        root.join(".devcontainer-lock.json"),
+        format!(
+            "{{\n  \"features\": {{\n    \"{feature_uri}\": {{\n      \"version\": \"latest\",\n      \"resolved\": \"{feature_uri}\",\n      \"integrity\": \"sha256:{}\"\n    }}\n  }}\n}}\n",
+            sha256_digest(old_tarball_bytes)
+        ),
+    )
+    .expect("failed to write lockfile");
+
+    let error = ensure_native_lockfile_for_config(&[], &config_file, &configuration)
+        .expect_err("changed direct tarball should fail integrity verification");
+
+    assert!(error.contains("Digest did not match"), "{error}");
+    let lockfile = fs::read_to_string(root.join(".devcontainer-lock.json")).expect("lockfile");
+    assert!(lockfile.contains(&sha256_digest(old_tarball_bytes)));
+    assert!(!lockfile.contains(&sha256_digest(changed_tarball_bytes)));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn feature_id_without_version_handles_tags_and_digests() {
     assert_eq!(
         feature_id_without_version("ghcr.io/devcontainers/features/git:1.0"),
