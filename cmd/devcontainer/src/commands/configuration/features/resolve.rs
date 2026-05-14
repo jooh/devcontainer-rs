@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::commands::collections::oci;
 use crate::commands::collections::registry::{
@@ -13,12 +14,13 @@ use crate::commands::collections::registry::{
 };
 use crate::commands::common;
 
+use super::super::{catalog::exact_catalog_entry, Lockfile};
 use super::control::{ensure_no_disallowed_features, feature_advisories_for_oci_features};
 use super::metadata::feature_metadata_entry;
 use super::options::{feature_object, feature_option_values_from_manifest, feature_options};
 use super::types::{
     FeatureInstallation, FeatureInstallationSource, FeatureRequest, FeatureSource, FeatureSpec,
-    ResolvedFeatureSummary, ResolvedFeatureSupport,
+    ResolvedFeatureSummary, ResolvedFeatureSupport, ResolvedLockfileFeature,
 };
 
 #[derive(Clone)]
@@ -41,6 +43,32 @@ pub(crate) fn resolve_feature_support(
     config_file: &Path,
     configuration: &Value,
 ) -> Result<Option<ResolvedFeatureSupport>, String> {
+    let lockfile = super::super::upgrade::lockfile_for_resolution(args, config_file)?;
+    resolve_feature_support_with_lockfile(
+        args,
+        workspace_folder,
+        config_file,
+        configuration,
+        lockfile.as_ref(),
+    )
+}
+
+pub(in crate::commands::configuration) fn resolve_feature_support_without_lockfile(
+    args: &[String],
+    workspace_folder: &Path,
+    config_file: &Path,
+    configuration: &Value,
+) -> Result<Option<ResolvedFeatureSupport>, String> {
+    resolve_feature_support_with_lockfile(args, workspace_folder, config_file, configuration, None)
+}
+
+fn resolve_feature_support_with_lockfile(
+    args: &[String],
+    workspace_folder: &Path,
+    config_file: &Path,
+    configuration: &Value,
+    lockfile: Option<&Lockfile>,
+) -> Result<Option<ResolvedFeatureSupport>, String> {
     let declared = declared_features(args, configuration)?;
     if declared.is_empty() {
         return Ok(None);
@@ -55,8 +83,13 @@ pub(crate) fn resolve_feature_support(
             options: options.clone(),
         })
         .collect::<Vec<_>>();
-    let graph =
-        build_dependency_graph(root_requests, configuration, config_root, workspace_folder)?;
+    let graph = build_dependency_graph(
+        root_requests,
+        configuration,
+        config_root,
+        workspace_folder,
+        lockfile,
+    )?;
     let ordered_nodes = compute_feature_install_order(graph)?;
 
     let mut feature_sets = Vec::new();
@@ -65,6 +98,7 @@ pub(crate) fn resolve_feature_support(
     let mut installations = Vec::new();
     let mut ordered_features = Vec::new();
     let mut ordered_feature_ids = Vec::new();
+    let mut lockfile_features = Vec::new();
 
     for node in ordered_nodes {
         let spec = node.spec;
@@ -93,6 +127,9 @@ pub(crate) fn resolve_feature_support(
             id: spec.install_order_id.clone(),
             options: spec.value.clone(),
         });
+        if let Some(lockfile_feature) = spec.lockfile_feature.clone() {
+            lockfile_features.push(lockfile_feature);
+        }
         installations.push(spec.installation);
     }
     let feature_advisories = feature_advisories_for_oci_features(args, &advisory_inputs)?;
@@ -106,6 +143,7 @@ pub(crate) fn resolve_feature_support(
         installations,
         ordered_features,
         ordered_feature_ids,
+        lockfile_features,
     }))
 }
 
@@ -132,12 +170,13 @@ fn build_dependency_graph(
     configuration: &Value,
     config_root: &Path,
     workspace_folder: &Path,
+    lockfile: Option<&Lockfile>,
 ) -> Result<Vec<FeatureNode>, String> {
     let mut worklist = VecDeque::from(root_requests);
     let mut resolved = Vec::new();
 
     while let Some(request) = worklist.pop_front() {
-        let node = resolve_feature_node(&request, config_root, workspace_folder)?;
+        let node = resolve_feature_node(&request, config_root, workspace_folder, lockfile)?;
         if resolved.iter().any(|existing| nodes_equal(existing, &node)) {
             continue;
         }
@@ -152,6 +191,7 @@ fn build_dependency_graph(
         configuration,
         config_root,
         workspace_folder,
+        lockfile,
     )?;
     Ok(resolved)
 }
@@ -160,22 +200,28 @@ fn resolve_feature_node(
     request: &FeatureRequest,
     config_root: &Path,
     workspace_folder: &Path,
+    lockfile: Option<&Lockfile>,
 ) -> Result<FeatureNode, String> {
     let spec = resolve_feature_spec(
         &request.user_feature_id,
         &request.options,
         config_root,
         workspace_folder,
+        lockfile,
     )?;
     let depends_on = spec
         .depends_on
         .iter()
-        .map(|dependency| resolve_feature_dependency(dependency, config_root, workspace_folder))
+        .map(|dependency| {
+            resolve_feature_dependency(dependency, config_root, workspace_folder, lockfile)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let installs_after = spec
         .installs_after
         .iter()
-        .map(|dependency| resolve_feature_dependency(dependency, config_root, workspace_folder))
+        .map(|dependency| {
+            resolve_feature_dependency(dependency, config_root, workspace_folder, lockfile)
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(FeatureNode {
@@ -190,12 +236,14 @@ fn resolve_feature_dependency(
     request: &FeatureRequest,
     config_root: &Path,
     workspace_folder: &Path,
+    lockfile: Option<&Lockfile>,
 ) -> Result<FeatureDependency, String> {
     let spec = resolve_feature_spec(
         &request.user_feature_id,
         &request.options,
         config_root,
         workspace_folder,
+        lockfile,
     )?;
     Ok(FeatureDependency {
         request: request.clone(),
@@ -208,6 +256,7 @@ fn apply_override_feature_install_order(
     configuration: &Value,
     config_root: &Path,
     workspace_folder: &Path,
+    lockfile: Option<&Lockfile>,
 ) -> Result<(), String> {
     let Some(overrides) = configuration
         .get("overrideFeatureInstallOrder")
@@ -227,7 +276,8 @@ fn apply_override_feature_install_order(
             user_feature_id: override_id.to_string(),
             options: json!({}),
         };
-        let dependency = resolve_feature_dependency(&request, config_root, workspace_folder)?;
+        let dependency =
+            resolve_feature_dependency(&request, config_root, workspace_folder, lockfile)?;
         for node in worklist.iter_mut() {
             if node_satisfies_soft_dependency(node, &dependency) {
                 node.round_priority = node.round_priority.max(priority);
@@ -456,6 +506,7 @@ fn resolve_feature_spec(
     value: &Value,
     config_root: &Path,
     workspace_folder: &Path,
+    lockfile: Option<&Lockfile>,
 ) -> Result<FeatureSpec, String> {
     let (manifest, source_information, installation, source, install_order_id) =
         if is_local_feature_reference(feature_id) {
@@ -538,7 +589,19 @@ fn resolve_feature_spec(
                 feature_id.to_string(),
             )
         } else {
-            let artifact = oci::resolve_feature_artifact(feature_id, Some(workspace_folder))?;
+            let locked_digest = lockfile
+                .and_then(|value| value.features.get(feature_id))
+                .map(|entry| entry.integrity.as_str())
+                .filter(|integrity| !integrity.is_empty());
+            let artifact = if let Some(digest) = locked_digest {
+                oci::resolve_feature_artifact_with_digest(
+                    feature_id,
+                    digest,
+                    Some(workspace_folder),
+                )?
+            } else {
+                oci::resolve_feature_artifact(feature_id, Some(workspace_folder))?
+            };
             let manifest = artifact.metadata.clone();
             let resource = artifact.resource.clone();
             let tag = artifact.tag.clone();
@@ -569,6 +632,8 @@ fn resolve_feature_spec(
             )
         };
 
+    let lockfile_feature =
+        resolved_lockfile_feature(feature_id, &manifest, &source, workspace_folder)?;
     let options = feature_options(&manifest, value);
     let metadata_entry = feature_metadata_entry(&manifest);
     let aliases = feature_aliases(&manifest);
@@ -588,7 +653,84 @@ fn resolve_feature_spec(
         aliases,
         depends_on,
         installs_after,
+        lockfile_feature,
     })
+}
+
+fn resolved_lockfile_feature(
+    feature_id: &str,
+    manifest: &Value,
+    source: &FeatureSource,
+    workspace_folder: &Path,
+) -> Result<Option<ResolvedLockfileFeature>, String> {
+    match source {
+        FeatureSource::Oci {
+            resource,
+            tag,
+            digest,
+        } => Ok(Some(ResolvedLockfileFeature {
+            user_feature_id: feature_id.to_string(),
+            version: manifest_version(manifest, tag.as_deref()),
+            resolved: format!("{resource}@{digest}"),
+            integrity: digest.clone(),
+            depends_on: manifest_depends_on_entries(manifest),
+        })),
+        FeatureSource::DirectTarball { uri } => {
+            if let Some(entry) = exact_catalog_entry(uri, Some(workspace_folder)) {
+                return Ok(Some(ResolvedLockfileFeature {
+                    user_feature_id: feature_id.to_string(),
+                    version: entry.version,
+                    resolved: entry.resolved,
+                    integrity: entry.integrity,
+                    depends_on: entry.depends_on,
+                }));
+            }
+            Ok(Some(ResolvedLockfileFeature {
+                user_feature_id: feature_id.to_string(),
+                version: manifest_version(manifest, None),
+                resolved: uri.clone(),
+                integrity: synthetic_direct_tarball_integrity(uri, manifest)?,
+                depends_on: manifest_depends_on_entries(manifest),
+            }))
+        }
+        FeatureSource::Local { .. } | FeatureSource::GithubRepo { .. } => Ok(None),
+    }
+}
+
+fn manifest_version(manifest: &Value, fallback: Option<&str>) -> String {
+    manifest
+        .get("version")
+        .and_then(Value::as_str)
+        .or(fallback)
+        .unwrap_or("latest")
+        .to_string()
+}
+
+fn manifest_depends_on_entries(manifest: &Value) -> Option<Vec<String>> {
+    let depends_on = manifest.get("dependsOn")?;
+    let entries = if let Some(object) = depends_on.as_object() {
+        object.keys().cloned().collect::<Vec<_>>()
+    } else if let Some(array) = depends_on.as_array() {
+        array
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    (!entries.is_empty()).then_some(entries)
+}
+
+fn synthetic_direct_tarball_integrity(uri: &str, manifest: &Value) -> Result<String, String> {
+    let payload = json!({
+        "uri": uri,
+        "manifest": manifest,
+    });
+    let bytes = serde_json::to_vec(&payload).map_err(|error| error.to_string())?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
 fn feature_depends_on(manifest: &Value) -> Vec<FeatureRequest> {

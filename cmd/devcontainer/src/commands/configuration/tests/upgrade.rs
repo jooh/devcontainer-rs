@@ -7,10 +7,10 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::support::unique_temp_dir;
-use crate::commands::configuration::ensure_native_lockfile;
 use crate::commands::configuration::upgrade::{
     build_outdated_payload, feature_id_without_version, lockfile_path, run_upgrade_lockfile,
 };
+use crate::commands::configuration::{ensure_native_lockfile, resolve_feature_support};
 
 #[test]
 fn outdated_payload_reports_remote_feature_versions() {
@@ -195,7 +195,7 @@ fn ensure_native_lockfile_uses_shared_lockfile_format() {
     fs::create_dir_all(&root).expect("failed to create root");
     let config_file = root.join(".devcontainer.json");
 
-    ensure_native_lockfile(
+    ensure_native_lockfile_for_config(
         &["--workspace-folder".to_string(), root.display().to_string()],
         &config_file,
         &json!({
@@ -218,7 +218,7 @@ fn ensure_native_lockfile_skips_generation_when_no_lockfile_is_set() {
     fs::create_dir_all(&root).expect("failed to create root");
     let config_file = root.join(".devcontainer.json");
 
-    ensure_native_lockfile(
+    ensure_native_lockfile_for_config(
         &[
             "--workspace-folder".to_string(),
             root.display().to_string(),
@@ -265,7 +265,7 @@ fn ensure_native_lockfile_rejects_corrupt_existing_lockfile_when_generating() {
     let lockfile_path = root.join(".devcontainer-lock.json");
     fs::write(&lockfile_path, "this is not json").expect("corrupt lockfile");
 
-    let error = ensure_native_lockfile(
+    let error = ensure_native_lockfile_for_config(
         &["--workspace-folder".to_string(), root.display().to_string()],
         &config_file,
         &json!({
@@ -291,7 +291,7 @@ fn ensure_native_lockfile_reports_missing_frozen_lockfile() {
     fs::create_dir_all(&root).expect("failed to create root");
     let config_file = root.join(".devcontainer.json");
 
-    let error = ensure_native_lockfile(
+    let error = ensure_native_lockfile_for_config(
         &[
             "--workspace-folder".to_string(),
             root.display().to_string(),
@@ -316,7 +316,7 @@ fn ensure_native_lockfile_accepts_semantically_identical_existing_json() {
     let root = unique_temp_dir();
     fs::create_dir_all(&root).expect("failed to create root");
     let config_file = root.join(".devcontainer.json");
-    ensure_native_lockfile(
+    ensure_native_lockfile_for_config(
         &["--workspace-folder".to_string(), root.display().to_string()],
         &config_file,
         &json!({
@@ -332,7 +332,7 @@ fn ensure_native_lockfile_accepts_semantically_identical_existing_json() {
     let reformatted = lockfile.trim_end_matches('\n').to_string();
     fs::write(&lockfile_path, reformatted).expect("lockfile rewrite");
 
-    ensure_native_lockfile(
+    ensure_native_lockfile_for_config(
         &[
             "--workspace-folder".to_string(),
             root.display().to_string(),
@@ -349,6 +349,18 @@ fn ensure_native_lockfile_accepts_semantically_identical_existing_json() {
     .expect("lockfile match");
 
     let _ = fs::remove_dir_all(root);
+}
+
+fn ensure_native_lockfile_for_config(
+    args: &[String],
+    config_file: &Path,
+    configuration: &serde_json::Value,
+) -> Result<(), String> {
+    let workspace_folder = config_file.parent().unwrap_or_else(|| Path::new("."));
+    let resolved_features =
+        resolve_feature_support(args, workspace_folder, config_file, configuration)?
+            .expect("feature support");
+    ensure_native_lockfile(args, config_file, configuration, &resolved_features)
 }
 
 fn write_workspace_layout_version(

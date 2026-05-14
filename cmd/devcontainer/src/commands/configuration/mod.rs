@@ -106,16 +106,18 @@ pub(crate) fn ensure_native_lockfile(
     args: &[String],
     config_file: &std::path::Path,
     configuration: &Value,
+    resolved_features: &features::ResolvedFeatureSupport,
 ) -> Result<(), String> {
-    upgrade::ensure_native_lockfile(args, config_file, configuration)
+    upgrade::ensure_native_lockfile(args, config_file, configuration, resolved_features)
 }
 
 pub(crate) fn validate_native_lockfile(
     args: &[String],
     config_file: &std::path::Path,
     configuration: &Value,
+    resolved_features: &features::ResolvedFeatureSupport,
 ) -> Result<(), String> {
-    upgrade::validate_native_lockfile(args, config_file, configuration)
+    upgrade::validate_native_lockfile(args, config_file, configuration, resolved_features)
 }
 
 pub(crate) fn validate_lockfile_options(args: &[String]) -> Result<(), String> {

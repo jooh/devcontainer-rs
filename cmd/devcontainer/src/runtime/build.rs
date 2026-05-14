@@ -64,6 +64,7 @@ pub(crate) fn build_image(resolved: &ResolvedConfig, args: &[String]) -> Result<
                 args,
                 &resolved.config_file,
                 &resolved.configuration,
+                &feature_support,
             )?;
             let image_name = common::parse_option_value(args, "--image-name")
                 .unwrap_or_else(|| default_image_name(&resolved.workspace_folder));
@@ -74,6 +75,7 @@ pub(crate) fn build_image(resolved: &ResolvedConfig, args: &[String]) -> Result<
                 args,
                 &resolved.config_file,
                 &resolved.configuration,
+                &feature_support,
             )?;
             Ok(built)
         } else {
@@ -88,6 +90,7 @@ pub(crate) fn build_image(resolved: &ResolvedConfig, args: &[String]) -> Result<
             args,
             &resolved.config_file,
             &resolved.configuration,
+            &feature_support,
         )?;
         let base_image = format!("{image_name}-base");
         build_base_image(resolved, args, &base_image)?;
@@ -102,6 +105,7 @@ pub(crate) fn build_image(resolved: &ResolvedConfig, args: &[String]) -> Result<
             args,
             &resolved.config_file,
             &resolved.configuration,
+            &feature_support,
         )?;
         return Ok(built);
     }

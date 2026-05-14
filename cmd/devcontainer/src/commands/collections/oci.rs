@@ -135,6 +135,17 @@ pub(crate) fn resolve_feature_artifact(
     resolve_feature_artifact_for_reference(&parsed, workspace_folder, &CurlTransport)
 }
 
+pub(crate) fn resolve_feature_artifact_with_digest(
+    reference: &str,
+    manifest_digest: &str,
+    workspace_folder: Option<&Path>,
+) -> Result<OciFeatureArtifact, String> {
+    let mut parsed = parse_oci_reference(reference)
+        .ok_or_else(|| format!("Invalid OCI Feature reference: {reference}"))?;
+    parsed.digest = Some(manifest_digest.to_string());
+    resolve_feature_artifact_for_reference(&parsed, workspace_folder, &CurlTransport)
+}
+
 pub(crate) fn list_feature_tags(
     reference: &str,
     workspace_folder: Option<&Path>,

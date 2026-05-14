@@ -28,6 +28,7 @@ pub(crate) struct ResolvedFeatureSupport {
     pub(crate) installations: Vec<FeatureInstallation>,
     pub(crate) ordered_features: Vec<ResolvedFeatureSummary>,
     pub(crate) ordered_feature_ids: Vec<String>,
+    pub(crate) lockfile_features: Vec<ResolvedLockfileFeature>,
 }
 
 #[derive(Clone)]
@@ -44,12 +45,22 @@ pub(super) struct FeatureSpec {
     pub(super) aliases: Vec<String>,
     pub(super) depends_on: Vec<FeatureRequest>,
     pub(super) installs_after: Vec<FeatureRequest>,
+    pub(super) lockfile_feature: Option<ResolvedLockfileFeature>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedFeatureSummary {
     pub(crate) id: String,
     pub(crate) options: Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResolvedLockfileFeature {
+    pub(crate) user_feature_id: String,
+    pub(crate) version: String,
+    pub(crate) resolved: String,
+    pub(crate) integrity: String,
+    pub(crate) depends_on: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug)]

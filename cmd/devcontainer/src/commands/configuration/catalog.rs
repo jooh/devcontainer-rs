@@ -178,16 +178,6 @@ pub(super) fn latest_version(base: &str, workspace_folder: Option<&Path>) -> Opt
         .map(|entry| entry.version)
 }
 
-pub(super) fn catalog_entry_for_version(
-    base: &str,
-    version: &str,
-    workspace_folder: Option<&Path>,
-) -> Option<CatalogEntry> {
-    catalog_entries(base, workspace_folder)?
-        .into_iter()
-        .find(|entry| entry.version == version)
-}
-
 fn local_oci_layout_entries(base: &str, workspace_folder: Option<&Path>) -> Vec<CatalogEntry> {
     let Some(layout_dir) = workspace_oci_layout_dir(base, workspace_folder) else {
         return Vec::new();

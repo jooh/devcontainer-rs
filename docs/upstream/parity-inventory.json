@@ -25,7 +25,8 @@
 					"sourceReferenced": true,
 					"evidence": [
 						"cmd/devcontainer/src/commands/configuration/features/resolve.rs",
-						"cmd/devcontainer/src/commands/configuration/read.rs"
+						"cmd/devcontainer/src/commands/configuration/read.rs",
+						"cmd/devcontainer/src/commands/configuration/upgrade.rs"
 					]
 				},
 				{
@@ -574,7 +575,8 @@
 					"sourceReferenced": true,
 					"evidence": [
 						"cmd/devcontainer/src/commands/configuration/features/resolve.rs",
-						"cmd/devcontainer/src/commands/configuration/read.rs"
+						"cmd/devcontainer/src/commands/configuration/read.rs",
+						"cmd/devcontainer/src/commands/configuration/upgrade.rs"
 					]
 				},
 				{
@@ -1018,7 +1020,8 @@
 					"sourceReferenced": true,
 					"evidence": [
 						"cmd/devcontainer/src/commands/configuration/features/resolve.rs",
-						"cmd/devcontainer/src/commands/configuration/read.rs"
+						"cmd/devcontainer/src/commands/configuration/read.rs",
+						"cmd/devcontainer/src/commands/configuration/upgrade.rs"
 					]
 				},
 				{
