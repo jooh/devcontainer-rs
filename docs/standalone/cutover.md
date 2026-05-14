@@ -12,7 +12,7 @@
 - `cargo doc --manifest-path cmd/devcontainer/Cargo.toml --no-deps --document-private-items`
 - `cargo test --manifest-path cmd/devcontainer/Cargo.toml --locked`
 - `cargo deny --manifest-path cmd/devcontainer/Cargo.toml check -A license-not-encountered`
-- `cargo llvm-cov --manifest-path cmd/devcontainer/Cargo.toml --all-features --workspace --fail-under-lines 88`
+- `cargo llvm-cov --manifest-path cmd/devcontainer/Cargo.toml --all-features --workspace --fail-under-lines 95`
 - `uv tool run --from actionlint-py actionlint .github/workflows/*.yml`
 - `uv tool run --from shellcheck-py shellcheck <repo-owned shell scripts>`
 - `node build/check-upstream-submodule.js`

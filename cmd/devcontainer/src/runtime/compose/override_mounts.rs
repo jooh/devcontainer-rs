@@ -352,3 +352,134 @@ pub(super) fn compose_environment(configuration: &Value) -> Option<Vec<(String, 
         .collect::<Vec<_>>();
     (!env.is_empty()).then_some(env)
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, Map, Value};
+
+    use super::{
+        compose_mount_definition, compose_mount_definition_from_str, compose_named_volumes,
+        insert_nested_mount_value, merge_mount_scalar_or_object, parse_mount_option_scalar,
+        ComposeVolumeEntry,
+    };
+
+    fn long_definition(entry: Option<ComposeVolumeEntry>) -> Map<String, Value> {
+        let Some(ComposeVolumeEntry::Long(definition)) = entry else {
+            panic!("expected long compose mount definition");
+        };
+        definition.fields
+    }
+
+    #[test]
+    fn compose_mount_definition_accepts_object_aliases_and_read_only() {
+        let fields = long_definition(compose_mount_definition(&json!({
+            "type": "volume",
+            "src": "cache",
+            "dst": "/cache",
+            "readOnly": true,
+            "external": true,
+            "volume": {
+                "labels": {
+                    "owner": "devcontainer"
+                }
+            },
+            "consistency": "cached"
+        })));
+
+        assert_eq!(fields.get("type"), Some(&json!("volume")));
+        assert_eq!(fields.get("source"), Some(&json!("cache")));
+        assert_eq!(fields.get("target"), Some(&json!("/cache")));
+        assert_eq!(fields.get("read_only"), Some(&json!(true)));
+        assert_eq!(fields.get("volume.external"), None);
+        assert_eq!(
+            fields.get("volume"),
+            Some(&json!({
+                "external": true,
+                "labels": {
+                    "owner": "devcontainer"
+                }
+            }))
+        );
+        assert!(compose_mount_definition(&json!(false)).is_none());
+
+        let Some(ComposeVolumeEntry::Long(definition)) = compose_mount_definition(&json!({
+            "type": "volume",
+            "target": "/cache"
+        })) else {
+            panic!("expected long compose mount definition");
+        };
+        assert_eq!(definition.short_syntax(), None);
+    }
+
+    #[test]
+    fn compose_mount_definition_from_str_preserves_extended_options() {
+        let definition = compose_mount_definition_from_str(
+            "type=volume,source=cache,target=/cache,external=true,volume-nocopy=true,\
+             bind-propagation=rshared,retries=-2,limit=18446744073709551615,ratio=1.5",
+        )
+        .expect("string mount should parse");
+
+        assert_eq!(definition.fields.get("type"), Some(&json!("volume")));
+        assert_eq!(
+            definition.fields.get("volume"),
+            Some(&json!({
+                "external": true,
+                "nocopy": true
+            }))
+        );
+        assert_eq!(
+            definition.fields.get("bind"),
+            Some(&json!({ "propagation": "rshared" }))
+        );
+        assert_eq!(definition.fields.get("retries"), Some(&json!(-2)));
+        assert_eq!(
+            definition.fields.get("limit").and_then(Value::as_u64),
+            Some(u64::MAX)
+        );
+        assert_eq!(definition.fields.get("ratio"), Some(&json!(1.5)));
+        assert_eq!(definition.short_syntax(), None);
+
+        let readonly = compose_mount_definition_from_str("source=/host,target=/work,readonly")
+            .expect("readonly bind mount should parse");
+        assert_eq!(readonly.short_syntax(), Some("/host:/work:ro".to_string()));
+    }
+
+    #[test]
+    fn compose_named_volumes_merges_duplicate_external_flags() {
+        let local = compose_mount_definition_from_str("type=volume,source=cache,target=/cache")
+            .expect("local named volume should parse");
+        let external = compose_mount_definition_from_str(
+            "type=volume,source=cache,target=/cache,external=true",
+        )
+        .expect("external named volume should parse");
+        let anonymous = compose_mount_definition_from_str("type=volume,target=/anonymous")
+            .expect("anonymous volume should parse");
+        let bind = compose_mount_definition_from_str("source=/host,target=/work")
+            .expect("bind mount should parse");
+
+        let named = compose_named_volumes(&[
+            ComposeVolumeEntry::Short("/host:/work".to_string()),
+            ComposeVolumeEntry::Long(local),
+            ComposeVolumeEntry::Long(external),
+            ComposeVolumeEntry::Long(anonymous),
+            ComposeVolumeEntry::Long(bind),
+        ]);
+
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].name, "cache");
+        assert!(named[0].external);
+    }
+
+    #[test]
+    fn nested_mount_values_replace_scalars_and_merge_objects() {
+        let mut fields = Map::from_iter([("volume".to_string(), json!("scalar"))]);
+        insert_nested_mount_value(&mut fields, &["volume"], "nocopy", json!(true));
+        assert_eq!(fields.get("volume"), Some(&json!({ "nocopy": true })));
+
+        let mut existing = json!("replace-me");
+        merge_mount_scalar_or_object(&mut existing, json!({ "external": true }));
+        assert_eq!(existing, json!({ "external": true }));
+
+        assert_eq!(parse_mount_option_scalar("\"quoted\""), json!("quoted"));
+    }
+}

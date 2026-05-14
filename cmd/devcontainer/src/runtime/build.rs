@@ -332,7 +332,12 @@ fn has_build_definition(configuration: &Value) -> bool {
 mod tests {
     use std::path::Path;
 
-    use super::{engine_build_args, is_buildx_cache_to_inline};
+    use serde_json::json;
+
+    use super::{
+        default_image_name, dockerfile_prefix, engine_build_args, has_build_definition,
+        is_buildx_cache_to_inline, shell_single_quote,
+    };
 
     fn contains_arg(args: &[String], expected: &str) -> bool {
         args.iter().any(|arg| arg == expected)
@@ -415,5 +420,60 @@ mod tests {
         );
 
         assert!(!contains_arg(&engine_args, "BUILDKIT_INLINE_CACHE=1"));
+    }
+
+    #[test]
+    fn engine_build_args_include_cache_label_platform_and_no_cache_flags() {
+        let engine_args = engine_build_args(
+            &[
+                "--build-no-cache".to_string(),
+                "--cache-from".to_string(),
+                "type=registry,ref=ghcr.io/example/cache:old".to_string(),
+                "--cache-to".to_string(),
+                "type=registry,ref=ghcr.io/example/cache:new".to_string(),
+                "--label".to_string(),
+                "devcontainer.test=true".to_string(),
+                "--platform".to_string(),
+                "linux/arm64".to_string(),
+            ],
+            "example/native:test",
+            Path::new("Dockerfile"),
+        );
+
+        assert!(contains_arg(&engine_args, "--no-cache"));
+        assert!(contains_arg(&engine_args, "--cache-from"));
+        assert!(contains_arg(
+            &engine_args,
+            "type=registry,ref=ghcr.io/example/cache:old"
+        ));
+        assert!(contains_arg(&engine_args, "--cache-to"));
+        assert!(contains_arg(
+            &engine_args,
+            "type=registry,ref=ghcr.io/example/cache:new"
+        ));
+        assert!(contains_arg(&engine_args, "--label"));
+        assert!(contains_arg(&engine_args, "devcontainer.test=true"));
+        assert!(contains_arg(&engine_args, "--platform"));
+        assert!(contains_arg(&engine_args, "linux/arm64"));
+    }
+
+    #[test]
+    fn build_helpers_cover_prefix_names_and_config_detection() {
+        assert_eq!(dockerfile_prefix(&[]), "# syntax=docker/dockerfile:1.4\n");
+        assert_eq!(
+            dockerfile_prefix(&["--omit-syntax-directive".to_string()]),
+            ""
+        );
+        assert_eq!(shell_single_quote("it's ok"), "'it'\"'\"'s ok'");
+        assert_eq!(
+            default_image_name(Path::new("/tmp/My Workspace!")),
+            "devcontainer-My-Workspace-"
+        );
+        assert!(has_build_definition(&json!({
+            "build": {}
+        })));
+        assert!(!has_build_definition(&json!({
+            "build": "Dockerfile"
+        })));
     }
 }

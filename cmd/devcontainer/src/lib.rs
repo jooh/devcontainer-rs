@@ -111,7 +111,9 @@ pub fn run(raw_args: Vec<String>) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::native_only_mode_value_enabled;
+    use std::process::ExitCode;
+
+    use super::{native_only_mode_value_enabled, run};
 
     #[test]
     fn native_only_mode_uses_environment_switch() {
@@ -121,5 +123,47 @@ mod tests {
         assert!(!native_only_mode_value_enabled("0"));
         assert!(!native_only_mode_value_enabled("false"));
         assert!(!native_only_mode_value_enabled("no"));
+    }
+
+    #[test]
+    fn run_handles_top_level_help_version_and_argument_errors() {
+        assert_eq!(run(Vec::new()), ExitCode::SUCCESS);
+        assert_eq!(run(vec!["--version".to_string()]), ExitCode::SUCCESS);
+        assert_eq!(
+            run(vec![
+                "--log-format".to_string(),
+                "yaml".to_string(),
+                "up".to_string()
+            ]),
+            ExitCode::from(2)
+        );
+        assert_eq!(
+            run(vec!["--log-format".to_string(), "json".to_string()]),
+            ExitCode::from(2)
+        );
+        assert_eq!(run(vec!["unknown".to_string()]), ExitCode::from(2));
+    }
+
+    #[test]
+    fn run_handles_command_help_version_and_unsupported_native_paths() {
+        assert_eq!(
+            run(vec!["up".to_string(), "--help".to_string()]),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            run(vec!["up".to_string(), "--version".to_string()]),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            run(vec![
+                "up".to_string(),
+                "--definitely-unsupported".to_string()
+            ]),
+            ExitCode::from(1)
+        );
+        assert_eq!(
+            run(vec!["read-configuration".to_string()]),
+            ExitCode::from(1)
+        );
     }
 }

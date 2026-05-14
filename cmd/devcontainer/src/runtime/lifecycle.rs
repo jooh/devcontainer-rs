@@ -167,12 +167,25 @@ mod tests {
 
     use serde_json::json;
 
+    use crate::process_runner::{ProcessLogLevel, ProcessRequest};
+
     use super::{
         dotfiles::dotfiles_install_command,
-        requests::lifecycle_exec_args,
+        requests::{host_lifecycle_request, lifecycle_exec_args},
+        run_process_group,
         selection::{lifecycle_command_group, selected_lifecycle_steps},
         LifecycleCommand, LifecycleMode, LifecycleStep,
     };
+
+    fn shell_request(script: &str) -> ProcessRequest {
+        ProcessRequest {
+            program: "sh".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+            cwd: None,
+            env: HashMap::new(),
+            log_level: ProcessLogLevel::Info,
+        }
+    }
 
     #[test]
     fn lifecycle_command_group_supports_strings_arrays_and_objects() {
@@ -271,6 +284,36 @@ mod tests {
     }
 
     #[test]
+    fn host_lifecycle_request_supports_exec_commands() {
+        let request = host_lifecycle_request(
+            &[
+                "--log-level".to_string(),
+                "trace".to_string(),
+                "--terminal-columns".to_string(),
+                "120".to_string(),
+                "--terminal-rows".to_string(),
+                "40".to_string(),
+            ],
+            std::path::Path::new("/workspace"),
+            LifecycleCommand::Exec(vec![
+                "echo".to_string(),
+                "hello".to_string(),
+                "world".to_string(),
+            ]),
+        );
+
+        assert_eq!(request.program, "echo");
+        assert_eq!(request.args, vec!["hello".to_string(), "world".to_string()]);
+        assert_eq!(
+            request.cwd.as_deref(),
+            Some(std::path::Path::new("/workspace"))
+        );
+        assert_eq!(request.log_level, ProcessLogLevel::Trace);
+        assert_eq!(request.env.get("COLUMNS").map(String::as_str), Some("120"));
+        assert_eq!(request.env.get("LINES").map(String::as_str), Some("40"));
+    }
+
+    #[test]
     fn dotfiles_install_command_defaults_target_path_and_marker_folder() {
         let command = dotfiles_install_command(&[
             "--dotfiles-repository".to_string(),
@@ -281,5 +324,69 @@ mod tests {
         assert!(command.contains("https://github.com/owner/repo.git"));
         assert!(command.contains("~/.devcontainer/.dotfilesMarker"));
         assert!(command.contains("~/dotfiles"));
+    }
+
+    #[test]
+    fn dotfiles_install_command_supports_explicit_install_command_and_paths() {
+        let command = dotfiles_install_command(&[
+            "--dotfiles-repository".to_string(),
+            "git@github.com:owner/repo.git".to_string(),
+            "--dotfiles-install-command".to_string(),
+            "setup.sh".to_string(),
+            "--dotfiles-target-path".to_string(),
+            "/home/dev/dot files".to_string(),
+            "--container-data-folder".to_string(),
+            "/tmp/devcontainer-data/".to_string(),
+        ])
+        .expect("dotfiles command");
+
+        assert!(command.contains("'git@github.com:owner/repo.git'"));
+        assert!(command.contains("'/tmp/devcontainer-data/.dotfilesMarker'"));
+        assert!(command.contains("'/home/dev/dot files'"));
+        assert!(command.contains("install_path='./setup.sh'"));
+        assert!(command.contains("Could not locate 'setup.sh'"));
+    }
+
+    #[test]
+    fn run_process_group_reports_single_and_parallel_errors() {
+        let single_error =
+            run_process_group(vec![LifecycleCommand::Shell("single".to_string())], |_| {
+                Ok(shell_request("echo single-failed >&2; exit 7"))
+            })
+            .expect_err("single command failure");
+        assert_eq!(single_error, "single-failed");
+
+        let parallel_error = run_process_group(
+            vec![
+                LifecycleCommand::Shell("ok".to_string()),
+                LifecycleCommand::Shell("fail".to_string()),
+            ],
+            |command| {
+                let script = match command {
+                    LifecycleCommand::Shell(text) if text == "fail" => {
+                        "echo parallel-failed >&2; exit 9"
+                    }
+                    _ => "exit 0",
+                };
+                Ok(shell_request(script))
+            },
+        )
+        .expect_err("parallel command failure");
+        assert_eq!(parallel_error, "parallel-failed");
+
+        let build_error = run_process_group(
+            vec![
+                LifecycleCommand::Shell("ok".to_string()),
+                LifecycleCommand::Shell("bad-request".to_string()),
+            ],
+            |command| match command {
+                LifecycleCommand::Shell(text) if text == "bad-request" => {
+                    Err("request failed".to_string())
+                }
+                _ => Ok(shell_request("exit 0")),
+            },
+        )
+        .expect_err("request build failure");
+        assert_eq!(build_error, "request failed");
     }
 }

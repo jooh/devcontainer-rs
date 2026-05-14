@@ -568,13 +568,17 @@ fn target_container_labels(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::fs;
     use std::path::Path;
 
     use super::{
+        find_normalized_default_label_match, inspect_matched_default_id_labels,
         legacy_default_id_labels, matched_default_id_labels_for_platform,
-        normalized_default_label_match, DefaultLabelMatch,
+        normalized_default_label_match, parse_container_ids, ps_engine_args,
+        resolve_target_container_match, target_container_labels, DefaultLabelMatch,
     };
     use crate::commands::common;
+    use crate::test_support::{unique_temp_dir, write_executable_script};
 
     #[test]
     fn normalized_default_label_match_accepts_windows_path_casing_changes() {
@@ -708,6 +712,193 @@ mod tests {
                 common::DEVCONTAINER_LOCAL_FOLDER_LABEL.to_string(),
                 "/tmp/remill".to_string(),
             )]))
+        );
+    }
+
+    #[test]
+    fn target_container_helpers_parse_ids_args_and_workspace_only_labels() {
+        assert_eq!(
+            parse_container_ids("abc123\n\nbad id\n def456 \n"),
+            vec!["abc123".to_string(), "def456".to_string()]
+        );
+        assert_eq!(
+            ps_engine_args(&["a=b".to_string(), "c=d".to_string()], false),
+            vec![
+                "ps".to_string(),
+                "-q".to_string(),
+                "--filter".to_string(),
+                "label=a=b".to_string(),
+                "--filter".to_string(),
+                "label=c=d".to_string(),
+            ]
+        );
+        assert_eq!(
+            ps_engine_args(&["a=b".to_string()], true),
+            vec![
+                "ps".to_string(),
+                "-q".to_string(),
+                "-a".to_string(),
+                "--filter".to_string(),
+                "label=a=b".to_string(),
+            ]
+        );
+        assert_eq!(
+            target_container_labels(
+                &[
+                    "--id-label".to_string(),
+                    "custom=one".to_string(),
+                    "--id-label".to_string(),
+                    "other=two".to_string(),
+                ],
+                Some(Path::new("/workspace")),
+                None,
+            ),
+            vec!["custom=one".to_string(), "other=two".to_string()]
+        );
+
+        let workspace_only = target_container_labels(&[], Some(Path::new("/workspace")), None);
+        assert_eq!(workspace_only.len(), 1);
+        assert!(workspace_only[0].starts_with("devcontainer.local_folder="));
+        assert!(resolve_target_container_match(&[], None, None)
+            .expect_err("missing workspace should be reported")
+            .contains("Provide --container-id or --workspace-folder"));
+    }
+
+    #[test]
+    fn explicit_container_id_without_workspace_skips_label_inspection() {
+        let resolved = resolve_target_container_match(
+            &[
+                "--container-id".to_string(),
+                "explicit-container".to_string(),
+            ],
+            None,
+            None,
+        )
+        .expect("explicit container id should resolve");
+
+        assert_eq!(resolved.container_id, "explicit-container");
+        assert_eq!(resolved.id_labels, None);
+        assert_eq!(
+            inspect_matched_default_id_labels(&[], "explicit-container", None, None)
+                .expect("missing workspace skips inspection"),
+            None
+        );
+    }
+
+    #[test]
+    fn normalized_default_label_lookup_scans_candidates_and_prefers_current_match() {
+        let root = unique_temp_dir("devcontainer-discovery-current-test");
+        fs::create_dir_all(&root).expect("root dir");
+        let fake_engine = root.join("docker");
+        write_executable_script(
+            &fake_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  ps)
+    printf 'missing\nlegacy\ncurrent\nbad id\n'
+    ;;
+  inspect)
+    case "$2" in
+      missing)
+        printf '%s\n' '[{"Config":{}}]'
+        ;;
+      legacy)
+        printf '%s\n' '[{"Config":{"Labels":{"devcontainer.local_folder":"C:\\CodeBlocks\\remill"}}}]'
+        ;;
+      current)
+        printf '%s\n' '[{"Config":{"Labels":{"devcontainer.local_folder":"C:\\CodeBlocks\\remill","devcontainer.config_file":"C:\\CodeBlocks\\remill\\.devcontainer\\devcontainer.json","ignored":42}}}]'
+        ;;
+      *)
+        echo "unexpected container $2" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            fake_engine.display().to_string(),
+        ];
+
+        let target = find_normalized_default_label_match(
+            &args,
+            Some(Path::new("c:\\CodeBlocks\\remill")),
+            Some(Path::new(
+                "c:\\CodeBlocks\\remill\\.devcontainer\\devcontainer.json",
+            )),
+            true,
+        )
+        .expect("lookup should succeed")
+        .expect("current match should be found");
+
+        assert_eq!(target.container_id, "current");
+        assert_eq!(target.id_labels, None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn normalized_default_label_lookup_returns_legacy_match() {
+        let root = unique_temp_dir("devcontainer-discovery-legacy-test");
+        fs::create_dir_all(&root).expect("root dir");
+        let fake_engine = root.join("docker");
+        write_executable_script(
+            &fake_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  ps)
+    printf 'legacy\n'
+    ;;
+  inspect)
+    printf '%s\n' '[{"Config":{"Labels":{"devcontainer.local_folder":"C:\\CodeBlocks\\remill"}}}]'
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            fake_engine.display().to_string(),
+        ];
+
+        let target = find_normalized_default_label_match(
+            &args,
+            Some(Path::new("c:\\CodeBlocks\\remill")),
+            Some(Path::new(
+                "c:\\CodeBlocks\\remill\\.devcontainer\\devcontainer.json",
+            )),
+            false,
+        )
+        .expect("lookup should succeed")
+        .expect("legacy match should be returned");
+
+        assert_eq!(target.container_id, "legacy");
+        assert_eq!(
+            target.id_labels,
+            Some(HashMap::from([(
+                common::DEVCONTAINER_LOCAL_FOLDER_LABEL.to_string(),
+                "C:\\CodeBlocks\\remill".to_string(),
+            )]))
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn normalized_default_label_lookup_without_workspace_is_empty() {
+        assert_eq!(
+            find_normalized_default_label_match(&[], None, None, false)
+                .expect("missing workspace should not invoke engine"),
+            None
         );
     }
 }

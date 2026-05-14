@@ -412,3 +412,175 @@ fn merge_mounts(entries: &[Value]) -> Vec<Value> {
     collected.reverse();
     collected
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{
+        canonical_forward_port, merge_configuration, merge_gpu_requirement_values,
+        normalize_forward_port, parse_byte_string,
+    };
+
+    #[test]
+    fn merge_configuration_covers_metadata_unions_and_normalization() {
+        let merged = merge_configuration(
+            &json!({
+                "name": "demo",
+                "customizations": {
+                    "removed": true
+                },
+                "postCreateCommand": "removed"
+            }),
+            &[
+                json!({
+                    "init": true,
+                    "privileged": true,
+                    "capAdd": ["SYS_PTRACE", "SYS_PTRACE"],
+                    "securityOpt": ["seccomp=unconfined"],
+                    "entrypoint": "/entrypoint.sh",
+                    "mounts": [
+                        "source=old,target=/workspace,type=volume",
+                        true
+                    ],
+                    "customizations": {
+                        "vscode": {
+                            "extensions": ["a.extension"]
+                        }
+                    },
+                    "forwardPorts": [8080, "localhost:8080", false, "localhost:notaport"],
+                    "hostRequirements": {
+                        "cpus": 2,
+                        "memory": "1GiB",
+                        "storage": 500,
+                        "gpu": false
+                    }
+                }),
+                json!({
+                    "mounts": [
+                        {
+                            "type": "bind",
+                            "source": "/new",
+                            "target": "/workspace"
+                        },
+                        {
+                            "type": "volume"
+                        }
+                    ],
+                    "remoteEnv": {
+                        "DEMO": "1"
+                    },
+                    "containerEnv": {
+                        "CONTAINER": "1"
+                    },
+                    "portsAttributes": {
+                        "8080": {
+                            "label": "web"
+                        }
+                    },
+                    "otherPortsAttributes": {
+                        "onAutoForward": "silent"
+                    },
+                    "forwardPorts": ["localhost:3000", "service:5000"],
+                    "hostRequirements": {
+                        "cpus": 4.5,
+                        "memory": "2GB",
+                        "storage": "1TB",
+                        "gpu": {
+                            "cores": 2,
+                            "memory": "4GiB"
+                        }
+                    },
+                    "shutdownAction": "stopContainer",
+                    "updateRemoteUserUID": false
+                }),
+            ],
+        );
+
+        assert_eq!(merged["init"], true);
+        assert_eq!(merged["privileged"], true);
+        assert_eq!(merged["capAdd"], json!(["SYS_PTRACE"]));
+        assert_eq!(merged["securityOpt"], json!(["seccomp=unconfined"]));
+        assert_eq!(merged["entrypoints"], json!(["/entrypoint.sh"]));
+        assert_eq!(
+            merged["mounts"],
+            json!([
+                true,
+                {
+                    "type": "bind",
+                    "source": "/new",
+                    "target": "/workspace"
+                },
+                {
+                    "type": "volume"
+                }
+            ])
+        );
+        assert_eq!(
+            merged["forwardPorts"],
+            json!([8080, "localhost:notaport", 3000, "service:5000"])
+        );
+        assert_eq!(merged["remoteEnv"]["DEMO"], "1");
+        assert_eq!(merged["containerEnv"]["CONTAINER"], "1");
+        assert_eq!(merged["portsAttributes"]["8080"]["label"], "web");
+        assert_eq!(merged["otherPortsAttributes"]["onAutoForward"], "silent");
+        assert_eq!(merged["hostRequirements"]["cpus"], 4.5);
+        assert_eq!(merged["hostRequirements"]["memory"], "2000000000");
+        assert_eq!(merged["hostRequirements"]["storage"], "1000000000000");
+        assert_eq!(merged["hostRequirements"]["gpu"]["cores"], 2);
+        assert_eq!(merged["hostRequirements"]["gpu"]["memory"], "4GiB");
+        assert_eq!(merged["shutdownAction"], "stopContainer");
+        assert_eq!(merged["updateRemoteUserUID"], false);
+        assert!(merged.get("postCreateCommand").is_none());
+    }
+
+    #[test]
+    fn byte_port_and_gpu_helpers_cover_edge_cases() {
+        assert_eq!(parse_byte_string(""), 0);
+        assert_eq!(parse_byte_string("bad"), 0);
+        assert_eq!(parse_byte_string("1b"), 1);
+        assert_eq!(parse_byte_string("1kb"), 1_000);
+        assert_eq!(parse_byte_string("1mb"), 1_000_000);
+        assert_eq!(parse_byte_string("1gb"), 1_000_000_000);
+        assert_eq!(parse_byte_string("1tb"), 1_000_000_000_000);
+        assert_eq!(parse_byte_string("1kib"), 1_024);
+        assert_eq!(parse_byte_string("1mib"), 1_048_576);
+        assert_eq!(parse_byte_string("1gib"), 1_073_741_824);
+        assert_eq!(parse_byte_string("1tib"), 1_099_511_627_776);
+        assert_eq!(parse_byte_string("1unknown"), 0);
+        assert_eq!(normalize_forward_port(&json!(null)), None);
+        assert_eq!(canonical_forward_port(&json!(123)), None);
+        assert_eq!(
+            merge_gpu_requirement_values(&json!(false), &json!("optional")),
+            json!("optional")
+        );
+        assert_eq!(
+            merge_gpu_requirement_values(&json!({"cores": 1}), &json!(null)),
+            json!({"cores": 1})
+        );
+        assert_eq!(
+            merge_gpu_requirement_values(&json!("optional"), &json!("optional")),
+            json!("optional")
+        );
+        assert_eq!(
+            merge_gpu_requirement_values(&json!(true), &json!(true)),
+            json!(true)
+        );
+        assert_eq!(
+            merge_gpu_requirement_values(
+                &json!({
+                    "cores": 1,
+                    "memory": "1GiB"
+                }),
+                &json!({
+                    "cores": 2,
+                    "memory": "2GiB"
+                })
+            ),
+            json!({
+                "cores": 2,
+                "memory": "2147483648"
+            })
+        );
+    }
+}

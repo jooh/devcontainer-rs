@@ -117,12 +117,24 @@ fn ensure_feature_install_script(destination: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use serde_json::Value;
 
     use super::*;
     use crate::commands::configuration::features::types::{
         FeatureInstallation, FeatureInstallationSource,
     };
+
+    fn unique_test_dir(prefix: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{suffix}", std::process::id()))
+    }
 
     #[test]
     fn published_feature_installation_name_uses_safe_resource_slug() {
@@ -140,5 +152,108 @@ mod tests {
         };
 
         assert_eq!(feature_installation_name(&installation), "common-utils");
+    }
+
+    #[test]
+    fn local_feature_materialization_adds_missing_install_script() {
+        let workspace = unique_test_dir("devcontainer-install-local");
+        let source = workspace.join("feature with spaces");
+        let destination = workspace.join("materialized");
+        fs::create_dir_all(&source).expect("source dir");
+        fs::write(
+            source.join("devcontainer-feature.json"),
+            r#"{"id":"local-feature","version":"1.0.0"}"#,
+        )
+        .expect("manifest");
+        let installation = FeatureInstallation {
+            source: FeatureInstallationSource::Local(source.clone()),
+            env: Vec::new(),
+        };
+
+        materialize_feature_installation(&installation, &destination).expect("materialized");
+
+        assert_eq!(
+            feature_installation_name(&installation),
+            "feature-with-spaces"
+        );
+        assert!(destination.join("devcontainer-feature.json").is_file());
+        assert_eq!(
+            fs::read_to_string(destination.join("install.sh")).expect("install script"),
+            "#!/bin/sh\nset -eu\n"
+        );
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn direct_tarball_and_github_features_materialize_synthetic_files() {
+        let workspace = unique_test_dir("devcontainer-install-synthetic");
+        let tarball_destination = workspace.join("tarball");
+        let github_destination = workspace.join("github");
+        let tarball_uri = "https://github.com/codspace/features/releases/download/tarball02/devcontainer-feature-docker-in-docker.tgz";
+        let tarball = FeatureInstallation {
+            source: FeatureInstallationSource::DirectTarball(tarball_uri.to_string()),
+            env: Vec::new(),
+        };
+        let github = FeatureInstallation {
+            source: FeatureInstallationSource::GithubRepo(
+                "https://github.com/devcontainers/features/tree/main/src/demo-feature".to_string(),
+            ),
+            env: Vec::new(),
+        };
+
+        materialize_feature_installation(&tarball, &tarball_destination)
+            .expect("tarball materialized");
+        materialize_feature_installation(&github, &github_destination)
+            .expect("github materialized");
+
+        let tarball_manifest =
+            fs::read_to_string(tarball_destination.join("devcontainer-feature.json"))
+                .expect("tarball manifest");
+        assert!(tarball_manifest.contains(r#""id": "docker-in-docker""#));
+        assert!(tarball_destination.join("install.sh").is_file());
+        let github_manifest =
+            fs::read_to_string(github_destination.join("devcontainer-feature.json"))
+                .expect("github manifest");
+        assert!(github_manifest.contains(r#""id": "demo-feature""#));
+        assert!(github_destination.join("install.sh").is_file());
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn feature_installation_names_fall_back_for_unsafe_candidates() {
+        let local = FeatureInstallation {
+            source: FeatureInstallationSource::Local(PathBuf::from("!!!")),
+            env: Vec::new(),
+        };
+        let tarball = FeatureInstallation {
+            source: FeatureInstallationSource::DirectTarball("https://example.com/".into()),
+            env: Vec::new(),
+        };
+        let github = FeatureInstallation {
+            source: FeatureInstallationSource::GithubRepo("https://github.com/".into()),
+            env: Vec::new(),
+        };
+
+        assert_eq!(feature_installation_name(&local), "feature");
+        assert_eq!(feature_installation_name(&tarball), "tarball-feature");
+        assert_eq!(feature_installation_name(&github), "github-feature");
+    }
+
+    #[test]
+    fn unknown_direct_tarball_materialization_reports_feature_id() {
+        let destination = unique_test_dir("devcontainer-install-unknown");
+        let installation = FeatureInstallation {
+            source: FeatureInstallationSource::DirectTarball(
+                "https://example.com/missing.tgz".into(),
+            ),
+            env: Vec::new(),
+        };
+
+        let error = materialize_feature_installation(&installation, &destination).unwrap_err();
+
+        assert_eq!(
+            error,
+            "Unknown direct tarball feature: https://example.com/missing.tgz"
+        );
     }
 }

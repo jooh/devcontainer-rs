@@ -345,3 +345,273 @@ pub(super) fn parse_semver_prefix(value: &str) -> Option<(u64, u64, u64)> {
     let patch = parts.next().unwrap_or("0").parse().ok()?;
     Some((major, minor, patch))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use serde_json::json;
+
+    use super::{
+        compose_files, default_service_image_name, inspect_service_definition, parse_build_args,
+        parse_semver_prefix, parse_service_build, parse_service_command, read_version_prefix,
+        split_shell_words, yaml_scalar_to_string,
+    };
+    use crate::runtime::compose::ComposeSpec;
+
+    #[test]
+    fn compose_files_accept_strings_arrays_defaults_and_reject_invalid_entries() {
+        let root = crate::test_support::unique_temp_dir("devcontainer-compose-service-test");
+        let config_root = root.join(".devcontainer");
+        fs::create_dir_all(&config_root).expect("config root");
+        fs::write(
+            root.join(".env"),
+            "COMPOSE_FILE=compose.yml:sub/extra.yml\n",
+        )
+        .expect("env");
+
+        assert_eq!(
+            compose_files(
+                &json!({"dockerComposeFile": "docker-compose.yml"}),
+                &config_root,
+                &root,
+            )
+            .expect("single file"),
+            vec![config_root.join("docker-compose.yml")]
+        );
+        assert_eq!(
+            compose_files(
+                &json!({"dockerComposeFile": ["one.yml", "two.yml"]}),
+                &config_root,
+                &root,
+            )
+            .expect("array files"),
+            vec![config_root.join("one.yml"), config_root.join("two.yml")]
+        );
+        assert_eq!(
+            compose_files(&json!({"dockerComposeFile": []}), &config_root, &root)
+                .expect("default files"),
+            vec![root.join("compose.yml"), root.join("sub").join("extra.yml")]
+        );
+        assert!(
+            compose_files(&json!({"dockerComposeFile": [1]}), &config_root, &root)
+                .expect_err("invalid entry")
+                .contains("entries must be strings")
+        );
+        assert!(
+            compose_files(&json!({"dockerComposeFile": true}), &config_root, &root)
+                .expect_err("invalid type")
+                .contains("string or array")
+        );
+        assert!(compose_files(&json!({}), &config_root, &root)
+            .expect_err("missing file")
+            .contains("must define dockerComposeFile"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compose_files_default_to_standard_files_and_optional_override() {
+        let root = crate::test_support::unique_temp_dir("devcontainer-compose-service-test");
+        fs::create_dir_all(&root).expect("workspace");
+        fs::write(root.join("docker-compose.override.yml"), "services: {}\n").expect("override");
+
+        let files =
+            compose_files(&json!({"dockerComposeFile": []}), &root, &root).expect("default files");
+
+        assert_eq!(
+            files,
+            vec![
+                root.join("docker-compose.yml"),
+                root.join("docker-compose.override.yml")
+            ]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inspect_service_definition_merges_files_and_parses_runtime_fields() {
+        let root = crate::test_support::unique_temp_dir("devcontainer-compose-service-test");
+        let base = root.join("base.yml");
+        let override_file = root.join("override.yml");
+        fs::create_dir_all(&root).expect("compose root");
+        fs::write(
+            &base,
+            r#"
+services:
+  app:
+    image: base-image
+    build:
+      context: ./context
+      dockerfile: Dockerfile.dev
+      target: runtime
+      args:
+        STRING_ARG: value
+        BOOL_ARG: true
+        NUMBER_ARG: 42
+        NULL_ARG:
+        ignored:
+          nested: true
+    user: "1000:1000"
+    entrypoint: "/bin/sh -lc \"echo base\""
+    command: ["sleep", 1, true, null, { ignored: true }]
+"#,
+        )
+        .expect("base compose");
+        fs::write(
+            &override_file,
+            r#"
+services:
+  app:
+    image: override-image
+    command: echo override
+"#,
+        )
+        .expect("override compose");
+
+        let definition =
+            inspect_service_definition(&[base, override_file], "app").expect("definition");
+        let build = definition.build.expect("build info");
+
+        assert_eq!(definition.image.as_deref(), Some("override-image"));
+        assert!(definition.has_build);
+        assert_eq!(definition.user.as_deref(), Some("1000:1000"));
+        assert_eq!(
+            definition.entrypoint,
+            Some(vec![
+                "/bin/sh".to_string(),
+                "-lc".to_string(),
+                "echo base".to_string()
+            ])
+        );
+        assert_eq!(
+            definition.command,
+            Some(vec!["echo".to_string(), "override".to_string()])
+        );
+        assert_eq!(build.context, "./context");
+        assert_eq!(build.dockerfile_path, "Dockerfile.dev");
+        assert_eq!(build.target.as_deref(), Some("runtime"));
+        let args = build.args.expect("build args");
+        assert_eq!(args.get("STRING_ARG").map(String::as_str), Some("value"));
+        assert_eq!(args.get("BOOL_ARG").map(String::as_str), Some("true"));
+        assert_eq!(args.get("NUMBER_ARG").map(String::as_str), Some("42"));
+        assert_eq!(args.get("NULL_ARG").map(String::as_str), Some(""));
+        assert!(!args.contains_key("ignored"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inspect_service_definition_reports_missing_and_invalid_compose_files() {
+        let root = crate::test_support::unique_temp_dir("devcontainer-compose-service-test");
+        let compose_file = root.join("docker-compose.yml");
+        fs::create_dir_all(&root).expect("compose root");
+        fs::write(&compose_file, "services:\n  other:\n    image: alpine\n").expect("compose");
+
+        let error = match inspect_service_definition(std::slice::from_ref(&compose_file), "app") {
+            Ok(_) => panic!("missing service should fail"),
+            Err(error) => error,
+        };
+        assert!(
+            error.contains("Unable to locate compose service"),
+            "{error}"
+        );
+
+        fs::write(&compose_file, "services: [").expect("invalid compose");
+        let error = match inspect_service_definition(&[compose_file], "app") {
+            Ok(_) => panic!("invalid yaml should fail"),
+            Err(error) => error,
+        };
+        assert!(!error.is_empty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn service_build_and_command_parsers_handle_edge_shapes() {
+        assert_eq!(
+            parse_service_build(&serde_yaml::Value::Bool(true), "."),
+            None
+        );
+        let build = parse_service_build(
+            &serde_yaml::from_str(
+                r#"
+args:
+  one: 1
+  enabled: true
+  blank:
+  nested:
+    skip: true
+"#,
+            )
+            .expect("yaml"),
+            "/workspace",
+        )
+        .expect("mapping build");
+        assert_eq!(build.context, "/workspace");
+        assert_eq!(build.dockerfile_path, "Dockerfile");
+        assert_eq!(build.target, None);
+        assert_eq!(build.args.expect("args").len(), 3);
+
+        assert_eq!(
+            parse_build_args(&serde_yaml::from_str("[one, two]").expect("yaml")),
+            None
+        );
+        assert_eq!(
+            parse_service_command(&serde_yaml::Value::Null),
+            Some(Vec::new())
+        );
+        assert_eq!(parse_service_command(&serde_yaml::Value::Bool(true)), None);
+        assert_eq!(
+            yaml_scalar_to_string(&serde_yaml::Value::Bool(false)),
+            Some("false".into())
+        );
+        assert_eq!(
+            split_shell_words(
+                r#"cmd "two words" 'literal value' escaped\ space "quoted\"value" 'unterminated"#
+            ),
+            vec![
+                "cmd",
+                "two words",
+                "literal value",
+                "escaped space",
+                "quoted\"value",
+                "'unterminated",
+            ]
+        );
+    }
+
+    #[test]
+    fn version_prefix_and_image_name_helpers_cover_edge_cases() {
+        let root = crate::test_support::unique_temp_dir("devcontainer-compose-service-test");
+        let compose_file = root.join("docker-compose.yml");
+        fs::create_dir_all(&root).expect("compose root");
+        fs::write(
+            &compose_file,
+            "name: app\nversion: '3.9'\nservices:\n  app:\n    image: alpine\n",
+        )
+        .expect("compose");
+
+        assert_eq!(
+            read_version_prefix(std::slice::from_ref(&compose_file)).expect("version"),
+            "version: '3.9'\n\n"
+        );
+        assert_eq!(read_version_prefix(&[]).expect("empty"), "");
+        assert_eq!(parse_semver_prefix("v2.8"), Some((2, 8, 0)));
+        assert_eq!(parse_semver_prefix("2"), Some((2, 0, 0)));
+        assert_eq!(parse_semver_prefix("not-a-version"), None);
+
+        let spec = ComposeSpec {
+            files: vec![PathBuf::from("docker-compose.yml")],
+            service: "web".to_string(),
+            image: None,
+            has_build: false,
+            user: None,
+            project_name: "myproj".to_string(),
+        };
+        assert_eq!(default_service_image_name(&spec, &[]), "myproj-web");
+
+        let _ = fs::remove_dir_all(root);
+    }
+}

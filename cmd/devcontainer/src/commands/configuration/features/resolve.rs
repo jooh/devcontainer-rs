@@ -951,3 +951,479 @@ fn generic_feature_manifest(id: &str, version: String) -> Value {
         "options": {}
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::cmp::Ordering;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use serde_json::json;
+    use sha2::Digest;
+
+    use super::{
+        compare_options, compare_specs, compute_feature_install_order, declared_features,
+        feature_aliases, feature_depends_on, feature_installs_after, generic_feature_manifest,
+        github_repo_id_without_version, is_direct_tarball_reference,
+        is_github_repo_feature_reference, is_local_feature_reference,
+        is_registry_qualified_oci_reference, manifest_depends_on_entries,
+        node_satisfies_soft_dependency, resolve_feature_spec, resolve_local_feature_path,
+        sha256_integrity, verify_direct_tarball_lockfile_integrity, FeatureDependency,
+        FeatureInstallation, FeatureInstallationSource, FeatureNode, FeatureRequest, FeatureSource,
+        FeatureSpec, LockfileEntry, TempDownloadedTarball,
+    };
+
+    fn spec(
+        id: &str,
+        source: FeatureSource,
+        value: serde_json::Value,
+        aliases: &[&str],
+    ) -> FeatureSpec {
+        FeatureSpec {
+            user_feature_id: id.to_string(),
+            manifest: json!({
+                "id": id,
+                "version": "1.0.0"
+            }),
+            options: value.clone(),
+            value,
+            source_information: json!({}),
+            metadata_entry: json!({}),
+            installation: FeatureInstallation {
+                source: FeatureInstallationSource::Local(PathBuf::from("/unused")),
+                env: Vec::new(),
+            },
+            install_order_id: id.to_string(),
+            source,
+            aliases: aliases.iter().map(|alias| alias.to_string()).collect(),
+            depends_on: Vec::new(),
+            installs_after: Vec::new(),
+            lockfile_feature: None,
+        }
+    }
+
+    fn dependency(spec: &FeatureSpec) -> FeatureDependency {
+        FeatureDependency {
+            request: FeatureRequest {
+                user_feature_id: spec.user_feature_id.clone(),
+                options: spec.value.clone(),
+            },
+            spec: spec.clone(),
+        }
+    }
+
+    fn node(
+        spec: FeatureSpec,
+        depends_on: Vec<FeatureDependency>,
+        installs_after: Vec<FeatureDependency>,
+        round_priority: usize,
+    ) -> FeatureNode {
+        FeatureNode {
+            spec,
+            depends_on,
+            installs_after,
+            round_priority,
+        }
+    }
+
+    fn write_local_feature(feature_dir: &Path) {
+        fs::create_dir_all(feature_dir).expect("feature dir");
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            r#"{
+  "id": "demo",
+  "version": "1.0.0",
+  "legacyIds": ["legacy-demo"],
+  "dependsOn": {
+    "ghcr.io/devcontainers/features/common-utils": {
+      "installZsh": "false"
+    }
+  },
+  "installsAfter": [
+    "ghcr.io/devcontainers/features/git"
+  ],
+  "options": {
+    "flag": {
+      "type": "boolean",
+      "default": false
+    }
+  }
+}"#,
+        )
+        .expect("manifest");
+    }
+
+    #[test]
+    fn declared_features_merges_additional_features_and_rejects_non_objects() {
+        let declared = declared_features(
+            &[
+                "--additional-features".to_string(),
+                r#"{"ghcr.io/devcontainers/features/git":{"version":"latest"}}"#.to_string(),
+            ],
+            &json!({
+                "features": {
+                    "demo": {}
+                }
+            }),
+        )
+        .expect("declared features");
+
+        assert!(declared.contains_key("demo"));
+        assert!(declared.contains_key("ghcr.io/devcontainers/features/git"));
+        assert_eq!(
+            declared_features(
+                &["--additional-features".to_string(), "[]".to_string()],
+                &json!({})
+            )
+            .unwrap_err(),
+            "--additional-features must be a JSON object"
+        );
+    }
+
+    #[test]
+    fn compute_feature_install_order_respects_dependencies_priorities_and_cycles() {
+        let base = spec(
+            "base",
+            FeatureSource::Local {
+                resolved_path: "/features/base".to_string(),
+            },
+            json!({}),
+            &[],
+        );
+        let dependent = spec(
+            "dependent",
+            FeatureSource::Local {
+                resolved_path: "/features/dependent".to_string(),
+            },
+            json!({}),
+            &[],
+        );
+        let soft = spec(
+            "soft",
+            FeatureSource::Local {
+                resolved_path: "/features/soft".to_string(),
+            },
+            json!({}),
+            &[],
+        );
+        let ordered = compute_feature_install_order(vec![
+            node(dependent.clone(), vec![dependency(&base)], Vec::new(), 10),
+            node(base.clone(), Vec::new(), Vec::new(), 0),
+            node(soft.clone(), Vec::new(), vec![dependency(&base)], 5),
+        ])
+        .expect("order");
+
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|node| node.spec.user_feature_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["base", "dependent", "soft"]
+        );
+
+        let cycle_error = match compute_feature_install_order(vec![
+            node(base.clone(), vec![dependency(&dependent)], Vec::new(), 0),
+            node(dependent.clone(), vec![dependency(&base)], Vec::new(), 0),
+        ]) {
+            Ok(_) => panic!("expected circular dependency error"),
+            Err(error) => error,
+        };
+        assert!(cycle_error.contains("Circular feature dependency detected"));
+    }
+
+    #[test]
+    fn soft_dependency_matching_covers_source_kinds_and_aliases() {
+        let oci_dependency = spec(
+            "oci-current",
+            FeatureSource::Oci {
+                resource: "ghcr.io/acme/features/current".to_string(),
+                tag: None,
+                digest: "sha256:current".to_string(),
+            },
+            json!({}),
+            &["legacy"],
+        );
+        let oci_alias = spec(
+            "oci-legacy",
+            FeatureSource::Oci {
+                resource: "ghcr.io/acme/features/legacy".to_string(),
+                tag: Some("1".to_string()),
+                digest: "sha256:legacy".to_string(),
+            },
+            json!({}),
+            &[],
+        );
+        let local = spec(
+            "local",
+            FeatureSource::Local {
+                resolved_path: "/features/local".to_string(),
+            },
+            json!({}),
+            &[],
+        );
+        let direct = spec(
+            "direct",
+            FeatureSource::DirectTarball {
+                uri: "https://example.com/feature.tgz".to_string(),
+            },
+            json!({}),
+            &[],
+        );
+        let github = spec(
+            "github",
+            FeatureSource::GithubRepo {
+                id_without_version: "owner/repo".to_string(),
+            },
+            json!({}),
+            &[],
+        );
+
+        assert!(node_satisfies_soft_dependency(
+            &node(oci_alias, Vec::new(), Vec::new(), 0),
+            &dependency(&oci_dependency)
+        ));
+        assert!(node_satisfies_soft_dependency(
+            &node(local.clone(), Vec::new(), Vec::new(), 0),
+            &dependency(&local)
+        ));
+        assert!(node_satisfies_soft_dependency(
+            &node(direct.clone(), Vec::new(), Vec::new(), 0),
+            &dependency(&direct)
+        ));
+        assert!(node_satisfies_soft_dependency(
+            &node(github.clone(), Vec::new(), Vec::new(), 0),
+            &dependency(&github)
+        ));
+        assert!(!node_satisfies_soft_dependency(
+            &node(local, Vec::new(), Vec::new(), 0),
+            &dependency(&github)
+        ));
+    }
+
+    #[test]
+    fn comparison_helpers_cover_sources_and_json_option_types() {
+        let oci_a = spec(
+            "oci-a",
+            FeatureSource::Oci {
+                resource: "ghcr.io/acme/features/a".to_string(),
+                tag: Some("1".to_string()),
+                digest: "sha256:a".to_string(),
+            },
+            json!({"enabled": true}),
+            &[],
+        );
+        let oci_b = spec(
+            "oci-b",
+            FeatureSource::Oci {
+                resource: "ghcr.io/acme/features/b".to_string(),
+                tag: Some("2".to_string()),
+                digest: "sha256:b".to_string(),
+            },
+            json!({"enabled": false}),
+            &[],
+        );
+        let direct_a = spec(
+            "direct-a",
+            FeatureSource::DirectTarball {
+                uri: "https://example.com/a.tgz".to_string(),
+            },
+            json!({}),
+            &[],
+        );
+        let direct_b = spec(
+            "direct-b",
+            FeatureSource::DirectTarball {
+                uri: "https://example.com/b.tgz".to_string(),
+            },
+            json!({}),
+            &[],
+        );
+        let github_a = spec(
+            "github-a",
+            FeatureSource::GithubRepo {
+                id_without_version: "owner/a".to_string(),
+            },
+            json!({}),
+            &[],
+        );
+        let github_b = spec(
+            "github-b",
+            FeatureSource::GithubRepo {
+                id_without_version: "owner/b".to_string(),
+            },
+            json!({}),
+            &[],
+        );
+
+        assert_eq!(compare_specs(&oci_a, &oci_b), Ordering::Less);
+        assert_eq!(compare_specs(&direct_a, &direct_b), Ordering::Less);
+        assert_eq!(compare_specs(&github_a, &github_b), Ordering::Less);
+        assert_eq!(compare_options(&json!("a"), &json!("b")), Ordering::Less);
+        assert_eq!(compare_options(&json!(false), &json!(true)), Ordering::Less);
+        assert_eq!(
+            compare_options(&json!({"a": 1}), &json!({"a": 2})),
+            Ordering::Less
+        );
+        assert_eq!(compare_options(&json!(1), &json!(2)), Ordering::Less);
+        assert_eq!(compare_options(&json!(null), &json!(null)), Ordering::Equal);
+        assert_eq!(compare_options(&json!([1]), &json!([1, 2])), Ordering::Less);
+        assert_ne!(
+            compare_options(&json!(null), &json!(false)),
+            Ordering::Equal
+        );
+    }
+
+    #[test]
+    fn resolve_feature_spec_materializes_local_direct_tarball_and_github_sources() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-resolve-feature");
+        let config_root = workspace.join(".devcontainer");
+        let local_feature = config_root.join("features").join("demo");
+        write_local_feature(&local_feature);
+        let local = resolve_feature_spec(
+            "./features/demo",
+            &json!({
+                "flag": true
+            }),
+            &config_root,
+            &workspace,
+            None,
+        )
+        .expect("local spec");
+        let direct_uri = "https://github.com/codspace/tgz-features-with-dependson/releases/download/0.0.2/devcontainer-feature-A.tgz";
+        let direct = resolve_feature_spec(direct_uri, &json!({}), &config_root, &workspace, None)
+            .expect("direct spec");
+        let github = resolve_feature_spec(
+            "devcontainers/features/src/demo-feature@1.2.3",
+            &json!({}),
+            &config_root,
+            &workspace,
+            None,
+        )
+        .expect("github spec");
+
+        assert!(matches!(local.source, FeatureSource::Local { .. }));
+        assert!(local.aliases.contains(&"demo".to_string()));
+        assert!(local.aliases.contains(&"legacy-demo".to_string()));
+        assert_eq!(
+            local.depends_on[0].user_feature_id,
+            "ghcr.io/devcontainers/features/common-utils"
+        );
+        assert_eq!(
+            local.installs_after[0].user_feature_id,
+            "ghcr.io/devcontainers/features/git"
+        );
+        assert!(local.lockfile_feature.is_none());
+        assert!(matches!(direct.source, FeatureSource::DirectTarball { .. }));
+        assert_eq!(
+            direct
+                .lockfile_feature
+                .as_ref()
+                .expect("direct lockfile")
+                .version,
+            "2.0.1"
+        );
+        assert!(matches!(github.source, FeatureSource::GithubRepo { .. }));
+        assert_eq!(github.manifest["version"], "1.2.3");
+        assert!(github.lockfile_feature.is_none());
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn manifest_reference_and_integrity_helpers_cover_edge_cases() {
+        assert_eq!(
+            manifest_depends_on_entries(&json!({
+                "dependsOn": {
+                    "a": {},
+                    "b": {}
+                }
+            })),
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+        assert_eq!(
+            manifest_depends_on_entries(&json!({
+                "dependsOn": ["a", 1, "b"]
+            })),
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+        assert_eq!(
+            manifest_depends_on_entries(&json!({
+                "dependsOn": true
+            })),
+            None
+        );
+        assert_eq!(
+            feature_depends_on(&json!({
+                "dependsOn": {
+                    "a": {
+                        "value": true
+                    }
+                }
+            }))[0]
+                .options,
+            json!({
+                "value": true
+            })
+        );
+        assert_eq!(
+            feature_installs_after(&json!({
+                "installsAfter": ["a", 1, "b"]
+            }))
+            .iter()
+            .map(|request| request.user_feature_id.as_str())
+            .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        assert_eq!(
+            feature_aliases(&json!({
+                "currentId": "current",
+                "legacyIds": ["old", 1]
+            })),
+            vec!["current".to_string(), "old".to_string()]
+        );
+        assert!(is_local_feature_reference("file:///tmp/feature"));
+        assert!(is_direct_tarball_reference(
+            "https://example.com/feature.tgz"
+        ));
+        assert!(is_github_repo_feature_reference("owner/repo"));
+        assert!(!is_registry_qualified_oci_reference("owner/repo"));
+        assert!(is_registry_qualified_oci_reference(
+            "localhost/features/demo"
+        ));
+        assert_eq!(
+            resolve_local_feature_path(Path::new("/config"), "file:///tmp/feature"),
+            PathBuf::from("/tmp/feature")
+        );
+        assert_eq!(
+            github_repo_id_without_version("owner/repo@1.2.3"),
+            "owner/repo"
+        );
+        assert_eq!(
+            generic_feature_manifest("demo-feature", "1.0.0".to_string())["name"],
+            "Demo Feature"
+        );
+        assert_eq!(
+            sha256_integrity(b"demo"),
+            format!("sha256:{:x}", sha2::Sha256::digest(b"demo"))
+        );
+        let empty_lock = LockfileEntry {
+            version: "1.0.0".to_string(),
+            resolved: "https://example.com/feature.tgz".to_string(),
+            integrity: String::new(),
+            depends_on: None,
+        };
+        assert_eq!(
+            verify_direct_tarball_lockfile_integrity(
+                "https://example.com/feature.tgz",
+                &empty_lock
+            )
+            .expect("empty integrity"),
+            None
+        );
+        let temp_path = {
+            let temp = TempDownloadedTarball::new();
+            fs::write(&temp.path, "temporary").expect("temp write");
+            temp.path.clone()
+        };
+        assert!(!temp_path.exists());
+    }
+}
