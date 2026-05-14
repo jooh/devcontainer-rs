@@ -505,3 +505,158 @@ fn applied_template_config_path(workspace_root: &Path) -> Option<PathBuf> {
     .into_iter()
     .find(|path| path.is_file())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use serde_json::json;
+
+    use super::{
+        applied_template_config_path, apply_generic_published_template,
+        merge_extra_features_into_template, substitute_template_options, template_option_string,
+        template_option_values, template_path_is_omitted,
+    };
+
+    #[test]
+    fn template_option_values_merge_defaults_and_overrides() {
+        let manifest = json!({
+            "options": {
+                "channel": { "type": "string", "default": "stable" },
+                "enabled": { "type": "boolean", "default": true },
+                "missingDefault": { "type": "string" }
+            }
+        });
+        let options = template_option_values(
+            &manifest,
+            &json!({
+                "channel": "nightly",
+                "count": 3,
+            }),
+        );
+
+        assert_eq!(options["channel"], "nightly");
+        assert_eq!(options["enabled"], true);
+        assert_eq!(options["count"], 3);
+        assert!(!options.contains_key("missingDefault"));
+    }
+
+    #[test]
+    fn substitute_template_options_preserves_unknown_and_unclosed_placeholders() {
+        let options = template_option_values(
+            &json!({
+                "options": {
+                    "channel": { "type": "string", "default": "stable" },
+                    "enabled": { "type": "boolean", "default": true }
+                }
+            }),
+            &json!({}),
+        );
+
+        assert_eq!(
+            substitute_template_options(
+                "image:${templateOption:channel} enabled=${templateOption:enabled}",
+                &options,
+            ),
+            "image:stable enabled=true"
+        );
+        assert_eq!(
+            substitute_template_options("${templateOption:missing}", &options),
+            "${templateOption:missing}"
+        );
+        assert_eq!(
+            substitute_template_options("before ${templateOption:channel", &options),
+            "before ${templateOption:channel"
+        );
+        assert_eq!(template_option_string(&json!(["a", "b"])), "[\"a\",\"b\"]");
+    }
+
+    #[test]
+    fn omit_path_patterns_match_exact_files_and_directory_prefixes() {
+        assert!(template_path_is_omitted(
+            std::path::Path::new(".github/workflows/ci.yml"),
+            &[".github/*".to_string()]
+        ));
+        assert!(template_path_is_omitted(
+            std::path::Path::new("README.md"),
+            &["README.md".to_string()]
+        ));
+        assert!(!template_path_is_omitted(
+            std::path::Path::new("docs/README.md"),
+            &["README.md".to_string()]
+        ));
+    }
+
+    #[test]
+    fn generic_published_template_writes_config_and_merges_extra_features() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-template-test");
+        let payload = apply_generic_published_template(
+            &json!({
+                "id": "custom-template",
+                "name": "Custom Template"
+            }),
+            &workspace,
+            json!([
+                { "id": "ghcr.io/devcontainers/features/git:1", "options": { "ppa": true } },
+                { "name": "missing-id" }
+            ]),
+        )
+        .expect("apply generic template");
+
+        assert_eq!(
+            payload["files"],
+            json!(["./.devcontainer/devcontainer.json"])
+        );
+        let config_path = workspace.join(".devcontainer").join("devcontainer.json");
+        let config: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&config_path).expect("config"))
+                .expect("config json");
+        assert_eq!(config["name"], "Custom Template");
+        assert_eq!(
+            config["features"]["ghcr.io/devcontainers/features/git:1"]["ppa"],
+            true
+        );
+        assert_eq!(
+            applied_template_config_path(&workspace).as_deref(),
+            Some(config_path.as_path())
+        );
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn merge_extra_features_reports_missing_or_invalid_template_configs() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-template-test");
+        fs::create_dir_all(&workspace).expect("workspace");
+
+        let error = merge_extra_features_into_template(
+            &workspace,
+            json!([{ "id": "ghcr.io/devcontainers/features/git:1" }]),
+        )
+        .expect_err("missing config");
+        assert!(error.contains("missing a dev container config"), "{error}");
+
+        fs::write(workspace.join(".devcontainer.json"), "[]").expect("config");
+        let error = merge_extra_features_into_template(
+            &workspace,
+            json!([{ "id": "ghcr.io/devcontainers/features/git:1" }]),
+        )
+        .expect_err("invalid config");
+        assert!(error.contains("must be a JSON object"), "{error}");
+
+        fs::write(
+            workspace.join(".devcontainer.json"),
+            json!({"features": []}).to_string(),
+        )
+        .expect("config");
+        let error = merge_extra_features_into_template(
+            &workspace,
+            json!([{ "id": "ghcr.io/devcontainers/features/git:1" }]),
+        )
+        .expect_err("invalid features");
+        assert!(error.contains("features must be a JSON object"), "{error}");
+
+        merge_extra_features_into_template(&workspace, json!([])).expect("empty extras");
+        let _ = fs::remove_dir_all(workspace);
+    }
+}

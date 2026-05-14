@@ -1412,7 +1412,9 @@ fn parse_http_headers(raw_headers: &str) -> HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::fs;
     use std::io::Write;
+    use std::path::Path;
     use std::sync::{Arc, Mutex};
 
     use flate2::write::GzEncoder;
@@ -1421,8 +1423,12 @@ mod tests {
     use tar::{Builder, Header};
 
     use super::{
-        extract_feature_layer, feature_ref_json, parse_oci_reference,
-        resolve_feature_artifact_for_reference, OciHttpResponse, OciReference, OciTransport,
+        canonical_feature_id, challenge_parameters, compare_versions_asc, compare_versions_desc,
+        exact_semver, extract_feature_layer, feature_ref_json, fixture_tags,
+        is_registry_qualified_reference, list_feature_tags, materialize_feature_artifact,
+        parse_http_headers, parse_oci_reference, registry_blob, resolve_feature_artifact,
+        resolve_feature_artifact_for_reference, safe_archive_path, OciFeatureArtifact,
+        OciFeatureLayer, OciHttpResponse, OciReference, OciTransport, VersionSelector,
     };
 
     #[derive(Clone, Default)]
@@ -1496,6 +1502,84 @@ mod tests {
         archive
     }
 
+    fn write_local_layout_version(
+        workspace: &Path,
+        resource: &str,
+        tag: &str,
+        metadata: serde_json::Value,
+        layer: &[u8],
+    ) -> String {
+        let layout_dir = workspace
+            .join(".devcontainer")
+            .join("oci-layouts")
+            .join(resource);
+        fs::create_dir_all(layout_dir.join("blobs").join("sha256")).expect("layout blobs");
+        fs::write(
+            layout_dir.join("oci-layout"),
+            "{\n  \"imageLayoutVersion\": \"1.0.0\"\n}\n",
+        )
+        .expect("layout marker");
+
+        let layer_digest = super::sha256_digest(layer);
+        fs::write(
+            layout_dir.join("blobs").join("sha256").join(&layer_digest),
+            layer,
+        )
+        .expect("layer blob");
+        let manifest = json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "layers": [{
+                "mediaType": "application/vnd.devcontainers.layer.v1+tar",
+                "digest": format!("sha256:{layer_digest}"),
+                "size": layer.len(),
+            }],
+            "annotations": {
+                "dev.containers.metadata": metadata.to_string(),
+            },
+        });
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).expect("manifest bytes");
+        let manifest_digest = super::sha256_digest(&manifest_bytes);
+        fs::write(
+            layout_dir
+                .join("blobs")
+                .join("sha256")
+                .join(&manifest_digest),
+            &manifest_bytes,
+        )
+        .expect("manifest blob");
+
+        let mut manifests = if layout_dir.join("index.json").is_file() {
+            serde_json::from_str::<serde_json::Value>(
+                &fs::read_to_string(layout_dir.join("index.json")).expect("index"),
+            )
+            .expect("index json")["manifests"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        manifests.push(json!({
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": format!("sha256:{manifest_digest}"),
+            "size": manifest_bytes.len(),
+            "annotations": {
+                "org.opencontainers.image.ref.name": tag,
+            },
+        }));
+        fs::write(
+            layout_dir.join("index.json"),
+            serde_json::to_string_pretty(&json!({
+                "schemaVersion": 2,
+                "manifests": manifests,
+            }))
+            .expect("index payload"),
+        )
+        .expect("index write");
+        manifest_digest
+    }
+
     fn append_file<W: Write>(builder: &mut Builder<W>, path: &str, bytes: &[u8]) {
         append_file_with_mode(builder, path, bytes, 0o644);
     }
@@ -1517,6 +1601,13 @@ mod tests {
 
     #[test]
     fn parses_registry_refs_without_features_segment_and_with_ports() {
+        let short = parse_oci_reference("git").expect("short reference");
+        assert_eq!(short.registry, "ghcr.io");
+        assert_eq!(short.repository, "devcontainers/features/git");
+        assert_eq!(short.resource, "ghcr.io/devcontainers/features/git");
+        assert_eq!(short.tag, None);
+        assert_eq!(short.digest, None);
+
         let parsed =
             parse_oci_reference("ghcr.io/jooh/offline-apt-devcontainer-feature/offline-apt:1.0.0")
                 .expect("parsed");
@@ -1532,6 +1623,17 @@ mod tests {
         assert_eq!(parsed.registry, "localhost:5000");
         assert_eq!(parsed.repository, "acme/features/foo");
         assert_eq!(parsed.digest.as_deref(), Some("sha256:abc"));
+
+        assert!(is_registry_qualified_reference(
+            "localhost:5000/acme/features/foo"
+        ));
+        assert!(is_registry_qualified_reference(
+            "example.com/acme/features/foo"
+        ));
+        assert!(!is_registry_qualified_reference(
+            "https://example.com/feature.tgz"
+        ));
+        assert!(!is_registry_qualified_reference("file:///tmp/feature"));
     }
 
     #[test]
@@ -1637,6 +1739,129 @@ mod tests {
     }
 
     #[test]
+    fn registry_resolution_reports_manifest_and_tag_errors() {
+        let transport = FakeTransport::default();
+        let reference = OciReference {
+            original: "ghcr.io/acme/features/fake:1".to_string(),
+            resource: "ghcr.io/acme/features/fake".to_string(),
+            registry: "ghcr.io".to_string(),
+            repository: "acme/features/fake".to_string(),
+            tag: Some("1".to_string()),
+            digest: None,
+        };
+        transport.add(
+            "https://ghcr.io/v2/acme/features/fake/tags/list",
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: br#"{"tags":["0.9.0","2.0.0","dev"]}"#.to_vec(),
+            },
+        );
+
+        let error = resolve_feature_artifact_for_reference(&reference, None, &transport)
+            .expect_err("selector should not match");
+        assert!(error.contains("No published versions"), "{error}");
+
+        let transport = FakeTransport::default();
+        let reference = OciReference {
+            tag: Some("1.0.0".to_string()),
+            ..reference
+        };
+        transport.add(
+            "https://ghcr.io/v2/acme/features/fake/manifests/1.0.0",
+            OciHttpResponse {
+                status: 404,
+                headers: HashMap::new(),
+                body: Vec::new(),
+            },
+        );
+
+        let error = resolve_feature_artifact_for_reference(&reference, None, &transport)
+            .expect_err("manifest request should fail");
+        assert!(error.contains("HTTP 404"), "{error}");
+    }
+
+    #[test]
+    fn registry_resolution_falls_back_to_metadata_in_layer() {
+        let transport = FakeTransport::default();
+        let reference = OciReference {
+            original: "ghcr.io/acme/features/fake:1.0.0".to_string(),
+            resource: "ghcr.io/acme/features/fake".to_string(),
+            registry: "ghcr.io".to_string(),
+            repository: "acme/features/fake".to_string(),
+            tag: Some("1.0.0".to_string()),
+            digest: None,
+        };
+        let layer = layer_bytes_with_manifest(
+            false,
+            br#"{"id":"fake","version":"1.0.0","dependsOn":["ghcr.io/acme/features/base"]}"#,
+        );
+        let layer_digest = format!("sha256:{}", super::sha256_digest(&layer));
+        let manifest = json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "layers": [{
+                "mediaType": "application/vnd.devcontainers.layer.v1+tar",
+                "digest": layer_digest,
+            }],
+        });
+        transport.add(
+            "https://ghcr.io/v2/acme/features/fake/manifests/1.0.0",
+            manifest_response(&manifest),
+        );
+        transport.add(
+            &format!("https://ghcr.io/v2/acme/features/fake/blobs/{layer_digest}"),
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: layer,
+            },
+        );
+
+        let artifact =
+            resolve_feature_artifact_for_reference(&reference, None, &transport).expect("artifact");
+
+        assert_eq!(artifact.metadata["id"], "fake");
+        assert_eq!(
+            artifact.metadata["dependsOn"][0],
+            "ghcr.io/acme/features/base"
+        );
+        assert_eq!(
+            canonical_feature_id(&artifact),
+            format!("{}@{}", artifact.resource, artifact.manifest_digest)
+        );
+    }
+
+    #[test]
+    fn registry_blob_reports_non_success_status() {
+        let transport = FakeTransport::default();
+        let artifact = OciFeatureArtifact {
+            original_reference: "ghcr.io/acme/features/fake:1.0.0".to_string(),
+            resource: "ghcr.io/acme/features/fake".to_string(),
+            registry: "ghcr.io".to_string(),
+            repository: "acme/features/fake".to_string(),
+            tag: Some("1.0.0".to_string()),
+            reference_digest: None,
+            manifest_digest: "sha256:manifest".to_string(),
+            manifest: json!({}),
+            metadata: json!({}),
+            layer: OciFeatureLayer::Missing,
+        };
+        transport.add(
+            "https://ghcr.io/v2/acme/features/fake/blobs/sha256:layer",
+            OciHttpResponse {
+                status: 503,
+                headers: HashMap::new(),
+                body: Vec::new(),
+            },
+        );
+
+        let error = registry_blob(&artifact, "sha256:layer", &transport).expect_err("blob error");
+
+        assert!(error.contains("HTTP 503"), "{error}");
+    }
+
+    #[test]
     fn fixture_artifact_rejects_unmatched_digest_pin() {
         let reference = parse_oci_reference(
             "ghcr.io/devcontainers/features/common-utils@sha256:0000000000000000000000000000000000000000000000000000000000000000",
@@ -1679,6 +1904,100 @@ mod tests {
         .expect("digest artifact");
 
         assert_eq!(feature_ref_json(&digest_artifact)["digest"], digest);
+    }
+
+    #[test]
+    fn local_layout_resolution_supports_tags_selectors_and_digest_pins() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-oci-layout-test");
+        let resource = "ghcr.io/acme/features/local-feature";
+        let first_digest = write_local_layout_version(
+            &workspace,
+            resource,
+            "1.0.0",
+            json!({"id":"local-feature","version":"1.0.0"}),
+            &layer_bytes(false),
+        );
+        let second_digest = write_local_layout_version(
+            &workspace,
+            resource,
+            "1.2.0",
+            json!({"id":"local-feature","version":"1.2.0"}),
+            &layer_bytes(false),
+        );
+        write_local_layout_version(
+            &workspace,
+            resource,
+            "2.0.0",
+            json!({"id":"local-feature","version":"2.0.0"}),
+            &layer_bytes(false),
+        );
+
+        let exact = resolve_feature_artifact(
+            "ghcr.io/acme/features/local-feature:1.0.0",
+            Some(workspace.as_path()),
+        )
+        .expect("exact local artifact");
+        assert_eq!(exact.tag.as_deref(), Some("1.0.0"));
+        assert_eq!(exact.manifest_digest, format!("sha256:{first_digest}"));
+
+        let selected =
+            resolve_feature_artifact("ghcr.io/acme/features/local-feature:1", Some(&workspace))
+                .expect("selector local artifact");
+        assert_eq!(selected.tag.as_deref(), Some("1.2.0"));
+        assert_eq!(selected.manifest_digest, format!("sha256:{second_digest}"));
+
+        let digest_pinned = resolve_feature_artifact(
+            &format!("ghcr.io/acme/features/local-feature@sha256:{first_digest}"),
+            Some(workspace.as_path()),
+        )
+        .expect("digest local artifact");
+        let expected_reference_digest = format!("sha256:{first_digest}");
+        assert_eq!(
+            digest_pinned.reference_digest.as_deref(),
+            Some(expected_reference_digest.as_str())
+        );
+        assert_eq!(digest_pinned.tag, None);
+
+        let tags = list_feature_tags("ghcr.io/acme/features/local-feature", Some(&workspace))
+            .expect("local tags");
+        assert_eq!(tags, vec!["1.0.0", "1.2.0", "2.0.0"]);
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn local_layout_resolution_ignores_missing_and_malformed_selectors() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-oci-layout-test");
+        let resource = "ghcr.io/acme/features/local-feature";
+        write_local_layout_version(
+            &workspace,
+            resource,
+            "latest",
+            json!({"id":"local-feature","version":"latest"}),
+            &layer_bytes(false),
+        );
+
+        let latest =
+            resolve_feature_artifact("ghcr.io/acme/features/local-feature", Some(&workspace))
+                .expect("latest local artifact");
+        assert_eq!(latest.tag.as_deref(), Some("latest"));
+
+        let parsed = parse_oci_reference("ghcr.io/acme/features/local-feature:not-present")
+            .expect("reference");
+        let missing = super::local_layout_feature_artifact(&parsed, Some(workspace.as_path()))
+            .expect("local layout lookup");
+        assert!(missing.is_none());
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn fixture_tags_are_sorted_by_latest_semver() {
+        assert_eq!(
+            fixture_tags("ghcr.io/devcontainers/features/git").expect("fixture tags"),
+            vec!["1.2.0", "1.1.5", "1.0.5", "1.0.4"]
+        );
+        assert_eq!(fixture_tags("ghcr.io/unknown/features/nope"), None);
     }
 
     #[test]
@@ -1751,6 +2070,55 @@ mod tests {
     }
 
     #[test]
+    fn materialize_feature_artifact_handles_generated_missing_and_local_layers() {
+        let destination = crate::test_support::unique_temp_dir("devcontainer-oci-materialize-test");
+        let generated = OciFeatureArtifact {
+            original_reference: "ghcr.io/acme/features/generated:1.0.0".to_string(),
+            resource: "ghcr.io/acme/features/generated".to_string(),
+            registry: "ghcr.io".to_string(),
+            repository: "acme/features/generated".to_string(),
+            tag: Some("1.0.0".to_string()),
+            reference_digest: None,
+            manifest_digest: "sha256:generated".to_string(),
+            manifest: json!({}),
+            metadata: json!({"id":"generated","version":"1.0.0"}),
+            layer: OciFeatureLayer::Generated {
+                install_script: "#!/bin/sh\nset -eu\n".to_string(),
+            },
+        };
+
+        materialize_feature_artifact(&generated, &destination).expect("generated materialize");
+        assert!(destination.join("devcontainer-feature.json").is_file());
+        assert!(destination.join("install.sh").is_file());
+
+        let missing = OciFeatureArtifact {
+            layer: OciFeatureLayer::Missing,
+            ..generated
+        };
+        let error =
+            materialize_feature_artifact(&missing, &destination.join("missing")).expect_err("err");
+        assert!(error.contains("does not include"), "{error}");
+
+        let layer = layer_bytes(false);
+        let layer_digest = format!("sha256:{}", super::sha256_digest(&layer));
+        let layer_path = destination.join("layer.tar");
+        fs::write(&layer_path, &layer).expect("layer");
+        let local = OciFeatureArtifact {
+            layer: OciFeatureLayer::LocalPath {
+                digest: layer_digest,
+                media_type: "application/vnd.devcontainers.layer.v1+tar".to_string(),
+                path: layer_path,
+            },
+            ..missing
+        };
+        let local_destination = destination.join("local");
+        materialize_feature_artifact(&local, &local_destination).expect("local materialize");
+        assert!(local_destination.join("repo").join("data.txt").is_file());
+
+        let _ = fs::remove_dir_all(destination);
+    }
+
+    #[test]
     fn extracts_plain_and_gzip_feature_layers_safely() {
         for (gzip, media_type) in [
             (false, "application/vnd.devcontainers.layer.v1+tar"),
@@ -1792,5 +2160,80 @@ mod tests {
             & 0o777;
         assert_eq!(mode, 0o755);
         let _ = std::fs::remove_dir_all(destination);
+    }
+
+    #[test]
+    fn extract_feature_layer_rejects_unsafe_or_unsupported_entries() {
+        let destination = crate::test_support::unique_temp_dir("devcontainer-oci-unsafe-test");
+        let mut unsupported_archive = Vec::new();
+        {
+            let mut builder = Builder::new(&mut unsupported_archive);
+            let mut header = Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Symlink);
+            header.set_size(0);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "linked", &b""[..])
+                .expect("append symlink");
+            builder.finish().expect("finish archive");
+        }
+        let error = extract_feature_layer(
+            &unsupported_archive,
+            "application/vnd.devcontainers.layer.v1+tar",
+            &destination,
+        )
+        .expect_err("unsupported entry");
+        assert!(error.contains("unsupported archive entry"), "{error}");
+
+        assert_eq!(
+            safe_archive_path(Path::new("./nested/file")).expect("safe"),
+            Path::new("nested/file")
+        );
+        assert!(safe_archive_path(Path::new("/absolute")).is_err());
+        let _ = fs::remove_dir_all(destination);
+    }
+
+    #[test]
+    fn auth_and_header_helpers_parse_registry_shapes() {
+        assert_eq!(
+            challenge_parameters(
+                r#"realm="https://example.com/token",service="registry",scope="repo:pull""#
+            )
+            .get("scope")
+            .map(String::as_str),
+            Some("repo:pull")
+        );
+        assert_eq!(
+            parse_http_headers("HTTP/1.1 401 Unauthorized\r\nx-old: ignored\r\n\r\nHTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:abc\r\nContent-Type: application/json\r\n\r\n")
+                .get("docker-content-digest")
+                .map(String::as_str),
+            Some("sha256:abc")
+        );
+    }
+
+    #[test]
+    fn semver_selectors_and_comparison_helpers_match_expected_order() {
+        assert!(VersionSelector::parse("1").expect("major").matches("1.2.3"));
+        assert!(VersionSelector::parse("1.2")
+            .expect("minor")
+            .matches("1.2.3"));
+        assert!(!VersionSelector::parse("1.2")
+            .expect("minor")
+            .matches("1.3.0"));
+        assert!(VersionSelector::parse("1.2.3").is_none());
+        assert_eq!(exact_semver("1.2.3").expect("exact").major, 1);
+        assert_eq!(exact_semver("1.2"), None);
+        assert_eq!(
+            compare_versions_asc("1.2.0", "1.10.0"),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_versions_desc("1.2.0", "1.10.0"),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            compare_versions_asc("dev", "latest"),
+            std::cmp::Ordering::Less
+        );
     }
 }
