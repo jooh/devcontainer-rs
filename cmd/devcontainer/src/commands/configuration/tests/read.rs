@@ -14,7 +14,7 @@ use crate::commands::configuration::{
     apply_feature_metadata, apply_feature_metadata_with_options, build_read_configuration_payload,
     should_use_native_read_configuration,
 };
-use crate::test_support::write_test_control_manifest;
+use crate::test_support::{write_executable_script, write_test_control_manifest};
 
 fn upstream_feature_set_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -253,6 +253,79 @@ fn read_configuration_accepts_feature_resolution_flags() {
         "{\"ghcr.io/devcontainers/features/git:1\":{}}".to_string(),
         "--skip-feature-auto-mapping".to_string(),
     ]));
+}
+
+#[test]
+fn native_read_configuration_rejects_positional_args_and_unknown_flags() {
+    assert!(!should_use_native_read_configuration(&[
+        "positional".to_string(),
+        "--workspace-folder".to_string(),
+        "/workspace".to_string(),
+    ]));
+    assert!(!should_use_native_read_configuration(&[
+        "--workspace-folder".to_string(),
+        "/workspace".to_string(),
+        "--unknown".to_string(),
+    ]));
+}
+
+#[test]
+fn read_configuration_with_container_id_skips_feature_resolution() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    fs::create_dir_all(&config_dir).expect("config dir");
+    fs::write(
+        config_dir.join("devcontainer.json"),
+        r#"{
+  "image": "alpine:3.20",
+  "features": {
+    "./missing-feature": {}
+  },
+  "remoteEnv": {
+    "FROM_CONTAINER": "${containerEnv:FROM_IMAGE}"
+  }
+}"#,
+    )
+    .expect("config");
+    let engine = root.join("engine");
+    write_executable_script(
+        &engine,
+        r#"#!/bin/sh
+cat <<'JSON'
+[{
+  "Config": {
+    "Env": ["FROM_IMAGE=resolved"],
+    "Labels": {
+      "devcontainer.metadata": "{\"containerEnv\":{\"INSPECTED\":\"true\"}}"
+    }
+  }
+}]
+JSON
+"#,
+    );
+
+    let payload = build_read_configuration_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--container-id".to_string(),
+        "container-123".to_string(),
+        "--docker-path".to_string(),
+        engine.display().to_string(),
+        "--include-features-configuration".to_string(),
+        "--include-merged-configuration".to_string(),
+    ])
+    .expect("read configuration");
+
+    assert_eq!(payload["featuresConfiguration"], json!({"featureSets": []}));
+    assert_eq!(
+        payload["configuration"]["remoteEnv"]["FROM_CONTAINER"],
+        "resolved"
+    );
+    assert_eq!(
+        payload["mergedConfiguration"]["containerEnv"]["INSPECTED"],
+        "true"
+    );
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

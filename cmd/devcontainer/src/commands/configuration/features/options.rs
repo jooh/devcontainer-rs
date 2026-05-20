@@ -199,6 +199,22 @@ mod tests {
     }
 
     #[test]
+    fn feature_object_ignores_non_collection_legacy_customizations() {
+        let feature = feature_object(
+            &json!({
+                "id": "demo",
+                "extensions": "legacy.extension",
+                "settings": ["legacy.setting"]
+            }),
+            &json!({}),
+            &json!({}),
+        );
+
+        assert_eq!(feature["customizations"]["vscode"]["extensions"], json!([]));
+        assert_eq!(feature["customizations"]["vscode"]["settings"], json!({}));
+    }
+
+    #[test]
     fn feature_options_merge_non_object_manifests_and_json_env_values() {
         assert_eq!(
             feature_options(

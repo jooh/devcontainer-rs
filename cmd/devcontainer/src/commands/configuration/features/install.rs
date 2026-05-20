@@ -220,6 +220,30 @@ mod tests {
     }
 
     #[test]
+    fn github_feature_without_published_manifest_materializes_generic_manifest() {
+        let workspace = unique_test_dir("devcontainer-install-github-generic");
+        let destination = workspace.join("github");
+        let github = FeatureInstallation {
+            source: FeatureInstallationSource::GithubRepo(
+                "https://github.com/example/widgets/tree/main/src/unknown-widget".to_string(),
+            ),
+            env: Vec::new(),
+        };
+
+        materialize_feature_installation(&github, &destination).expect("github materialized");
+
+        let manifest: Value = serde_json::from_str(
+            &fs::read_to_string(destination.join("devcontainer-feature.json"))
+                .expect("github manifest"),
+        )
+        .expect("manifest json");
+        assert_eq!(manifest["id"], "unknown-widget");
+        assert_eq!(manifest["version"], "latest");
+        assert!(destination.join("install.sh").is_file());
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
     fn feature_installation_names_fall_back_for_unsafe_candidates() {
         let local = FeatureInstallation {
             source: FeatureInstallationSource::Local(PathBuf::from("!!!")),

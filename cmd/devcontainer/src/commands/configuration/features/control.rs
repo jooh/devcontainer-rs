@@ -1,6 +1,5 @@
 //! Control-manifest helpers for disallowed Features and future advisory support.
 
-use std::env;
 use std::fs;
 use std::path::PathBuf;
 
@@ -113,13 +112,15 @@ fn control_manifest_path(args: &[String]) -> PathBuf {
         .join("control-manifest.json")
 }
 
+#[cfg(target_os = "linux")]
 fn default_user_data_folder() -> PathBuf {
-    if cfg!(target_os = "linux") {
-        let username = env::var("USER").unwrap_or_else(|_| "unknown".to_string());
-        return env::temp_dir().join(format!("devcontainercli-{username}"));
-    }
+    let username = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
+    std::env::temp_dir().join(format!("devcontainercli-{username}"))
+}
 
-    env::temp_dir().join("devcontainercli")
+#[cfg(not(target_os = "linux"))]
+fn default_user_data_folder() -> PathBuf {
+    std::env::temp_dir().join("devcontainercli")
 }
 
 fn sanitize_control_manifest(value: &Value) -> DevContainerControlManifest {
@@ -231,7 +232,7 @@ mod tests {
 
     use super::{
         ensure_no_disallowed_features, feature_advisories_for_oci_features, feature_matches_prefix,
-        sanitize_control_manifest,
+        feature_version_is_affected, parse_version, sanitize_control_manifest,
     };
     use crate::test_support::{unique_temp_dir, write_test_control_manifest};
 
@@ -282,6 +283,11 @@ mod tests {
         )
         .expect("allowed features");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ensure_no_disallowed_features_returns_early_without_declared_features() {
+        ensure_no_disallowed_features(&[], &Map::new()).expect("empty feature set");
     }
 
     #[test]
@@ -485,5 +491,21 @@ mod tests {
 
         assert_eq!(manifest.disallowed_features.len(), 1);
         assert_eq!(manifest.feature_advisories.len(), 1);
+    }
+
+    #[test]
+    fn sanitize_control_manifest_defaults_for_non_object_values() {
+        let manifest = sanitize_control_manifest(&json!("not-object"));
+
+        assert!(manifest.disallowed_features.is_empty());
+        assert!(manifest.feature_advisories.is_empty());
+    }
+
+    #[test]
+    fn feature_version_matching_rejects_invalid_versions() {
+        assert!(!feature_version_is_affected("bad", "1.0.0", "2.0.0"));
+        assert!(!feature_version_is_affected("1.0.0", "bad", "2.0.0"));
+        assert!(!feature_version_is_affected("1.0.0", "1.0.0", "bad"));
+        assert_eq!(parse_version("1.2.3.4"), None);
     }
 }
