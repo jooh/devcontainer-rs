@@ -3,7 +3,7 @@
 use serde_json::json;
 use std::fs;
 
-use super::build_service;
+use super::args::reject_unsupported_build_options;
 use super::override_file::compose_metadata_override_file;
 use super::project::{
     compose_name_from_file, compose_project_name, sanitize_project_name,
@@ -13,7 +13,19 @@ use super::service::{
     compose_image_name_separator, inspect_service_definition, parse_semver_prefix,
 };
 use super::uses_compose_config;
+use super::{build_service, load_compose_spec, resolve_container_id, up_service};
 use crate::test_support::{init_git_repo, run_git, unique_temp_dir, write_executable_script};
+
+fn compose_resolved(
+    root: &std::path::Path,
+    configuration: serde_json::Value,
+) -> crate::runtime::context::ResolvedConfig {
+    crate::runtime::context::ResolvedConfig {
+        workspace_folder: root.to_path_buf(),
+        config_file: root.join(".devcontainer.json"),
+        configuration,
+    }
+}
 
 #[test]
 fn detects_compose_configs() {
@@ -881,5 +893,227 @@ fn compose_feature_build_enforces_frozen_lockfile() {
 
     assert_eq!(error, "Lockfile does not exist.");
 
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn build_service_runs_compose_build_with_cache_from_override_and_reports_failure() {
+    let root = unique_temp_dir("devcontainer-compose-build-test");
+    fs::create_dir_all(root.join(".devcontainer")).expect("config dir");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: example/app:base\n    build:\n      context: .\n      dockerfile: Dockerfile\n",
+    )
+    .expect("compose file");
+    fs::write(root.join("Dockerfile"), "FROM alpine:3.20\n").expect("dockerfile");
+    let fake_compose = root.join("compose");
+    let log = root.join("compose.log");
+    write_executable_script(
+        &fake_compose,
+        &format!(
+            r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> '{}'
+if [ -f "$(dirname "$0")/compose-fails" ]; then
+  echo "compose build failed" >&2
+  exit 8
+fi
+exit 0
+"#,
+            log.display()
+        ),
+    );
+    let resolved = compose_resolved(
+        &root,
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+    let args = vec![
+        "--docker-compose-path".to_string(),
+        fake_compose.display().to_string(),
+        "--cache-from".to_string(),
+        "type=registry,ref=example/cache:old".to_string(),
+        "--build-no-cache".to_string(),
+    ];
+
+    let image = build_service(&resolved, &args).expect("compose build");
+    fs::write(root.join("compose-fails"), "").expect("failure flag");
+    let error = build_service(&resolved, &args).expect_err("compose build failure");
+    let invocations = fs::read_to_string(log).expect("compose log");
+
+    assert_eq!(image, "example/app:base");
+    assert!(invocations.contains(" build --pull --no-cache app"));
+    assert!(error.contains("compose build failed"), "{error}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn up_service_respects_run_services_no_recreate_and_reports_compose_failure() {
+    let root = unique_temp_dir("devcontainer-compose-up-test");
+    fs::create_dir_all(root.join(".devcontainer")).expect("config dir");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: example/app:base\n  db:\n    image: postgres:16\n",
+    )
+    .expect("compose file");
+    let fake_compose = root.join("compose");
+    let log = root.join("compose.log");
+    write_executable_script(
+        &fake_compose,
+        &format!(
+            r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> '{}'
+echo "compose up failed" >&2
+exit 4
+"#,
+            log.display()
+        ),
+    );
+    let resolved = compose_resolved(
+        &root,
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app",
+            "runServices": ["db"]
+        }),
+    );
+
+    let error = up_service(
+        &resolved,
+        &[
+            "--docker-compose-path".to_string(),
+            fake_compose.display().to_string(),
+        ],
+        "/workspace",
+        "example/app:override",
+        true,
+    )
+    .expect_err("compose up failure");
+    let invocations = fs::read_to_string(log).expect("compose log");
+
+    assert!(error.contains("compose up failed"), "{error}");
+    assert!(invocations.contains(" up -d --no-recreate db app"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn resolve_container_id_filters_project_and_service_and_ignores_invalid_ids() {
+    let root = unique_temp_dir("devcontainer-compose-ps-test");
+    fs::create_dir_all(root.join(".devcontainer")).expect("config dir");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "name: Filter_Project\nservices:\n  app:\n    image: example/app:base\n",
+    )
+    .expect("compose file");
+    let fake_engine = root.join("docker");
+    let log = root.join("engine.log");
+    write_executable_script(
+        &fake_engine,
+        &format!(
+            r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> '{}'
+if [ "$1" = ps ]; then
+  printf '\ninvalid id\ncontainer-123\n'
+  exit 0
+fi
+exit 2
+"#,
+            log.display()
+        ),
+    );
+    let resolved = compose_resolved(
+        &root,
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+
+    let container_id = resolve_container_id(
+        &resolved,
+        &[
+            "--docker-path".to_string(),
+            fake_engine.display().to_string(),
+        ],
+    )
+    .expect("resolve")
+    .expect("container");
+    let invocation = fs::read_to_string(log).expect("engine log");
+
+    assert_eq!(container_id, "container-123");
+    assert!(invocation.contains("label=com.docker.compose.project=filter_project"));
+    assert!(invocation.contains("label=com.docker.compose.service=app"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn reject_unsupported_build_options_rejects_label_cache_output_platform_push() {
+    assert_eq!(
+        reject_unsupported_build_options(&["--label".to_string(), "a=b".to_string()])
+            .expect_err("label"),
+        "--label not supported for compose builds."
+    );
+    assert_eq!(
+        reject_unsupported_build_options(&["--cache-to".to_string(), "type=inline".to_string()])
+            .expect_err("cache-to"),
+        "--cache-to not supported for compose builds."
+    );
+    assert_eq!(
+        reject_unsupported_build_options(&["--output".to_string(), "type=local".to_string()])
+            .expect_err("output"),
+        "--output not supported.".to_string()
+    );
+    assert_eq!(
+        reject_unsupported_build_options(&["--platform".to_string(), "linux/amd64".to_string()])
+            .expect_err("platform"),
+        "--platform or --push not supported."
+    );
+    assert_eq!(
+        reject_unsupported_build_options(&["--push".to_string()]).expect_err("push"),
+        "--platform or --push not supported."
+    );
+}
+
+#[test]
+fn load_compose_spec_reports_missing_service_and_reads_user_image_build() {
+    let root = unique_temp_dir("devcontainer-compose-spec-test");
+    fs::create_dir_all(root.join(".devcontainer")).expect("config dir");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: example/app:base\n    user: vscode\n    build:\n      context: .\n",
+    )
+    .expect("compose file");
+    let missing = compose_resolved(
+        &root,
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "missing"
+        }),
+    );
+    let resolved = compose_resolved(
+        &root,
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+
+    let error = load_compose_spec(&missing).err().expect("missing service");
+    let spec = load_compose_spec(&resolved)
+        .expect("load spec")
+        .expect("compose spec");
+
+    assert!(
+        error.contains("Unable to locate compose service `missing`"),
+        "{error}"
+    );
+    assert_eq!(spec.service, "app");
+    assert_eq!(spec.image.as_deref(), Some("example/app:base"));
+    assert_eq!(spec.user.as_deref(), Some("vscode"));
+    assert!(spec.has_build);
     let _ = fs::remove_dir_all(root);
 }
