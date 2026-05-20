@@ -70,16 +70,18 @@ fn retry_executable_file_busy<T>(
 ) -> Result<T, io::Error> {
     const MAX_ATTEMPTS: u32 = 4;
 
-    for attempt in 1..=MAX_ATTEMPTS {
-        match run() {
-            Err(error) if is_executable_file_busy(&error) && attempt < MAX_ATTEMPTS => {
+    let mut attempt = 1;
+    loop {
+        let result = run();
+        if let Err(error) = &result {
+            if is_executable_file_busy(error) && attempt < MAX_ATTEMPTS {
                 thread::sleep(Duration::from_millis(10 * u64::from(attempt)));
+                attempt += 1;
+                continue;
             }
-            result => return result,
         }
+        return result;
     }
-
-    unreachable!("retry loop always returns from the final attempt")
 }
 
 fn is_executable_file_busy(error: &io::Error) -> bool {
@@ -156,8 +158,8 @@ fn env_summary_entries(request: &ProcessRequest) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        command_summary, env_summary_entries, run_process, run_process_streaming, ProcessLogLevel,
-        ProcessRequest,
+        command_summary, env_summary_entries, log_request, log_result, run_process,
+        run_process_streaming, ProcessLogLevel, ProcessRequest,
     };
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -226,6 +228,19 @@ mod tests {
             env_summary_entries(&request),
             vec!["COLUMNS=120".to_string(), "LINES=40".to_string()]
         );
+        log_request(&request);
+        log_result(&request, 7);
+    }
+
+    #[test]
+    fn debug_request_logging_emits_command_summary_only() {
+        log_request(&ProcessRequest {
+            program: "docker".to_string(),
+            args: vec!["version".to_string()],
+            cwd: None,
+            env: HashMap::new(),
+            log_level: ProcessLogLevel::Debug,
+        });
     }
 
     #[test]
@@ -250,5 +265,19 @@ mod tests {
             command_summary(&request),
             "docker exec -e TOKEN=<redacted> --env API_KEY=<redacted> --env=SESSION=<redacted> container"
         );
+
+        let request = ProcessRequest {
+            program: "docker".to_string(),
+            args: vec![
+                "exec".to_string(),
+                "-e".to_string(),
+                "MALFORMED".to_string(),
+            ],
+            cwd: None,
+            env: HashMap::new(),
+            log_level: ProcessLogLevel::Debug,
+        };
+
+        assert_eq!(command_summary(&request), "docker exec -e MALFORMED");
     }
 }
