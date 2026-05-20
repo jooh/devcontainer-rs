@@ -784,8 +784,9 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        ensure_dockerfile_has_final_stage_name, extract_directives, extract_dockerfile,
-        find_base_image, find_user_statement, parse_from_line, parse_instruction_line,
+        dockerfile_syntax_version, ensure_dockerfile_has_final_stage_name, extract_directives,
+        extract_dockerfile, find_base_image, find_user_statement,
+        numeric_version_supports_build_contexts, parse_from_line, parse_instruction_line,
         parse_variable_expression, replace_variables, supports_build_contexts, BuildContextSupport,
         ScopeId,
     };
@@ -887,6 +888,7 @@ COPY src dest
 
         assert!(parse_from_line("RUN echo no-from").is_none());
         assert!(parse_instruction_line("ENV").is_none());
+        assert!(parse_instruction_line("ENV =value").is_none());
         assert_eq!(parse_instruction_line("ARG NAME").expect("arg").value, None);
 
         assert!(extract_directives("# malformed\n# syntax=docker/dockerfile:1.4").is_empty());
@@ -1165,6 +1167,12 @@ USER ${TARGETUSER:-root}
     #[test]
     fn detects_build_context_support_from_syntax_directives() {
         assert_eq!(
+            dockerfile_syntax_version("docker/dockerfile").as_deref(),
+            Some("latest")
+        );
+        assert!(numeric_version_supports_build_contexts("1"));
+        assert!(!numeric_version_supports_build_contexts("not-a-version"));
+        assert_eq!(
             supports_build_contexts(&extract_dockerfile("FROM debian")),
             BuildContextSupport::Unsupported
         );
@@ -1191,6 +1199,33 @@ USER ${TARGETUSER:-root}
                 "# syntax=mycompany/myimage:1.4\nFROM debian"
             )),
             BuildContextSupport::Unknown
+        );
+    }
+
+    #[test]
+    fn arg_expansion_supports_nested_defaults_and_detects_cycles() {
+        let nested_arg = extract_dockerfile(
+            r#"
+ARG BASE=alpine
+ARG IMAGE=${BASE}
+FROM ${IMAGE}
+"#,
+        );
+        assert_eq!(
+            find_base_image(&nested_arg, &HashMap::new(), None, &HashMap::new()).as_deref(),
+            Some("alpine")
+        );
+
+        let cyclic_arg = extract_dockerfile(
+            r#"
+ARG A=${B}
+ARG B=${A}
+FROM ${A}
+"#,
+        );
+        assert_eq!(
+            find_base_image(&cyclic_arg, &HashMap::new(), None, &HashMap::new()).as_deref(),
+            Some("")
         );
     }
 }
