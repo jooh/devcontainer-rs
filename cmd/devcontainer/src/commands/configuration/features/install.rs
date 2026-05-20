@@ -51,16 +51,16 @@ pub(crate) fn feature_installation_name(installation: &FeatureInstallation) -> S
                 .map(str::to_string),
             "feature",
         ),
-        FeatureInstallationSource::Published(artifact) => safe_feature_installation_name(
-            collection_slug(&artifact.resource).or_else(|| {
+        FeatureInstallationSource::Published(artifact) => collection_slug(&artifact.resource)
+            .and_then(|value| safe_path_segment(&value))
+            .or_else(|| {
                 artifact
                     .metadata
                     .get("id")
                     .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            }),
-            "published-feature",
-        ),
+                    .and_then(safe_path_segment)
+            })
+            .unwrap_or_else(|| "published-feature".to_string()),
         FeatureInstallationSource::DirectTarball(uri) => {
             safe_feature_installation_name(collection_slug(uri), "tarball-feature")
         }
@@ -152,6 +152,28 @@ mod tests {
         };
 
         assert_eq!(feature_installation_name(&installation), "common-utils");
+    }
+
+    #[test]
+    fn published_feature_installation_name_falls_back_to_metadata_id() {
+        let mut artifact =
+            oci::resolve_feature_artifact("ghcr.io/devcontainers/features/common-utils", None)
+                .expect("artifact");
+        artifact.resource = "!!!".to_string();
+        artifact
+            .metadata
+            .as_object_mut()
+            .expect("metadata object")
+            .insert(
+                "id".to_string(),
+                Value::String("metadata-feature".to_string()),
+            );
+        let installation = FeatureInstallation {
+            source: FeatureInstallationSource::Published(Box::new(artifact)),
+            env: Vec::new(),
+        };
+
+        assert_eq!(feature_installation_name(&installation), "metadata-feature");
     }
 
     #[test]

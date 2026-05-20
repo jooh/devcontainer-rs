@@ -1198,6 +1198,34 @@ mod tests {
             &node(local, Vec::new(), Vec::new(), 0),
             &dependency(&github)
         ));
+        let unqualified_oci = spec(
+            "oci-unqualified",
+            FeatureSource::Oci {
+                resource: "legacy".to_string(),
+                tag: None,
+                digest: "sha256:legacy".to_string(),
+            },
+            json!({}),
+            &[],
+        );
+        assert!(!node_satisfies_soft_dependency(
+            &node(
+                spec(
+                    "oci-current",
+                    FeatureSource::Oci {
+                        resource: "ghcr.io/acme/features/current".to_string(),
+                        tag: None,
+                        digest: "sha256:current".to_string(),
+                    },
+                    json!({}),
+                    &[],
+                ),
+                Vec::new(),
+                Vec::new(),
+                0,
+            ),
+            &dependency(&unqualified_oci)
+        ));
     }
 
     #[test]
@@ -1267,10 +1295,17 @@ mod tests {
         assert_eq!(compare_options(&json!(1), &json!(2)), Ordering::Less);
         assert_eq!(compare_options(&json!(null), &json!(null)), Ordering::Equal);
         assert_eq!(compare_options(&json!([1]), &json!([1, 2])), Ordering::Less);
+        assert_eq!(
+            compare_options(&json!([1, 2]), &json!([1, 3])),
+            Ordering::Less
+        );
         assert_ne!(
             compare_options(&json!(null), &json!(false)),
             Ordering::Equal
         );
+        assert_ne!(compare_options(&json!(1), &json!("1")), Ordering::Equal);
+        assert_ne!(compare_options(&json!("1"), &json!([1])), Ordering::Equal);
+        assert_ne!(compare_options(&json!([1]), &json!({})), Ordering::Equal);
     }
 
     #[test]
@@ -1325,6 +1360,17 @@ mod tests {
         assert!(matches!(github.source, FeatureSource::GithubRepo { .. }));
         assert_eq!(github.manifest["version"], "1.2.3");
         assert!(github.lockfile_feature.is_none());
+
+        let generic_github = resolve_feature_spec(
+            "example/features/src/unknown-feature@2.0.0",
+            &json!({}),
+            &config_root,
+            &workspace,
+            None,
+        )
+        .expect("generic github spec");
+        assert_eq!(generic_github.manifest["id"], "unknown-feature");
+        assert_eq!(generic_github.manifest["version"], "2.0.0");
         let _ = fs::remove_dir_all(workspace);
     }
 
@@ -1502,6 +1548,18 @@ mod tests {
             .expect("empty integrity"),
             None
         );
+        let wrong_lock = LockfileEntry {
+            version: "1.0.0".to_string(),
+            resolved: "https://github.com/codspace/features/releases/download/tarball02/devcontainer-feature-docker-in-docker.tgz".to_string(),
+            integrity: "sha256:not-the-archive".to_string(),
+            depends_on: None,
+        };
+        let error = verify_direct_tarball_lockfile_integrity(
+            "https://github.com/codspace/features/releases/download/tarball02/devcontainer-feature-docker-in-docker.tgz",
+            &wrong_lock,
+        )
+        .expect_err("digest mismatch");
+        assert!(error.contains("Digest did not match for"));
         let temp_path = {
             let temp = TempDownloadedTarball::new();
             fs::write(&temp.path, "temporary").expect("temp write");
