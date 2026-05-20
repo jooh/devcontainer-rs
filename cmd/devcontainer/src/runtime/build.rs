@@ -361,6 +361,10 @@ mod tests {
 
         assert!(!is_buildx_cache_to_inline(Some("type=registry")));
         assert!(!is_buildx_cache_to_inline(Some("type=local")));
+        assert!(!is_buildx_cache_to_inline(Some("type inline")));
+        assert!(!is_buildx_cache_to_inline(Some(
+            "type:inline,type=registry"
+        )));
         assert!(!is_buildx_cache_to_inline(Some("inline")));
     }
 
@@ -530,6 +534,96 @@ exit 0
         assert!(invocations.contains("--build-arg FOO=bar"));
         assert!(!invocations.contains("IGNORED=true"));
         assert!(invocations.contains("push example/native:test"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn build_image_returns_plain_image_without_build_definition() {
+        let root = unique_temp_dir("devcontainer-build-image-test");
+        fs::create_dir_all(&root).expect("workspace");
+        let resolved = ResolvedConfig {
+            workspace_folder: root.clone(),
+            config_file: root.join(".devcontainer.json"),
+            configuration: json!({
+                "image": "alpine:3.20"
+            }),
+        };
+
+        assert_eq!(
+            build_image(&resolved, &[]).expect("plain image"),
+            "alpine:3.20"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn build_image_rejects_missing_image_without_build_definition() {
+        let root = unique_temp_dir("devcontainer-build-image-test");
+        fs::create_dir_all(&root).expect("workspace");
+        let resolved = ResolvedConfig {
+            workspace_folder: root.clone(),
+            config_file: root.join(".devcontainer.json"),
+            configuration: json!({}),
+        };
+
+        let error = build_image(&resolved, &[]).expect_err("unsupported config");
+
+        assert!(error.contains("Unsupported configuration"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn build_image_reports_base_build_and_push_failures() {
+        let root = unique_temp_dir("devcontainer-build-failure-test");
+        let config_dir = root.join(".devcontainer");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        fs::write(config_dir.join("Dockerfile"), "FROM alpine:3.20\n").expect("dockerfile");
+        let fake_engine = root.join("docker");
+        write_executable_script(
+            &fake_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  build)
+    if [ -f "$(dirname "$0")/build-fails" ]; then
+      echo "build failed" >&2
+      exit 9
+    fi
+    exit 0
+    ;;
+  push)
+    echo "push failed" >&2
+    exit 7
+    ;;
+esac
+exit 2
+"#,
+        );
+        let resolved = ResolvedConfig {
+            workspace_folder: root.clone(),
+            config_file: config_dir.join("devcontainer.json"),
+            configuration: json!({
+                "build": {
+                    "dockerfile": "Dockerfile"
+                }
+            }),
+        };
+        let args = vec![
+            "--docker-path".to_string(),
+            fake_engine.display().to_string(),
+            "--image-name".to_string(),
+            "example/native:test".to_string(),
+        ];
+
+        fs::write(root.join("build-fails"), "").expect("build flag");
+        let build_error = build_image(&resolved, &args).expect_err("build failure");
+        fs::remove_file(root.join("build-fails")).expect("clear build flag");
+        let mut push_args = args.clone();
+        push_args.push("--push".to_string());
+        let push_error = build_image(&resolved, &push_args).expect_err("push failure");
+
+        assert!(build_error.contains("build failed"), "{build_error}");
+        assert!(push_error.contains("push failed"), "{push_error}");
         let _ = fs::remove_dir_all(root);
     }
 

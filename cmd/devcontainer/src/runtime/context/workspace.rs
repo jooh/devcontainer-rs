@@ -391,9 +391,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        additional_mounts_for_workspace_target, ascend_container_path,
-        git_worktree_common_dir_mount, git_worktree_common_dir_mount_for_workspace_target,
-        normalize_path, ResolvedConfig,
+        additional_mounts_for_workspace_target, ascend_container_path, derived_workspace_mount,
+        git_worktree_common_dir_info, git_worktree_common_dir_mount,
+        git_worktree_common_dir_mount_for_workspace_target, lexically_normalize_path,
+        normalize_path, remote_workspace_folder_for_args, workspace_mount_for_args, ResolvedConfig,
     };
     use crate::test_support::unique_temp_dir;
 
@@ -499,6 +500,109 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remote_workspace_folder_for_compose_defaults_to_root_without_workspace_fields() {
+        let root = unique_temp_dir("devcontainer-workspace-test");
+        let resolved = ResolvedConfig {
+            workspace_folder: root.clone(),
+            config_file: root.join(".devcontainer").join("devcontainer.json"),
+            configuration: json!({
+                "dockerComposeFile": "compose.yml",
+                "service": "app"
+            }),
+        };
+
+        assert_eq!(remote_workspace_folder_for_args(&resolved, &[]), "/");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn additional_mounts_for_workspace_target_returns_empty_without_workspace_target() {
+        let root = unique_temp_dir("devcontainer-workspace-test");
+        let resolved = ResolvedConfig {
+            workspace_folder: root.clone(),
+            config_file: root.join(".devcontainer").join("devcontainer.json"),
+            configuration: json!({}),
+        };
+
+        assert!(additional_mounts_for_workspace_target(
+            &resolved,
+            "/workspaces/project",
+            &[
+                "--mount-workspace-git-root".to_string(),
+                "false".to_string()
+            ],
+        )
+        .is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn default_workspace_mount_uses_direct_mount_when_git_root_mount_disabled() {
+        let root = unique_temp_dir("devcontainer-workspace-test");
+        let workspace = root.join("project");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let resolved = ResolvedConfig {
+            workspace_folder: workspace.clone(),
+            config_file: workspace.join(".devcontainer").join("devcontainer.json"),
+            configuration: json!({}),
+        };
+
+        let mount = workspace_mount_for_args(
+            &resolved,
+            "/workspaces/project",
+            &[
+                "--mount-workspace-git-root".to_string(),
+                "false".to_string(),
+            ],
+        );
+        let derived = derived_workspace_mount(
+            &workspace,
+            &[
+                "--mount-workspace-git-root".to_string(),
+                "false".to_string(),
+            ],
+        )
+        .expect("derived mount");
+
+        assert_eq!(
+            mount,
+            format!(
+                "type=bind,source={},target=/workspaces/project",
+                workspace.display()
+            )
+        );
+        assert_eq!(derived.host_mount_folder, workspace);
+        assert_eq!(derived.remote_workspace_folder, "/workspaces/project");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn git_worktree_common_dir_info_returns_none_for_missing_or_malformed_dotgit() {
+        let root = unique_temp_dir("devcontainer-workspace-test");
+        let missing = root.join("missing");
+        let malformed = root.join("malformed");
+        fs::create_dir_all(&missing).expect("missing dir");
+        fs::create_dir_all(&malformed).expect("malformed dir");
+        fs::write(malformed.join(".git"), "not a gitdir file\n").expect("git file");
+
+        assert!(git_worktree_common_dir_info(&missing).is_none());
+        assert!(git_worktree_common_dir_info(&malformed).is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lexically_normalize_path_handles_root_curdir_parentdir_edges() {
+        assert_eq!(
+            lexically_normalize_path(std::path::Path::new("/tmp/./project/../repo")),
+            std::path::PathBuf::from("/tmp/repo")
+        );
+        assert_eq!(
+            lexically_normalize_path(std::path::Path::new("../repo")),
+            std::path::PathBuf::from("../repo")
+        );
     }
 
     #[test]

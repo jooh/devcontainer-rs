@@ -572,12 +572,15 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        find_normalized_default_label_match, inspect_matched_default_id_labels,
-        legacy_default_id_labels, matched_default_id_labels_for_platform,
-        normalized_default_label_match, parse_container_ids, ps_engine_args,
+        ensure_engine_up_container, find_normalized_default_label_match, inspect_container_labels,
+        inspect_matched_default_id_labels, legacy_default_id_labels,
+        matched_default_id_labels_for_platform, normalized_default_label_match,
+        parse_container_ids, probe_up_container_id_labels, ps_engine_args,
         resolve_target_container_match, target_container_labels, DefaultLabelMatch,
     };
     use crate::commands::common;
+    use crate::runtime::context::ResolvedConfig;
+    use crate::runtime::lifecycle::LifecycleMode;
     use crate::test_support::{unique_temp_dir, write_executable_script};
 
     #[test]
@@ -783,6 +786,198 @@ mod tests {
                 .expect("missing workspace skips inspection"),
             None
         );
+    }
+
+    #[test]
+    fn probe_up_container_id_labels_skips_lookup_when_remove_existing_is_set() {
+        let root = unique_temp_dir("devcontainer-discovery-probe-test");
+        let resolved = ResolvedConfig {
+            workspace_folder: root.clone(),
+            config_file: root.join(".devcontainer").join("devcontainer.json"),
+            configuration: serde_json::json!({}),
+        };
+
+        let labels = probe_up_container_id_labels(
+            &resolved,
+            &[
+                "--remove-existing-container".to_string(),
+                "--docker-path".to_string(),
+                root.join("missing-docker").display().to_string(),
+            ],
+        )
+        .expect("probe should short-circuit");
+
+        assert_eq!(labels, None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_target_container_match_reports_engine_ps_failure() {
+        let root = unique_temp_dir("devcontainer-discovery-ps-failure-test");
+        fs::create_dir_all(&root).expect("root dir");
+        let fake_engine = root.join("docker");
+        write_executable_script(
+            &fake_engine,
+            "#!/bin/sh\nif [ \"$1\" = ps ]; then echo 'ps failed' >&2; exit 5; fi\nexit 2\n",
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            fake_engine.display().to_string(),
+        ];
+
+        let error = resolve_target_container_match(
+            &args,
+            Some(root.as_path()),
+            Some(
+                root.join(".devcontainer")
+                    .join("devcontainer.json")
+                    .as_path(),
+            ),
+        )
+        .expect_err("ps failure");
+
+        assert!(error.contains("ps failed"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inspect_container_labels_reports_invalid_json_and_engine_errors() {
+        let root = unique_temp_dir("devcontainer-discovery-inspect-test");
+        fs::create_dir_all(&root).expect("root dir");
+        let fake_engine = root.join("docker");
+        write_executable_script(
+            &fake_engine,
+            r#"#!/bin/sh
+set -eu
+case "$2" in
+  bad-json)
+    printf 'not json'
+    exit 0
+    ;;
+  fails)
+    echo 'inspect failed' >&2
+    exit 6
+    ;;
+esac
+exit 2
+"#,
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            fake_engine.display().to_string(),
+        ];
+
+        let invalid = inspect_container_labels(&args, "bad-json").expect_err("invalid json");
+        let failed = inspect_container_labels(&args, "fails").expect_err("engine failure");
+
+        assert!(invalid.contains("Invalid inspect JSON"), "{invalid}");
+        assert!(failed.contains("inspect failed"), "{failed}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ensure_engine_up_container_reuses_running_container_and_inspects_legacy_labels() {
+        let root = unique_temp_dir("devcontainer-discovery-reuse-test");
+        fs::create_dir_all(root.join(".devcontainer")).expect("config dir");
+        let fake_engine = root.join("docker");
+        write_executable_script(
+            &fake_engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+case "$1" in
+  ps)
+    printf 'running-container\n'
+    ;;
+  inspect)
+    printf '%s\n' '[{{"Config":{{"Labels":{{"devcontainer.local_folder":"{}"}}}}}}]'
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+                root.display()
+            ),
+        );
+        let resolved = ResolvedConfig {
+            workspace_folder: root.clone(),
+            config_file: root.join(".devcontainer").join("devcontainer.json"),
+            configuration: serde_json::json!({}),
+        };
+        let args = vec![
+            "--docker-path".to_string(),
+            fake_engine.display().to_string(),
+        ];
+
+        let up =
+            ensure_engine_up_container(&resolved, &args, "example:test", "/workspaces/project")
+                .expect("reuse");
+
+        assert_eq!(up.container_id, "running-container");
+        assert!(matches!(up.lifecycle_mode, LifecycleMode::UpReused));
+        assert!(up.matched_id_labels.is_some());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ensure_engine_up_container_starts_stopped_container() {
+        let root = unique_temp_dir("devcontainer-discovery-start-test");
+        fs::create_dir_all(root.join(".devcontainer")).expect("config dir");
+        let fake_engine = root.join("docker");
+        let log = root.join("engine.log");
+        write_executable_script(
+            &fake_engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> '{}'
+case "$1" in
+  ps)
+    case " $* " in
+      *" -a "*) printf 'stopped-container\n' ;;
+    esac
+    ;;
+  inspect)
+    printf '%s\n' '[{{"Config":{{"Labels":{{"devcontainer.local_folder":"{}","devcontainer.config_file":"{}"}}}}}}]'
+    ;;
+  start)
+    exit 0
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+                log.display(),
+                root.display(),
+                root.join(".devcontainer")
+                    .join("devcontainer.json")
+                    .display()
+            ),
+        );
+        let resolved = ResolvedConfig {
+            workspace_folder: root.clone(),
+            config_file: root.join(".devcontainer").join("devcontainer.json"),
+            configuration: serde_json::json!({}),
+        };
+        let args = vec![
+            "--docker-path".to_string(),
+            fake_engine.display().to_string(),
+        ];
+
+        let up =
+            ensure_engine_up_container(&resolved, &args, "example:test", "/workspaces/project")
+                .expect("start stopped");
+
+        assert_eq!(up.container_id, "stopped-container");
+        assert!(matches!(up.lifecycle_mode, LifecycleMode::UpStarted));
+        assert!(fs::read_to_string(log)
+            .expect("log")
+            .contains("start stopped-container"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
