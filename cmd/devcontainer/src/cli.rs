@@ -238,6 +238,13 @@ pub(crate) fn normalize_option_aliases(command_path: &str, args: &[String]) -> V
 
 pub fn unsupported_argument_error(command_path: &str, args: &[String]) -> Option<String> {
     let command = command_help(command_path)?;
+    unsupported_argument_error_for_command(command, args)
+}
+
+fn unsupported_argument_error_for_command(
+    command: &CommandHelp,
+    args: &[String],
+) -> Option<String> {
     let mut unsupported_flags = Vec::new();
 
     for option in &command.options {
@@ -264,7 +271,8 @@ pub fn unsupported_argument_error(command_path: &str, args: &[String]) -> Option
             .find(|(candidate, _)| candidate == flag)
         {
             return Some(format!(
-                "Option {matched_flag} {UNSUPPORTED_ARGUMENT_MESSAGE}: devcontainer {command_path}"
+                "Option {matched_flag} {UNSUPPORTED_ARGUMENT_MESSAGE}: devcontainer {}",
+                command.path
             ));
         }
     }
@@ -275,8 +283,10 @@ pub fn unsupported_argument_error(command_path: &str, args: &[String]) -> Option
 #[cfg(test)]
 mod tests {
     use super::{
-        command_help, is_command_help_request, is_command_version_request,
-        normalize_option_aliases, resolve_command_help, unsupported_argument_error,
+        command_help, emit_log, is_command_help_request, is_command_version_request,
+        normalize_option_aliases, print_command_help, render_lines, resolve_command_help,
+        unsupported_argument_error, unsupported_argument_error_for_command, CommandHelp,
+        CommandOption, HelpLine,
     };
 
     #[test]
@@ -342,6 +352,13 @@ mod tests {
         );
 
         assert_eq!(normalized, vec!["-p".to_string(), "project".to_string()]);
+    }
+
+    #[test]
+    fn normalization_preserves_args_for_unknown_command_metadata() {
+        let args = vec!["-x".to_string(), "value".to_string()];
+
+        assert_eq!(normalize_option_aliases("unknown command", &args), args);
     }
 
     #[test]
@@ -428,6 +445,47 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_argument_error_reports_flags_aliases_and_stops_at_separator() {
+        let command = CommandHelp {
+            path: "up".to_string(),
+            token_path: vec!["up".to_string()],
+            lines: Vec::new(),
+            options: vec![CommandOption {
+                name: "dotfiles-target-path".to_string(),
+                aliases: vec!["d".to_string()],
+                description: Some("Path".to_string()),
+            }],
+            unsupported_options: vec!["dotfiles-target-path".to_string()],
+            unsupported_positionals: Vec::new(),
+        };
+
+        let error = unsupported_argument_error_for_command(
+            &command,
+            &[
+                "--dotfiles-target-path".to_string(),
+                "/tmp/dotfiles".to_string(),
+            ],
+        )
+        .expect("unsupported flag");
+        assert!(error.contains("--dotfiles-target-path"));
+
+        let error = unsupported_argument_error_for_command(
+            &command,
+            &["-d".to_string(), "/tmp/dotfiles".to_string()],
+        )
+        .expect("unsupported alias");
+        assert!(error.contains("-d"));
+
+        assert!(unsupported_argument_error_for_command(
+            &command,
+            &["--".to_string(), "--dotfiles-target-path".to_string()],
+        )
+        .is_none());
+
+        assert!(unsupported_argument_error("unknown", &["--flag".to_string()]).is_none());
+    }
+
+    #[test]
     fn ignores_exec_command_arguments_after_first_non_option() {
         let error = unsupported_argument_error(
             "exec",
@@ -448,5 +506,26 @@ mod tests {
             .lines
             .iter()
             .any(|line| line.positional_names.contains(&"target".to_string())));
+    }
+
+    #[test]
+    fn help_rendering_marks_unsupported_lines_and_falls_back_for_unknown_paths() {
+        render_lines(
+            &[HelpLine {
+                text: "  --unsupported".to_string(),
+                option_names: vec!["unsupported".to_string()],
+                positional_names: Vec::new(),
+            }],
+            &["unsupported".to_string()],
+            &[],
+        );
+
+        print_command_help("unknown native path");
+    }
+
+    #[test]
+    fn emit_log_renders_text_and_json_formats() {
+        emit_log("text", "native text log");
+        emit_log("json", "native json log");
     }
 }
