@@ -218,10 +218,13 @@ mod tests {
 
     use serde_json::json;
 
+    use crate::runtime::context::ResolvedConfig;
     use crate::runtime::mounts::mount_value_to_engine_arg;
     use crate::test_support::{unique_temp_dir, write_executable_script};
 
-    use super::remove_container;
+    use super::{
+        remove_container, should_add_gpu_capability, start_container, start_existing_container,
+    };
 
     #[test]
     fn mount_argument_preserves_read_only_and_alias_keys() {
@@ -294,6 +297,89 @@ exit 0
             fs::read_to_string(&attempts).expect("attempts file").trim(),
             "3"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn start_container_includes_configured_runtime_options_and_labels() {
+        let root = unique_temp_dir("devcontainer-start-container-test");
+        fs::create_dir_all(&root).expect("root dir");
+        let fake_engine = root.join("docker");
+        let log = root.join("engine.log");
+        write_executable_script(
+            &fake_engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> '{}'
+if [ "$1" = "run" ]; then
+  printf 'container-123\n'
+  exit 0
+fi
+if [ "$1" = "start" ]; then
+  exit 0
+fi
+exit 1
+"#,
+                log.display()
+            ),
+        );
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let resolved = ResolvedConfig {
+            workspace_folder: workspace.clone(),
+            config_file: workspace.join(".devcontainer").join("devcontainer.json"),
+            configuration: json!({
+                "init": true,
+                "privileged": true,
+                "mounts": [{
+                    "type": "volume",
+                    "source": "devcontainer-cache",
+                    "target": "/cache"
+                }],
+                "runArgs": ["--name", "demo"],
+                "containerEnv": {
+                    "DEMO": "value",
+                    "IGNORED": true
+                },
+                "capAdd": ["SYS_PTRACE"],
+                "securityOpt": ["seccomp=unconfined"],
+                "hostRequirements": {
+                    "gpu": "optional"
+                }
+            }),
+        };
+        let args = vec![
+            "--docker-path".to_string(),
+            fake_engine.display().to_string(),
+            "--id-label".to_string(),
+            "custom=label".to_string(),
+            "--gpu-availability".to_string(),
+            "all".to_string(),
+            "--mount".to_string(),
+            "type=bind,source=/tmp,target=/host-tmp".to_string(),
+        ];
+
+        let container_id =
+            start_container(&resolved, &args, "example/native:test", "/workspaces/demo")
+                .expect("start container");
+        start_existing_container(&args, &container_id).expect("start existing");
+
+        assert_eq!(container_id, "container-123");
+        let invocations = fs::read_to_string(&log).expect("engine log");
+        assert!(invocations.contains("run -d"));
+        assert!(invocations.contains("--init"));
+        assert!(invocations.contains("--privileged"));
+        assert!(invocations.contains("--label custom=label"));
+        assert!(invocations.contains("--mount type=volume,source=devcontainer-cache,target=/cache"));
+        assert!(invocations.contains("--mount type=bind,source=/tmp,target=/host-tmp"));
+        assert!(invocations.contains("-e DEMO=value"));
+        assert!(!invocations.contains("IGNORED=true"));
+        assert!(invocations.contains("--cap-add SYS_PTRACE"));
+        assert!(invocations.contains("--security-opt seccomp=unconfined"));
+        assert!(invocations.contains("--gpus all"));
+        assert!(invocations.contains("example/native:test /bin/sh -lc"));
+        assert!(!should_add_gpu_capability(&json!({}), &args).expect("no gpu"));
         let _ = fs::remove_dir_all(root);
     }
 }

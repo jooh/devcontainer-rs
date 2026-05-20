@@ -330,13 +330,17 @@ fn has_build_definition(configuration: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::Path;
 
     use serde_json::json;
 
+    use crate::runtime::context::ResolvedConfig;
+    use crate::test_support::{unique_temp_dir, write_executable_script};
+
     use super::{
-        default_image_name, dockerfile_prefix, engine_build_args, has_build_definition,
-        is_buildx_cache_to_inline, shell_single_quote,
+        build_image, default_image_name, dockerfile_prefix, engine_build_args,
+        has_build_definition, is_buildx_cache_to_inline, runtime_image_name, shell_single_quote,
     };
 
     fn contains_arg(args: &[String], expected: &str) -> bool {
@@ -475,5 +479,83 @@ mod tests {
         assert!(!has_build_definition(&json!({
             "build": "Dockerfile"
         })));
+    }
+
+    #[test]
+    fn build_image_runs_engine_build_with_config_args_and_optional_push() {
+        let root = unique_temp_dir("devcontainer-build-runtime-test");
+        let config_dir = root.join(".devcontainer");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        fs::write(config_dir.join("Dockerfile"), "FROM alpine:3.20\n").expect("dockerfile");
+        let fake_engine = root.join("docker");
+        let log = root.join("engine.log");
+        write_executable_script(
+            &fake_engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> '{}'
+exit 0
+"#,
+                log.display()
+            ),
+        );
+        let resolved = ResolvedConfig {
+            workspace_folder: root.clone(),
+            config_file: config_dir.join("devcontainer.json"),
+            configuration: json!({
+                "build": {
+                    "dockerfile": "Dockerfile",
+                    "context": ".",
+                    "args": {
+                        "FOO": "bar",
+                        "IGNORED": true
+                    }
+                }
+            }),
+        };
+        let args = vec![
+            "--docker-path".to_string(),
+            fake_engine.display().to_string(),
+            "--image-name".to_string(),
+            "example/native:test".to_string(),
+            "--push".to_string(),
+        ];
+
+        let image_name = build_image(&resolved, &args).expect("build image");
+
+        assert_eq!(image_name, "example/native:test");
+        let invocations = fs::read_to_string(&log).expect("engine log");
+        assert!(invocations.contains("build --tag example/native:test"));
+        assert!(invocations.contains("--build-arg FOO=bar"));
+        assert!(!invocations.contains("IGNORED=true"));
+        assert!(invocations.contains("push example/native:test"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_image_name_returns_plain_images_and_reports_unsupported_configs() {
+        let root = unique_temp_dir("devcontainer-runtime-image-test");
+        fs::create_dir_all(&root).expect("workspace");
+        let image_config = ResolvedConfig {
+            workspace_folder: root.clone(),
+            config_file: root.join(".devcontainer.json"),
+            configuration: json!({
+                "image": "alpine:3.20"
+            }),
+        };
+        assert_eq!(
+            runtime_image_name(&image_config, &[]).expect("image name"),
+            "alpine:3.20"
+        );
+
+        let unsupported = ResolvedConfig {
+            configuration: json!({}),
+            ..image_config
+        };
+        assert!(runtime_image_name(&unsupported, &[])
+            .expect_err("unsupported")
+            .contains("Unsupported configuration"));
+        let _ = fs::remove_dir_all(root);
     }
 }
