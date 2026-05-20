@@ -54,3 +54,16 @@ fn print_json_result(result: Result<Value, String>) -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{dispatch, DispatchResult};
+
+    #[test]
+    fn dispatch_reports_unknown_commands_as_unsupported_native_paths() {
+        assert!(matches!(
+            dispatch("unknown-command", &[]),
+            DispatchResult::UnsupportedNativePath
+        ));
+    }
+}

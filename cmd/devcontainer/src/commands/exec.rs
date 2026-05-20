@@ -13,3 +13,15 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::process::ExitCode;
+
+    use super::run;
+
+    #[test]
+    fn exec_entrypoint_reports_runtime_errors() {
+        assert_eq!(run(&[]), ExitCode::from(1));
+    }
+}
