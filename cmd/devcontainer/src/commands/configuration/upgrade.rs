@@ -683,3 +683,273 @@ pub(super) fn feature_id_without_version(feature_id: &str) -> String {
         None => feature_id.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::fs;
+
+    use serde_json::json;
+
+    use super::super::features::resolve_feature_support_without_lockfile;
+    use super::{
+        additional_only_feature_ids, cell, ensure_native_lockfile, feature_id_without_version,
+        lockfile_path, parse_feature_reference, parse_outdated_log_level,
+        parse_requested_log_format, parse_terminal_dimensions, parse_upgrade_log_level,
+        read_lockfile, render_outdated_text, run_upgrade_lockfile,
+        update_feature_version_in_config, validate_lockfile_options, validate_native_lockfile,
+        validate_upgrade_options, warn_deprecated_lockfile_flags, Lockfile, LockfileEntry,
+    };
+    use crate::output::{CommandLogLevel, LogFormat};
+
+    #[test]
+    fn lockfile_validation_reports_conflicts_and_frozen_mismatches() {
+        let root = crate::test_support::unique_temp_dir("devcontainer-upgrade-lockfile");
+        fs::create_dir_all(&root).expect("root");
+        let config_file = root.join(".devcontainer.json");
+        let configuration = json!({
+            "image": "debian:bookworm",
+            "features": {
+                "ghcr.io/devcontainers/features/github-cli": {}
+            }
+        });
+        fs::write(
+            &config_file,
+            serde_json::to_string_pretty(&configuration).expect("config"),
+        )
+        .expect("config write");
+        let support =
+            resolve_feature_support_without_lockfile(&[], &root, &config_file, &configuration)
+                .expect("feature resolution")
+                .expect("feature support");
+
+        let conflict = validate_lockfile_options(&[
+            "--no-lockfile".to_string(),
+            "--frozen-lockfile".to_string(),
+        ])
+        .expect_err("conflict");
+        assert!(conflict.contains("mutually exclusive"), "{conflict}");
+
+        ensure_native_lockfile(
+            &["--no-lockfile".to_string()],
+            &config_file,
+            &configuration,
+            &support,
+        )
+        .expect("disabled");
+        assert!(!lockfile_path(&config_file).exists());
+        validate_native_lockfile(
+            &["--no-lockfile".to_string()],
+            &config_file,
+            &configuration,
+            &support,
+        )
+        .expect("disabled validation");
+
+        fs::write(
+            lockfile_path(&config_file),
+            serde_json::to_string_pretty(&Lockfile {
+                features: BTreeMap::from([(
+                    "ghcr.io/devcontainers/features/github-cli".to_string(),
+                    LockfileEntry {
+                        version: "0.9.0".to_string(),
+                        resolved: "ghcr.io/devcontainers/features/github-cli@sha256:old"
+                            .to_string(),
+                        integrity: "sha256:old".to_string(),
+                        depends_on: None,
+                    },
+                )]),
+            })
+            .expect("lockfile"),
+        )
+        .expect("write lockfile");
+
+        let ensure_error = ensure_native_lockfile(
+            &["--frozen-lockfile".to_string()],
+            &config_file,
+            &configuration,
+            &support,
+        )
+        .expect_err("outdated lockfile");
+        assert!(ensure_error.contains("out of date"), "{ensure_error}");
+        let validate_error = validate_native_lockfile(
+            &["--frozen-lockfile".to_string()],
+            &config_file,
+            &configuration,
+            &support,
+        )
+        .expect_err("outdated lockfile");
+        assert!(validate_error.contains("out of date"), "{validate_error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn upgrade_private_helpers_cover_text_and_option_paths() {
+        let root = crate::test_support::unique_temp_dir("devcontainer-upgrade-helpers");
+        fs::create_dir_all(&root).expect("root");
+        let config_file = root.join(".devcontainer.json");
+        fs::write(&config_file, "{}").expect("config");
+
+        assert!(read_lockfile(root.join("missing-lock.json"))
+            .expect("missing lockfile")
+            .is_none());
+        fs::write(root.join("empty-lock.json"), "\n").expect("empty");
+        assert!(read_lockfile(root.join("empty-lock.json"))
+            .expect("empty lockfile")
+            .is_none());
+
+        assert!(
+            validate_upgrade_options(&["--feature".to_string(), "git".to_string()])
+                .expect_err("paired option")
+                .contains("used together")
+        );
+        assert!(validate_upgrade_options(&[
+            "--feature".to_string(),
+            "git".to_string(),
+            "--target-version".to_string(),
+            "1.x".to_string(),
+        ])
+        .expect_err("version")
+        .contains("Invalid version"));
+
+        let rendered = render_outdated_text(&json!({
+            "features": {
+                "ghcr.io/acme/features/demo:1": {
+                    "current": "1.0.0",
+                    "wanted": "1.1.0",
+                    "latest": "2.0.0"
+                },
+                "ghcr.io/acme/features/missing": {}
+            }
+        }));
+        assert!(rendered.contains("Feature"));
+        assert!(rendered.contains("demo"));
+        assert_eq!(cell(Some(&json!("value"))), "value");
+        assert_eq!(cell(None), "-");
+
+        assert!(matches!(
+            parse_requested_log_format(&["--log-format".to_string(), "json".to_string()]),
+            LogFormat::Json
+        ));
+        assert!(matches!(parse_requested_log_format(&[]), LogFormat::Text));
+        assert_eq!(
+            parse_outdated_log_level(&["--log-level".to_string(), "trace".to_string()]),
+            CommandLogLevel::Trace
+        );
+        assert_eq!(
+            parse_outdated_log_level(&["--log-level".to_string(), "debug".to_string()]),
+            CommandLogLevel::Debug
+        );
+        assert_eq!(parse_outdated_log_level(&[]), CommandLogLevel::Info);
+        assert_eq!(
+            parse_upgrade_log_level(&["--log-level".to_string(), "error".to_string()]),
+            CommandLogLevel::Error
+        );
+        assert_eq!(
+            parse_upgrade_log_level(&["--log-level".to_string(), "trace".to_string()]),
+            CommandLogLevel::Trace
+        );
+        assert_eq!(
+            parse_upgrade_log_level(&["--log-level".to_string(), "debug".to_string()]),
+            CommandLogLevel::Debug
+        );
+        assert_eq!(parse_upgrade_log_level(&[]), CommandLogLevel::Info);
+        assert_eq!(
+            parse_terminal_dimensions(&[
+                "--terminal-columns".to_string(),
+                "120".to_string(),
+                "--terminal-rows".to_string(),
+                "40".to_string(),
+            ])
+            .expect("terminal")
+            .columns,
+            120
+        );
+        assert!(parse_terminal_dimensions(&[
+            "--terminal-columns".to_string(),
+            "wide".to_string(),
+            "--terminal-rows".to_string(),
+            "40".to_string(),
+        ])
+        .is_none());
+
+        let no_change_logger =
+            crate::output::CommandLogger::new(LogFormat::Json, CommandLogLevel::Trace);
+        update_feature_version_in_config(
+            &config_file,
+            "{}",
+            &json!({"features": {"ghcr.io/acme/features/demo:1": {}}}),
+            "ghcr.io/acme/features/missing",
+            "2",
+            Some(&no_change_logger),
+        )
+        .expect("missing feature");
+        update_feature_version_in_config(
+            &config_file,
+            "{}",
+            &json!({"features": {"ghcr.io/acme/features/demo:1": {}}}),
+            "ghcr.io/acme/features/demo",
+            "2",
+            Some(&no_change_logger),
+        )
+        .expect("unchanged raw");
+
+        warn_deprecated_lockfile_flags(&[
+            "--experimental-lockfile".to_string(),
+            "--experimental-frozen-lockfile".to_string(),
+        ]);
+        let empty_lockfile = run_upgrade_lockfile(&[
+            "--workspace-folder".to_string(),
+            root.display().to_string(),
+            "--dry-run".to_string(),
+        ])
+        .expect("empty lockfile");
+        assert!(empty_lockfile.features.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn feature_reference_parsing_covers_tag_digest_and_unversioned_forms() {
+        let unversioned =
+            parse_feature_reference("ghcr.io/devcontainers/features/git").expect("unversioned");
+        assert_eq!(unversioned.tag, None);
+        assert_eq!(unversioned.digest, None);
+
+        let tagged =
+            parse_feature_reference("ghcr.io/devcontainers/features/git:1.2").expect("tagged");
+        assert_eq!(tagged.base, "ghcr.io/devcontainers/features/git");
+        assert_eq!(tagged.tag.as_deref(), Some("1.2"));
+
+        let digest = parse_feature_reference(
+            "https://example.com/features/git@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .expect("digest");
+        assert_eq!(
+            digest.digest.as_deref(),
+            Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+
+        assert!(parse_feature_reference("./local").is_none());
+        assert_eq!(
+            feature_id_without_version("ghcr.io/acme/features/demo@1"),
+            "ghcr.io/acme/features/demo"
+        );
+        assert_eq!(
+            feature_id_without_version("localhost:5000/acme/features/demo:1"),
+            "localhost:5000/acme/features/demo"
+        );
+        assert_eq!(
+            additional_only_feature_ids(
+                &[
+                    "--additional-features".to_string(),
+                    r#"{"configured":{},"extra":{}}"#.to_string(),
+                ],
+                &json!({"features": {"configured": {}}}),
+            )
+            .expect("additional")
+            .into_iter()
+            .collect::<Vec<_>>(),
+            vec!["extra".to_string()]
+        );
+    }
+}

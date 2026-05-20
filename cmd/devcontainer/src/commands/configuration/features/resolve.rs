@@ -955,6 +955,7 @@ fn generic_feature_manifest(id: &str, version: String) -> Value {
 #[cfg(test)]
 mod tests {
     use std::cmp::Ordering;
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -970,7 +971,7 @@ mod tests {
         node_satisfies_soft_dependency, resolve_feature_spec, resolve_local_feature_path,
         sha256_integrity, verify_direct_tarball_lockfile_integrity, FeatureDependency,
         FeatureInstallation, FeatureInstallationSource, FeatureNode, FeatureRequest, FeatureSource,
-        FeatureSpec, LockfileEntry, TempDownloadedTarball,
+        FeatureSpec, Lockfile, LockfileEntry, TempDownloadedTarball,
     };
 
     fn spec(
@@ -1121,13 +1122,12 @@ mod tests {
             vec!["base", "dependent", "soft"]
         );
 
-        let cycle_error = match compute_feature_install_order(vec![
+        let cycle_error = compute_feature_install_order(vec![
             node(base.clone(), vec![dependency(&dependent)], Vec::new(), 0),
             node(dependent.clone(), vec![dependency(&base)], Vec::new(), 0),
-        ]) {
-            Ok(_) => panic!("expected circular dependency error"),
-            Err(error) => error,
-        };
+        ])
+        .err()
+        .expect("expected circular dependency error");
         assert!(cycle_error.contains("Circular feature dependency detected"));
     }
 
@@ -1325,6 +1325,89 @@ mod tests {
         assert!(matches!(github.source, FeatureSource::GithubRepo { .. }));
         assert_eq!(github.manifest["version"], "1.2.3");
         assert!(github.lockfile_feature.is_none());
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn resolve_feature_spec_uses_workspace_oci_layout_and_locked_digest() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-resolve-oci-feature");
+        let config_root = workspace.join(".devcontainer");
+        fs::create_dir_all(&config_root).expect("config root");
+        let resource = "ghcr.io/acme/features/demo";
+        let layout_dir = config_root.join("oci-layouts").join(resource);
+        fs::create_dir_all(layout_dir.join("blobs").join("sha256")).expect("layout");
+        fs::write(layout_dir.join("oci-layout"), "{}").expect("layout marker");
+        let manifest = json!({
+            "schemaVersion": 2,
+            "layers": [],
+            "annotations": {
+                "dev.containers.metadata": json!({
+                    "id": "demo",
+                    "version": "1.0.0",
+                    "dependsOn": ["ghcr.io/acme/features/base"]
+                }).to_string()
+            }
+        });
+        let manifest_bytes = serde_json::to_vec(&manifest).expect("manifest bytes");
+        let manifest_digest = format!(
+            "sha256:{:x}",
+            sha2::Sha256::digest(manifest_bytes.as_slice())
+        );
+        fs::write(
+            layout_dir
+                .join("blobs")
+                .join("sha256")
+                .join(manifest_digest.trim_start_matches("sha256:")),
+            &manifest_bytes,
+        )
+        .expect("manifest blob");
+        fs::write(
+            layout_dir.join("index.json"),
+            json!({
+                "schemaVersion": 2,
+                "manifests": [{
+                    "digest": manifest_digest.clone(),
+                    "annotations": {
+                        "org.opencontainers.image.ref.name": "1.0.0"
+                    }
+                }]
+            })
+            .to_string(),
+        )
+        .expect("index");
+        let lockfile = Lockfile {
+            features: BTreeMap::from([(
+                "ghcr.io/acme/features/demo:1".to_string(),
+                LockfileEntry {
+                    version: "1.0.0".to_string(),
+                    resolved: format!("{resource}@{manifest_digest}"),
+                    integrity: manifest_digest.clone(),
+                    depends_on: None,
+                },
+            )]),
+        };
+
+        let spec = resolve_feature_spec(
+            "ghcr.io/acme/features/demo:1",
+            &json!({}),
+            &config_root,
+            &workspace,
+            Some(&lockfile),
+        )
+        .expect("oci spec");
+
+        assert!(matches!(spec.source, FeatureSource::Oci { .. }));
+        assert_eq!(spec.manifest["version"], "1.0.0");
+        let lockfile_feature = spec.lockfile_feature.expect("lockfile feature");
+        assert_eq!(lockfile_feature.integrity, manifest_digest);
+        assert_eq!(
+            lockfile_feature.depends_on,
+            Some(vec!["ghcr.io/acme/features/base".to_string()])
+        );
+        assert!(matches!(
+            spec.installation.source,
+            FeatureInstallationSource::Published(_)
+        ));
         let _ = fs::remove_dir_all(workspace);
     }
 
