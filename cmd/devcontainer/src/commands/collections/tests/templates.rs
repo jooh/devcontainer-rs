@@ -270,6 +270,85 @@ fn published_templates_apply_workspace_oci_layout_archives() {
     let _ = fs::remove_dir_all(workspace);
 }
 
+#[test]
+fn published_template_local_oci_layout_errors_without_layer() {
+    let workspace = unique_temp_dir();
+    let layout_root = workspace
+        .join(".devcontainer")
+        .join("oci-layouts")
+        .join("ghcr.io")
+        .join("acme")
+        .join("templates")
+        .join("no-layer-template");
+    fs::create_dir_all(layout_root.join("blobs").join("sha256")).expect("layout blobs");
+    fs::write(layout_root.join("oci-layout"), "{}").expect("layout marker");
+    let manifest = json!({
+        "schemaVersion": 2,
+        "layers": [],
+        "annotations": {
+            "dev.containers.metadata": json!({
+                "id": "no-layer-template",
+                "name": "No Layer Template",
+                "version": "1.0.0"
+            }).to_string()
+        }
+    });
+    let manifest_bytes = serde_json::to_vec(&manifest).expect("manifest bytes");
+    let manifest_digest = sha256_digest(&manifest_bytes);
+    fs::write(
+        layout_root
+            .join("blobs")
+            .join("sha256")
+            .join(&manifest_digest),
+        manifest_bytes,
+    )
+    .expect("manifest blob");
+    fs::write(
+        layout_root.join("index.json"),
+        json!({
+            "schemaVersion": 2,
+            "manifests": [{
+                "digest": format!("sha256:{manifest_digest}"),
+                "annotations": {
+                    "org.opencontainers.image.ref.name": "1.0.0"
+                }
+            }]
+        })
+        .to_string(),
+    )
+    .expect("index");
+
+    let error = apply_catalog_template(
+        "ghcr.io/acme/templates/no-layer-template:1.0.0",
+        &workspace,
+        &[],
+    )
+    .expect_err("missing layer");
+
+    assert!(error.contains("Published template OCI manifest is missing a layer"));
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn generic_published_template_ignores_extra_features_without_id() {
+    let workspace = unique_temp_dir();
+
+    apply_catalog_template(
+        "ghcr.io/devcontainers/templates/anaconda-postgres:latest",
+        &workspace,
+        &[
+            "--features".to_string(),
+            json!([{ "options": { "version": "latest" } }]).to_string(),
+        ],
+    )
+    .expect("template apply");
+
+    let config = fs::read_to_string(workspace.join(".devcontainer").join("devcontainer.json"))
+        .expect("config");
+    assert!(!config.contains("\"features\""), "{config}");
+    let _ = fs::remove_dir_all(workspace);
+}
+
 fn write_template_layout(
     layout_root: &Path,
     metadata: serde_json::Value,
