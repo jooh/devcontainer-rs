@@ -164,6 +164,14 @@ mod tests {
         assert_eq!(rendered["level"], 3);
         assert_eq!(rendered["text"], "quoted \"value\"");
         assert!(rendered["timestamp"].as_i64().is_some(), "{rendered:?}");
+
+        let rendered: Value = serde_json::from_str(&render_log(
+            LogFormat::Json,
+            CommandLogLevel::Error,
+            "failed",
+        ))
+        .expect("json error log");
+        assert_eq!(rendered["level"], 5);
     }
 
     #[test]

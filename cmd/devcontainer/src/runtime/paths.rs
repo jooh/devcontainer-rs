@@ -35,7 +35,21 @@ pub(crate) fn unique_temp_path(prefix: &str, extension: Option<&str>) -> PathBuf
 
 #[cfg(test)]
 mod tests {
-    use super::unique_temp_path;
+    use std::path::PathBuf;
+
+    use super::{resolve_relative, unique_temp_path};
+
+    #[test]
+    fn resolve_relative_preserves_absolute_paths_and_joins_relative_paths() {
+        assert_eq!(
+            resolve_relative(&PathBuf::from("/workspace"), "/tmp/Dockerfile"),
+            PathBuf::from("/tmp/Dockerfile")
+        );
+        assert_eq!(
+            resolve_relative(&PathBuf::from("/workspace"), "Dockerfile"),
+            PathBuf::from("/workspace/Dockerfile")
+        );
+    }
 
     #[test]
     fn unique_temp_path_uses_requested_extension() {

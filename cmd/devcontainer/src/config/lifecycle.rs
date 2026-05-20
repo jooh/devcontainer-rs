@@ -43,4 +43,18 @@ mod tests {
         assert!(rebuilt.is_object());
         assert_eq!(rebuilt.as_object().expect("object").len(), 2);
     }
+
+    #[test]
+    fn lifecycle_helpers_handle_scalar_empty_and_unsupported_values() {
+        assert_eq!(
+            flatten_lifecycle_value(&json!("echo scalar")),
+            vec![json!("echo scalar")]
+        );
+        assert_eq!(
+            lifecycle_value_from_flattened(vec![json!("echo scalar")]),
+            Some(json!("echo scalar"))
+        );
+        assert!(flatten_lifecycle_value(&json!(true)).is_empty());
+        assert_eq!(lifecycle_value_from_flattened(Vec::new()), None);
+    }
 }
