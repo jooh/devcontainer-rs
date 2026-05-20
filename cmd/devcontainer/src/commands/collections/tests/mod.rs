@@ -20,6 +20,18 @@ fn collection_entrypoints_report_missing_and_unknown_subcommands() {
         super::run_features(&["info".to_string(), "manifest".to_string()]),
         ExitCode::from(1)
     );
+    assert_eq!(
+        super::run_features(&["package".to_string()]),
+        ExitCode::from(1)
+    );
+    assert_eq!(
+        super::run_features(&["publish".to_string()]),
+        ExitCode::from(1)
+    );
+    assert_eq!(
+        super::run_features(&["generate-docs".to_string()]),
+        ExitCode::from(1)
+    );
     assert_eq!(super::run_templates(&[]), ExitCode::from(1));
     assert_eq!(
         super::run_templates(&["unknown".to_string()]),
@@ -27,6 +39,14 @@ fn collection_entrypoints_report_missing_and_unknown_subcommands() {
     );
     assert_eq!(
         super::run_templates(&["metadata".to_string()]),
+        ExitCode::from(1)
+    );
+    assert_eq!(
+        super::run_templates(&["publish".to_string()]),
+        ExitCode::from(1)
+    );
+    assert_eq!(
+        super::run_templates(&["generate-docs".to_string()]),
         ExitCode::from(1)
     );
 }
