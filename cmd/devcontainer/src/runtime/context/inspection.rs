@@ -120,3 +120,106 @@ pub(super) fn workspace_folder_from_args(args: &[String]) -> Result<Option<PathB
         Err(error) => Err(error.to_string()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use crate::test_support::{unique_temp_dir, write_executable_script};
+
+    use super::{inspect_container_context, workspace_folder_from_args};
+
+    #[test]
+    fn inspect_container_context_reports_engine_failures() {
+        let root = unique_temp_dir("inspect-context-failure");
+        fs::create_dir_all(&root).expect("root");
+        let engine = root.join("engine");
+        write_executable_script(
+            &engine,
+            "#!/bin/sh\nprintf 'inspect failed\\n' >&2\nexit 7\n",
+        );
+
+        let err = match inspect_container_context(
+            &["--docker-path".to_string(), engine.display().to_string()],
+            "container",
+        ) {
+            Ok(_) => panic!("inspect should fail"),
+            Err(error) => error,
+        };
+
+        assert_eq!(err, "inspect failed");
+    }
+
+    #[test]
+    fn inspect_container_context_derives_workspace_and_image_user() {
+        let root = unique_temp_dir("inspect-context-success");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let engine = root.join("engine");
+        let inspect_json = format!(
+            r#"[{{
+                "Config": {{
+                    "User": "vscode",
+                    "Labels": {{
+                        "devcontainer.local_folder": "{}",
+                        "devcontainer.metadata": "{{\"remoteEnv\":{{\"LOCAL\":\"${{localWorkspaceFolder}}\"}}}}"
+                    }}
+                }},
+                "Mounts": [{{
+                    "Source": "{}",
+                    "Destination": "/workspaces/project"
+                }}]
+            }}]"#,
+            workspace.display(),
+            workspace.display()
+        );
+        write_executable_script(
+            &engine,
+            &format!("#!/bin/sh\ncat <<'JSON'\n{inspect_json}\nJSON\n"),
+        );
+
+        let context = inspect_container_context(
+            &["--docker-path".to_string(), engine.display().to_string()],
+            "container",
+        )
+        .expect("inspect context");
+
+        assert_eq!(context.local_workspace_folder, Some(workspace.clone()));
+        assert_eq!(
+            context.remote_workspace_folder.as_deref(),
+            Some("/workspaces/project")
+        );
+        assert_eq!(
+            context
+                .configuration
+                .get("containerUser")
+                .and_then(serde_json::Value::as_str),
+            Some("vscode")
+        );
+        assert_eq!(
+            context
+                .configuration
+                .get("remoteEnv")
+                .and_then(|value| value.get("LOCAL"))
+                .and_then(serde_json::Value::as_str),
+            Some(workspace.to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn workspace_folder_from_args_prefers_explicit_folder_and_defaults_to_current_dir() {
+        let root = unique_temp_dir("inspect-context-workspace-args");
+        fs::create_dir_all(&root).expect("root");
+
+        let explicit = workspace_folder_from_args(&[
+            "--workspace-folder".to_string(),
+            root.display().to_string(),
+        ])
+        .expect("explicit workspace");
+        assert_eq!(explicit, Some(root.canonicalize().expect("canonical root")));
+
+        assert!(workspace_folder_from_args(&[])
+            .expect("default workspace")
+            .is_some());
+    }
+}
