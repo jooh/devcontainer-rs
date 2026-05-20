@@ -784,8 +784,10 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        ensure_dockerfile_has_final_stage_name, extract_dockerfile, find_base_image,
-        find_user_statement, supports_build_contexts, BuildContextSupport,
+        ensure_dockerfile_has_final_stage_name, extract_directives, extract_dockerfile,
+        find_base_image, find_user_statement, parse_from_line, parse_instruction_line,
+        parse_variable_expression, replace_variables, supports_build_contexts, BuildContextSupport,
+        ScopeId,
     };
 
     #[test]
@@ -866,6 +868,30 @@ COPY src dest
         assert_eq!(stage.instructions[3].name, "G");
         assert_eq!(stage.instructions[4].instruction, "USER");
         assert_eq!(stage.instructions[4].name, "H");
+    }
+
+    #[test]
+    fn parser_helpers_handle_malformed_or_quoted_lines() {
+        let malformed_from = extract_dockerfile("FROM\nUSER root\n");
+        assert_eq!(malformed_from.stages[0].from.image, "unknown");
+
+        let quoted =
+            parse_from_line(r#"FROM --platform=$BUILDPLATFORM "alpine:3.20" AS "base stage""#)
+                .expect("quoted from");
+        assert_eq!(
+            quoted.from.platform.as_deref(),
+            Some("--platform=$BUILDPLATFORM")
+        );
+        assert_eq!(quoted.from.image, "alpine:3.20");
+        assert_eq!(quoted.from.label.as_deref(), Some("base stage"));
+
+        assert!(parse_from_line("RUN echo no-from").is_none());
+        assert!(parse_instruction_line("ENV").is_none());
+        assert_eq!(parse_instruction_line("ARG NAME").expect("arg").value, None);
+
+        assert!(extract_directives("# malformed\n# syntax=docker/dockerfile:1.4").is_empty());
+        assert!(extract_directives("# =missing-name\n").is_empty());
+        assert!(extract_directives("# syntax= \n").is_empty());
     }
 
     #[test]
@@ -989,6 +1015,31 @@ USER final-user
     }
 
     #[test]
+    fn cyclic_stage_references_do_not_loop_forever() {
+        let dockerfile = extract_dockerfile(
+            r#"
+FROM two AS one
+FROM one AS two
+"#,
+        );
+
+        assert_eq!(
+            find_base_image(&dockerfile, &HashMap::new(), Some("one"), &HashMap::new()),
+            None
+        );
+        assert_eq!(
+            find_user_statement(
+                &dockerfile,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                Some("one"),
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn resolves_user_statements_with_arg_env_and_stage_precedence() {
         let arg_overwritten = extract_dockerfile(
             r#"
@@ -1068,6 +1119,47 @@ USER ${USERNAME}
             .as_deref(),
             Some("user1")
         );
+
+        let global_platform_arg = extract_dockerfile(
+            r#"
+FROM --platform=$BUILDPLATFORM debian
+USER ${TARGETUSER:-root}
+"#,
+        );
+        assert_eq!(
+            find_user_statement(
+                &global_platform_arg,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::from([
+                    ("BUILDPLATFORM".to_string(), "linux/amd64".to_string()),
+                    ("TARGETUSER".to_string(), "vscode".to_string()),
+                ]),
+                None,
+            )
+            .as_deref(),
+            Some("vscode")
+        );
+    }
+
+    #[test]
+    fn variable_expansion_preserves_malformed_shell_expressions() {
+        let dockerfile = extract_dockerfile("ARG IMAGE=alpine\nFROM ${IMAGE}\n");
+
+        assert_eq!(
+            replace_variables(
+                &dockerfile,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                "pre-${IMAGE-post}-$-${IMAGE",
+                ScopeId::Preamble,
+                dockerfile.preamble.instructions.len(),
+            ),
+            "pre-${IMAGE-post}-$-${IMAGE"
+        );
+        assert!(parse_variable_expression("").is_none());
+        assert!(parse_variable_expression("IMAGE?bad").is_none());
     }
 
     #[test]
