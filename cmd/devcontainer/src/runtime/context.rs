@@ -185,8 +185,8 @@ mod tests {
 
     use super::{
         configuration_with_feature_metadata, default_remote_workspace_folder,
-        derived_workspace_mount, remote_workspace_folder_for_args, workspace_mount_for_args,
-        ResolvedConfig,
+        derived_workspace_mount, load_optional_config, remote_workspace_folder_for_args,
+        resolve_existing_container_context, workspace_mount_for_args, ResolvedConfig,
     };
 
     #[test]
@@ -231,6 +231,113 @@ mod tests {
             configuration["containerEnv"]["LOCAL_FEATURE_ENV"],
             "enabled"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_optional_config_returns_none_for_missing_implicit_config_but_errors_for_explicit_config(
+    ) {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        fs::create_dir_all(&root).expect("workspace");
+
+        let implicit =
+            load_optional_config(&["--workspace-folder".to_string(), root.display().to_string()])
+                .expect("implicit missing config");
+        let explicit = load_optional_config(&[
+            "--workspace-folder".to_string(),
+            root.display().to_string(),
+            "--config".to_string(),
+            root.join("missing-devcontainer.json").display().to_string(),
+        ])
+        .err()
+        .expect("explicit missing config");
+
+        assert!(implicit.is_none());
+        assert!(
+            explicit.contains("Unable to locate a dev container config"),
+            "{explicit}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_existing_container_context_inspects_when_no_local_config() {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        fs::create_dir_all(&root).expect("workspace");
+        let engine = root.join("engine");
+        let inspect_json = format!(
+            r#"[{{
+                "Config": {{
+                    "Labels": {{
+                        "devcontainer.local_folder": "{}",
+                        "devcontainer.metadata": "{{\"workspaceFolder\":\"/metadata-workspace\",\"remoteUser\":\"vscode\"}}"
+                    }}
+                }},
+                "Mounts": []
+            }}]"#,
+            root.display()
+        );
+        crate::test_support::write_executable_script(
+            &engine,
+            &format!("#!/bin/sh\ncat <<'JSON'\n{inspect_json}\nJSON\n"),
+        );
+
+        let context = resolve_existing_container_context(&[
+            "--workspace-folder".to_string(),
+            root.display().to_string(),
+            "--container-id".to_string(),
+            "container-123".to_string(),
+            "--docker-path".to_string(),
+            engine.display().to_string(),
+        ])
+        .expect("existing context");
+
+        assert_eq!(context.container_id, "container-123");
+        assert_eq!(context.remote_workspace_folder, "/metadata-workspace");
+        assert_eq!(context.configuration["remoteUser"], "vscode");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_existing_container_context_reloads_config_with_legacy_id_labels() {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        let config_dir = root.join(".devcontainer");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        fs::write(
+            config_dir.join("devcontainer.json"),
+            r#"{"image":"alpine:3.20","workspaceFolder":"/workspace"}"#,
+        )
+        .expect("config");
+        let engine = root.join("engine");
+        crate::test_support::write_executable_script(
+            &engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+case "$1" in
+  ps)
+    printf 'legacy-container\n'
+    ;;
+  inspect)
+    printf '%s\n' '[{{"Config":{{"Labels":{{"devcontainer.local_folder":"{}"}}}},"Mounts":[]}}]'
+    ;;
+esac
+"#,
+                root.display()
+            ),
+        );
+
+        let context = resolve_existing_container_context(&[
+            "--workspace-folder".to_string(),
+            root.display().to_string(),
+            "--docker-path".to_string(),
+            engine.display().to_string(),
+        ])
+        .expect("legacy context");
+
+        assert_eq!(context.container_id, "legacy-container");
+        assert_eq!(context.remote_workspace_folder, "/workspace");
+        assert_eq!(context.configuration["image"], "alpine:3.20");
         let _ = fs::remove_dir_all(root);
     }
 

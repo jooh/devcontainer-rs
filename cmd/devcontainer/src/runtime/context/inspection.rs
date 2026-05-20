@@ -207,6 +207,103 @@ mod tests {
     }
 
     #[test]
+    fn inspect_container_context_prefers_metadata_workspace_folder_over_mounts() {
+        let root = unique_temp_dir("inspect-context-metadata-workspace");
+        fs::create_dir_all(&root).expect("root");
+        let engine = root.join("engine");
+        let inspect_json = r#"[{
+            "Config": {
+                "Labels": {
+                    "devcontainer.metadata": "{\"workspaceFolder\":\"/metadata-workspace\"}"
+                }
+            },
+            "Mounts": [{
+                "Destination": "/mounted-workspace"
+            }]
+        }]"#;
+        write_executable_script(
+            &engine,
+            &format!("#!/bin/sh\ncat <<'JSON'\n{inspect_json}\nJSON\n"),
+        );
+
+        let context = inspect_container_context(
+            &["--docker-path".to_string(), engine.display().to_string()],
+            "container",
+        )
+        .expect("inspect context");
+
+        assert_eq!(
+            context.remote_workspace_folder.as_deref(),
+            Some("/metadata-workspace")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inspect_container_context_uses_first_mount_when_local_folder_label_missing() {
+        let root = unique_temp_dir("inspect-context-first-mount");
+        fs::create_dir_all(&root).expect("root");
+        let engine = root.join("engine");
+        let inspect_json = r#"[{
+            "Config": {
+                "Labels": {}
+            },
+            "Mounts": [{
+                "Source": "/other",
+                "Destination": "/first"
+            }, {
+                "Destination": "/second"
+            }]
+        }]"#;
+        write_executable_script(
+            &engine,
+            &format!("#!/bin/sh\ncat <<'JSON'\n{inspect_json}\nJSON\n"),
+        );
+
+        let context = inspect_container_context(
+            &["--docker-path".to_string(), engine.display().to_string()],
+            "container",
+        )
+        .expect("inspect context");
+
+        assert_eq!(context.remote_workspace_folder.as_deref(), Some("/first"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inspect_container_context_reports_invalid_json_and_empty_inspect() {
+        let root = unique_temp_dir("inspect-context-invalid");
+        fs::create_dir_all(&root).expect("root");
+        let invalid_engine = root.join("invalid-engine");
+        let empty_engine = root.join("empty-engine");
+        write_executable_script(&invalid_engine, "#!/bin/sh\nprintf 'not json'\n");
+        write_executable_script(&empty_engine, "#!/bin/sh\nprintf '[]'\n");
+
+        let invalid = inspect_container_context(
+            &[
+                "--docker-path".to_string(),
+                invalid_engine.display().to_string(),
+            ],
+            "container",
+        )
+        .err()
+        .expect("invalid json");
+        let empty = inspect_container_context(
+            &[
+                "--docker-path".to_string(),
+                empty_engine.display().to_string(),
+            ],
+            "container",
+        )
+        .err()
+        .expect("empty inspect");
+
+        assert!(invalid.contains("Invalid inspect JSON"), "{invalid}");
+        assert_eq!(empty, "Container engine did not return inspect details");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn workspace_folder_from_args_prefers_explicit_folder_and_defaults_to_current_dir() {
         let root = unique_temp_dir("inspect-context-workspace-args");
         fs::create_dir_all(&root).expect("root");
