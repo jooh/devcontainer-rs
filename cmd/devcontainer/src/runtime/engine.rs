@@ -171,10 +171,13 @@ fn is_build_request(request_args: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::process_runner::ProcessLogLevel;
+    use std::io;
+
+    use crate::process_runner::{ProcessLogLevel, ProcessRequest, ProcessResult};
 
     use super::{
         compose_request, default_compose_subcommand_available, engine_request, is_build_request,
+        normalize_process_error, stderr_or_stdout,
     };
 
     #[test]
@@ -228,6 +231,11 @@ mod tests {
             "compose".to_string(),
             "up".to_string(),
         ]));
+        assert!(!is_build_request(&["--flag".to_string()]));
+        assert!(!is_build_request(&[
+            "--project-name".to_string(),
+            "workspace".to_string(),
+        ]));
     }
 
     #[test]
@@ -241,6 +249,15 @@ mod tests {
             request.env.get("DOCKER_BUILDKIT").map(String::as_str),
             Some("0")
         );
+
+        let request = engine_request(
+            &["--buildkit".to_string(), "auto".to_string()],
+            vec!["build".to_string()],
+        );
+        assert_eq!(
+            request.env.get("DOCKER_BUILDKIT").map(String::as_str),
+            Some("1")
+        );
     }
 
     #[test]
@@ -249,5 +266,80 @@ mod tests {
             "--docker-path".to_string(),
             "/path/that/does/not/exist".to_string(),
         ]));
+    }
+
+    #[test]
+    fn stderr_or_stdout_prefers_stderr_and_falls_back_to_stdout() {
+        assert_eq!(
+            stderr_or_stdout(&ProcessResult {
+                status_code: 1,
+                stdout: "stdout message\n".to_string(),
+                stderr: String::new(),
+            }),
+            "stdout message"
+        );
+        assert_eq!(
+            stderr_or_stdout(&ProcessResult {
+                status_code: 1,
+                stdout: "stdout message\n".to_string(),
+                stderr: "stderr message\n".to_string(),
+            }),
+            "stderr message"
+        );
+    }
+
+    #[test]
+    fn process_errors_are_normalized_by_requested_executable() {
+        let request = ProcessRequest {
+            program: "docker-compose".to_string(),
+            args: Vec::new(),
+            cwd: None,
+            env: Default::default(),
+            log_level: ProcessLogLevel::Info,
+        };
+        assert!(normalize_process_error(
+            &[],
+            &request,
+            io::Error::new(io::ErrorKind::NotFound, "missing")
+        )
+        .contains("Container compose executable not found"));
+
+        let request = ProcessRequest {
+            program: "docker".to_string(),
+            args: Vec::new(),
+            cwd: None,
+            env: Default::default(),
+            log_level: ProcessLogLevel::Info,
+        };
+        assert_eq!(
+            normalize_process_error(&[], &request, io::Error::new(io::ErrorKind::NotFound, "missing")),
+            "Container engine executable not found: docker. Install Docker or rerun with --docker-path podman."
+        );
+
+        let request = ProcessRequest {
+            program: "/opt/bin/containerd-shim".to_string(),
+            args: Vec::new(),
+            cwd: None,
+            env: Default::default(),
+            log_level: ProcessLogLevel::Info,
+        };
+        assert!(normalize_process_error(
+            &[
+                "--docker-path".to_string(),
+                "/opt/bin/containerd-shim".to_string()
+            ],
+            &request,
+            io::Error::new(io::ErrorKind::NotFound, "missing")
+        )
+        .contains("Verify --docker-path"));
+
+        assert_eq!(
+            normalize_process_error(
+                &[],
+                &request,
+                io::Error::new(io::ErrorKind::PermissionDenied, "denied")
+            ),
+            "denied"
+        );
     }
 }

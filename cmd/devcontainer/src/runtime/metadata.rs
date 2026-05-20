@@ -170,6 +170,10 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["postCreateCommand"], "echo ready");
+
+        assert!(metadata_entries(None).is_empty());
+        assert!(metadata_entries(Some("not json")).is_empty());
+        assert!(metadata_entries(Some("true")).is_empty());
     }
 
     #[test]

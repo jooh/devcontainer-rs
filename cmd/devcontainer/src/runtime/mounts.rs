@@ -203,6 +203,25 @@ mod tests {
     }
 
     #[test]
+    fn mount_value_to_engine_arg_accepts_strings_and_ignores_unsupported_shapes() {
+        assert_eq!(
+            mount_value_to_engine_arg(&json!("type=volume,target=/cache")),
+            Some("type=volume,target=/cache".to_string())
+        );
+        assert_eq!(mount_value_to_engine_arg(&json!(true)), None);
+        assert_eq!(
+            mount_value_to_engine_arg(&json!({
+                "type": "bind",
+                "source": "/workspace",
+                "target": "/workspace",
+                "numeric": 5,
+                "nested": {"ignored": true}
+            })),
+            Some("type=bind,source=/workspace,target=/workspace,numeric=5".to_string())
+        );
+    }
+
+    #[test]
     fn validate_cli_mount_value_accepts_extended_scalar_options() {
         validate_cli_mount_value(
             "type=bind,source=/tmp/src,target=/tmp/dst,consistency=delegated,bind.propagation=rshared,readonly",
@@ -221,6 +240,19 @@ mod tests {
             validate_cli_mount_value("type=bind,source=/tmp/src").expect_err("missing target");
 
         assert!(error.contains("Invalid value for option --mount"));
+
+        assert!(validate_cli_mount_value("type=tmpfs,target=/cache")
+            .expect_err("invalid type")
+            .contains("Invalid value"));
+        assert!(validate_cli_mount_value("readonly")
+            .expect_err("missing key value")
+            .contains("Invalid value"));
+        assert!(validate_cli_mount_value("type=bind,source=,target=/cache")
+            .expect_err("empty source")
+            .contains("Invalid value"));
+        assert!(validate_cli_mount_value("type=bind,source=/cache,target=")
+            .expect_err("empty target")
+            .contains("Invalid value"));
     }
 
     #[test]
