@@ -154,7 +154,8 @@ pub(super) fn start_existing_container(args: &[String], container_id: &str) -> R
 }
 
 pub(super) fn remove_container(args: &[String], container_id: &str) -> Result<(), String> {
-    for attempt in 0..7 {
+    let mut attempt = 0;
+    loop {
         let result = engine::run_engine(
             args,
             vec!["rm".to_string(), "-f".to_string(), container_id.to_string()],
@@ -167,9 +168,9 @@ pub(super) fn remove_container(args: &[String], container_id: &str) -> Result<()
         if attempt == 6 || !container_removal_already_in_progress(&error) {
             return Err(error);
         }
+        attempt += 1;
         thread::sleep(Duration::from_millis(100));
     }
-    unreachable!("bounded retry loop should return")
 }
 
 fn container_removal_already_in_progress(error: &str) -> bool {
@@ -380,6 +381,119 @@ exit 1
         assert!(invocations.contains("--gpus all"));
         assert!(invocations.contains("example/native:test /bin/sh -lc"));
         assert!(!should_add_gpu_capability(&json!({}), &args).expect("no gpu"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn engine_run_reports_start_rm_and_gpu_detection_errors() {
+        let root = unique_temp_dir("devcontainer-engine-run-errors");
+        fs::create_dir_all(&root).expect("root dir");
+        let fake_engine = root.join("docker");
+        write_executable_script(
+            &fake_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  run)
+    if [ "${2:-}" = "empty" ]; then
+      exit 0
+    fi
+    echo "run failed" >&2
+    exit 2
+    ;;
+  start)
+    echo "start failed" >&2
+    exit 3
+    ;;
+  rm)
+    echo "not found" >&2
+    exit 4
+    ;;
+  info)
+    if [ "${2:-}" = "ok" ]; then
+      echo "nvidia-container-runtime"
+      exit 0
+    fi
+    echo "info failed" >&2
+    exit 5
+    ;;
+esac
+exit 6
+"#,
+        );
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let resolved = ResolvedConfig {
+            workspace_folder: workspace.clone(),
+            config_file: workspace.join(".devcontainer").join("devcontainer.json"),
+            configuration: json!({
+                "workspaceMount": "source=/tmp,target=/workspace,type=bind"
+            }),
+        };
+        let args = vec![
+            "--docker-path".to_string(),
+            fake_engine.display().to_string(),
+        ];
+
+        assert!(
+            start_container(&resolved, &args, "example/native:test", "/workspace")
+                .expect_err("run failure")
+                .contains("run failed")
+        );
+        assert!(start_existing_container(&args, "container-123")
+            .expect_err("start failure")
+            .contains("start failed"));
+        assert!(remove_container(&args, "container-123")
+            .expect_err("rm failure")
+            .contains("not found"));
+        assert!(!should_add_gpu_capability(
+            &json!({"hostRequirements": {"gpu": "optional"}}),
+            &args
+        )
+        .expect("failed gpu detection is false"));
+
+        let empty_run_engine = root.join("empty-run");
+        write_executable_script(
+            &empty_run_engine,
+            r#"#!/bin/sh
+set -eu
+if [ "$1" = "run" ]; then
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let empty_args = vec![
+            "--docker-path".to_string(),
+            empty_run_engine.display().to_string(),
+        ];
+        assert_eq!(
+            start_container(&resolved, &empty_args, "example/native:test", "/workspace")
+                .expect_err("empty id"),
+            "Container engine did not return a container id"
+        );
+
+        let gpu_engine = root.join("gpu-engine");
+        write_executable_script(
+            &gpu_engine,
+            r#"#!/bin/sh
+set -eu
+if [ "$1" = "info" ]; then
+  echo "nvidia-container-runtime"
+  exit 0
+fi
+exit 1
+"#,
+        );
+        let gpu_args = vec![
+            "--docker-path".to_string(),
+            gpu_engine.display().to_string(),
+        ];
+        assert!(should_add_gpu_capability(
+            &json!({"hostRequirements": {"gpu": "optional"}}),
+            &gpu_args
+        )
+        .expect("gpu detected"));
         let _ = fs::remove_dir_all(root);
     }
 }
