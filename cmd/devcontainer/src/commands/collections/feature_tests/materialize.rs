@@ -484,6 +484,22 @@ mod tests {
     }
 
     #[test]
+    fn alternate_feature_option_values_returns_empty_without_manifest_options() {
+        let feature_dir = unique_feature_test_dir();
+        fs::create_dir_all(&feature_dir).expect("feature dir");
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            r#"{"id":"demo","version":"1.0.0"}"#,
+        )
+        .expect("manifest");
+
+        let values = alternate_feature_option_values(&feature_dir, false).expect("values");
+
+        assert!(values.is_empty());
+        let _ = fs::remove_dir_all(feature_dir);
+    }
+
+    #[test]
     fn alternate_feature_option_values_handles_boolean_and_json_defaults() {
         let feature_dir = unique_feature_test_dir();
         fs::create_dir_all(&feature_dir).expect("feature dir");
@@ -587,6 +603,8 @@ mod tests {
         let workspace = unique_feature_test_dir();
         let scenario_dir = workspace.join("scenarios").join("basic");
         fs::create_dir_all(&scenario_dir).expect("scenario dir");
+        let absolute_dockerfile = workspace.join("absolute.Dockerfile");
+        let absolute_context = workspace.join("absolute-context");
         let options = test_options(&workspace);
         let explicit = scenario_base_image(
             &options,
@@ -620,6 +638,18 @@ mod tests {
             &workspace,
         )
         .expect("escaped scenario");
+        let absolute_build = scenario_base_image(
+            &options,
+            "scenarios/basic",
+            &json!({
+                "build": {
+                    "dockerfile": absolute_dockerfile,
+                    "context": absolute_context
+                }
+            }),
+            &workspace,
+        )
+        .expect("absolute build paths");
 
         assert_eq!(explicit, BaseImageSource::Image("ubuntu:24.04".to_string()));
         assert_eq!(
@@ -638,6 +668,13 @@ mod tests {
             BaseImageSource::Build {
                 dockerfile_path: workspace.join("Dockerfile"),
                 context_path: workspace.join(".")
+            }
+        );
+        assert_eq!(
+            absolute_build,
+            BaseImageSource::Build {
+                dockerfile_path: absolute_dockerfile,
+                context_path: absolute_context
             }
         );
         let _ = fs::remove_dir_all(workspace);

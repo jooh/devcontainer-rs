@@ -1440,9 +1440,10 @@ mod tests {
         materialize_feature_artifact_with_transport, metadata_from_feature_layer,
         metadata_from_manifest_annotation, parse_http_headers, parse_oci_reference,
         platform_default_credential_helper, registry_blob, registry_config_keys,
-        registry_feature_artifact, registry_tags, resolve_feature_artifact,
-        resolve_feature_artifact_for_reference, safe_archive_path, OciFeatureArtifact,
-        OciFeatureLayer, OciHttpResponse, OciReference, OciTransport, VersionSelector, BASE64,
+        registry_feature_artifact, registry_get, registry_tags, resolve_feature_artifact,
+        resolve_feature_artifact_for_reference, safe_archive_path, verify_manifest_digest,
+        OciFeatureArtifact, OciFeatureLayer, OciHttpResponse, OciReference, OciTransport,
+        VersionSelector, BASE64,
     };
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -1996,6 +1997,58 @@ mod tests {
     }
 
     #[test]
+    fn registry_get_returns_unauthorized_without_auth_challenge() {
+        let transport = FakeTransport::default();
+        transport.add(
+            "https://registry.example.com/v2/acme/features/fake/manifests/latest",
+            OciHttpResponse {
+                status: 401,
+                headers: HashMap::new(),
+                body: Vec::new(),
+            },
+        );
+
+        let response = registry_get(
+            &transport,
+            "registry.example.com",
+            "https://registry.example.com/v2/acme/features/fake/manifests/latest",
+            &[],
+        )
+        .expect("unauthorized response");
+
+        assert_eq!(response.status, 401);
+        assert_eq!(transport.seen_authorization.lock().expect("seen").len(), 1);
+    }
+
+    #[test]
+    fn verify_manifest_digest_rejects_header_and_reference_mismatches() {
+        let body = br#"{"schemaVersion":2}"#;
+        let reference = OciReference {
+            original: "registry.example.com/acme/features/fake@sha256:bad".to_string(),
+            resource: "registry.example.com/acme/features/fake".to_string(),
+            registry: "registry.example.com".to_string(),
+            repository: "acme/features/fake".to_string(),
+            tag: None,
+            digest: Some("sha256:bad".to_string()),
+        };
+
+        let header_error =
+            verify_manifest_digest(&reference, Some("sha256:also-bad".to_string()), body)
+                .expect_err("header mismatch");
+        let reference_error =
+            verify_manifest_digest(&reference, None, body).expect_err("reference mismatch");
+
+        assert!(
+            header_error.contains("header sha256:also-bad"),
+            "{header_error}"
+        );
+        assert!(
+            reference_error.contains("expected sha256:bad"),
+            "{reference_error}"
+        );
+    }
+
+    #[test]
     fn configured_registry_authorization_reads_env_and_docker_config_shapes() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let original_oci_auth = env::var_os("DEVCONTAINERS_OCI_AUTH");
@@ -2057,6 +2110,27 @@ mod tests {
         assert_eq!(
             configured_basic_authorization("registry.example.com").as_deref(),
             Some("Basic ZmFsbGJhY2stdXNlcjpmYWxsYmFjay1zZWNyZXQ=")
+        );
+
+        fs::write(
+            config_dir.join("config.json"),
+            json!({
+                "auths": {
+                    "registry.example.com": {
+                        "auth": "not base64"
+                    },
+                    "https://registry.example.com": {
+                        "username": "invalid-fallback-user",
+                        "password": "invalid-fallback-secret"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("invalid base64 fallback config");
+        assert_eq!(
+            configured_basic_authorization("registry.example.com").as_deref(),
+            Some("Basic aW52YWxpZC1mYWxsYmFjay11c2VyOmludmFsaWQtZmFsbGJhY2stc2VjcmV0")
         );
 
         fs::write(
@@ -2610,6 +2684,38 @@ mod tests {
             assert!(destination.join("repo").join("data.txt").is_file());
             let _ = std::fs::remove_dir_all(destination);
         }
+    }
+
+    #[test]
+    fn extract_feature_layer_skips_current_dir_entries() {
+        let mut archive = Vec::new();
+        {
+            let mut builder = Builder::new(&mut archive);
+            let mut header = Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Directory);
+            header.set_size(0);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, ".", &b""[..])
+                .expect("append current dir");
+            append_file(
+                &mut builder,
+                "devcontainer-feature.json",
+                br#"{"id":"fake"}"#,
+            );
+            builder.finish().expect("finish archive");
+        }
+        let destination = crate::test_support::unique_temp_dir("devcontainer-oci-current-dir");
+
+        extract_feature_layer(
+            &archive,
+            "application/vnd.devcontainers.layer.v1+tar",
+            &destination,
+        )
+        .expect("extract");
+
+        assert!(destination.join("devcontainer-feature.json").is_file());
+        let _ = fs::remove_dir_all(destination);
     }
 
     #[cfg(unix)]

@@ -208,3 +208,61 @@ fn merge_lifecycle_value(merged: &mut Map<String, Value>, metadata: &Value, key:
         merged.insert(key.to_string(), value);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{apply_feature_metadata, feature_metadata_entry};
+
+    #[test]
+    fn feature_metadata_entry_returns_empty_for_non_object() {
+        assert_eq!(feature_metadata_entry(&json!(["not", "object"])), json!({}));
+    }
+
+    #[test]
+    fn feature_metadata_mounts_replace_by_destination_aliases() {
+        let merged = apply_feature_metadata(
+            &json!({
+                "name": "demo"
+            }),
+            &[
+                json!({
+                    "mounts": [
+                        "type=bind,source=/old,target=/workspace",
+                        { "type": "volume", "target": "/cache", "source": "old-cache" },
+                        { "type": "volume", "dst": "/logs", "source": "old-logs" }
+                    ]
+                }),
+                json!({
+                    "mounts": [
+                        { "type": "volume", "destination": "/workspace", "source": "new-workspace" },
+                        "type=volume,source=new-cache,target=/cache",
+                        { "type": "volume", "target": "/data", "source": "new-data" }
+                    ]
+                }),
+            ],
+            false,
+        );
+
+        assert_eq!(merged["name"], "demo");
+        assert_eq!(merged["mounts"].as_array().expect("mounts").len(), 4);
+        assert!(merged["mounts"]
+            .as_array()
+            .expect("mounts")
+            .iter()
+            .any(
+                |mount| mount["destination"] == "/workspace" && mount["source"] == "new-workspace"
+            ));
+        assert!(merged["mounts"]
+            .as_array()
+            .expect("mounts")
+            .iter()
+            .any(|mount| mount == "type=volume,source=new-cache,target=/cache"));
+        assert!(merged["mounts"]
+            .as_array()
+            .expect("mounts")
+            .iter()
+            .any(|mount| mount["dst"] == "/logs"));
+    }
+}

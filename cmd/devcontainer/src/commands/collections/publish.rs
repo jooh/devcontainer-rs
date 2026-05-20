@@ -260,3 +260,59 @@ fn parse_semver(input: &str) -> Option<SemVer> {
         patch,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use serde_json::json;
+
+    use crate::test_support::unique_temp_dir;
+
+    use super::{parse_semver, publish_collection_target_to_oci};
+
+    #[test]
+    fn publish_without_output_dir_uses_default_sibling_layout() {
+        let root = unique_temp_dir("devcontainer-publish");
+        let feature = root.join("demo");
+        fs::create_dir_all(&feature).expect("feature dir");
+        fs::write(
+            feature.join("devcontainer-feature.json"),
+            r#"{"id":"demo","version":"1.2.3"}"#,
+        )
+        .expect("manifest");
+        fs::write(feature.join("install.sh"), "#!/bin/sh\n").expect("install script");
+
+        let payload = publish_collection_target_to_oci(
+            &feature,
+            "devcontainer-feature.json",
+            "feature",
+            "features publish",
+            &[
+                "--registry".to_string(),
+                "registry.example.com".to_string(),
+                "--namespace".to_string(),
+                "acme/features".to_string(),
+            ],
+        )
+        .expect("publish");
+
+        assert_eq!(payload["layout"], json!(root.join("feature-oci-layout")));
+        assert_eq!(
+            payload["resource"],
+            "registry.example.com/acme/features/demo"
+        );
+        assert_eq!(
+            payload["publishedTags"],
+            json!(["1", "1.2", "1.2.3", "latest"])
+        );
+        assert!(root.join("feature-oci-layout").join("index.json").is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parse_semver_rejects_extra_components() {
+        assert!(parse_semver("1.2.3").is_some());
+        assert!(parse_semver("1.2.3.4").is_none());
+    }
+}
