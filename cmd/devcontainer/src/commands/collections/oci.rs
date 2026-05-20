@@ -205,9 +205,17 @@ pub(crate) fn materialize_feature_artifact(
     artifact: &OciFeatureArtifact,
     destination: &Path,
 ) -> Result<(), String> {
+    materialize_feature_artifact_with_transport(artifact, destination, &CurlTransport)
+}
+
+fn materialize_feature_artifact_with_transport(
+    artifact: &OciFeatureArtifact,
+    destination: &Path,
+    transport: &dyn OciTransport,
+) -> Result<(), String> {
     match &artifact.layer {
         OciFeatureLayer::Registry { digest, media_type } => {
-            let bytes = registry_blob(artifact, digest, &CurlTransport)?;
+            let bytes = registry_blob(artifact, digest, transport)?;
             verify_digest(digest, &bytes, "Feature layer")?;
             extract_feature_layer(&bytes, media_type, destination)
         }
@@ -1429,8 +1437,10 @@ mod tests {
         configured_basic_authorization, configured_bearer_authorization, docker_config_auth,
         exact_semver, extract_feature_layer, feature_ref_json, fetch_bearer_token, fixture_tags,
         is_registry_qualified_reference, list_feature_tags, materialize_feature_artifact,
-        parse_http_headers, parse_oci_reference, platform_default_credential_helper, registry_blob,
-        registry_config_keys, registry_feature_artifact, registry_tags, resolve_feature_artifact,
+        materialize_feature_artifact_with_transport, metadata_from_feature_layer,
+        metadata_from_manifest_annotation, parse_http_headers, parse_oci_reference,
+        platform_default_credential_helper, registry_blob, registry_config_keys,
+        registry_feature_artifact, registry_tags, resolve_feature_artifact,
         resolve_feature_artifact_for_reference, safe_archive_path, OciFeatureArtifact,
         OciFeatureLayer, OciHttpResponse, OciReference, OciTransport, VersionSelector, BASE64,
     };
@@ -1991,6 +2001,7 @@ mod tests {
         let original_oci_auth = env::var_os("DEVCONTAINERS_OCI_AUTH");
         let original_github_token = env::var_os("GITHUB_TOKEN");
         let original_docker_config = env::var_os("DOCKER_CONFIG");
+        let original_path = env::var_os("PATH");
         let config_dir = crate::test_support::unique_temp_dir("devcontainer-oci-auth");
         fs::create_dir_all(&config_dir).expect("config dir");
 
@@ -2031,6 +2042,27 @@ mod tests {
             config_dir.join("config.json"),
             json!({
                 "auths": {
+                    "registry.example.com": {
+                        "auth": BASE64.encode("malformed-without-colon")
+                    },
+                    "https://registry.example.com": {
+                        "username": "fallback-user",
+                        "password": "fallback-secret"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("fallback config");
+        assert_eq!(
+            configured_basic_authorization("registry.example.com").as_deref(),
+            Some("Basic ZmFsbGJhY2stdXNlcjpmYWxsYmFjay1zZWNyZXQ=")
+        );
+
+        fs::write(
+            config_dir.join("config.json"),
+            json!({
+                "auths": {
                     "https://registry.example.com": {
                         "auth": BASE64.encode("docker-user:docker-secret")
                     }
@@ -2060,6 +2092,48 @@ mod tests {
         let auth = docker_config_auth("registry.example.com").expect("docker config auth");
         assert_eq!(auth.username.as_deref(), Some("plain-user"));
         assert_eq!(auth.secret.as_deref(), Some("plain-secret"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let helper_dir = config_dir.join("helpers");
+            fs::create_dir_all(&helper_dir).expect("helper dir");
+            let helper = helper_dir.join("docker-credential-testhelper");
+            fs::write(
+                &helper,
+                "#!/bin/sh\nprintf '{\"Username\":\"helper-user\",\"Secret\":\"helper-secret\"}'\n",
+            )
+            .expect("helper");
+            let mut permissions = fs::metadata(&helper)
+                .expect("helper metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&helper, permissions).expect("helper permissions");
+            let helper_path = format!(
+                "{}:{}",
+                helper_dir.display(),
+                original_path
+                    .as_ref()
+                    .map(|value| value.to_string_lossy())
+                    .unwrap_or_default()
+            );
+            env::set_var("PATH", helper_path);
+            fs::write(
+                config_dir.join("config.json"),
+                json!({
+                    "credHelpers": {
+                        "registry.example.com": "testhelper"
+                    }
+                })
+                .to_string(),
+            )
+            .expect("helper config");
+            let auth = docker_config_auth("registry.example.com").expect("helper auth");
+            assert_eq!(auth.username.as_deref(), Some("helper-user"));
+            assert_eq!(auth.secret.as_deref(), Some("helper-secret"));
+        }
+
         assert_eq!(
             registry_config_keys("registry.example.com"),
             vec![
@@ -2090,6 +2164,9 @@ mod tests {
             env::set_var("DOCKER_CONFIG", value);
         } else {
             env::remove_var("DOCKER_CONFIG");
+        }
+        if let Some(value) = original_path {
+            env::set_var("PATH", value);
         }
         let _ = fs::remove_dir_all(config_dir);
     }
@@ -2225,6 +2302,119 @@ mod tests {
     }
 
     #[test]
+    fn local_layout_reports_malformed_manifest_and_unsupported_digests() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-oci-layout-errors");
+        let resource = "ghcr.io/acme/features/local-feature";
+        let layout_dir = workspace
+            .join(".devcontainer")
+            .join("oci-layouts")
+            .join(resource);
+        fs::create_dir_all(layout_dir.join("blobs").join("sha256")).expect("layout");
+        fs::write(layout_dir.join("oci-layout"), "{}").expect("marker");
+        let invalid_manifest = b"not-json";
+        let invalid_manifest_digest = super::sha256_digest(invalid_manifest);
+        fs::write(
+            layout_dir.join("index.json"),
+            json!({
+                "schemaVersion": 2,
+                "manifests": [{
+                    "digest": format!("sha256:{invalid_manifest_digest}"),
+                    "annotations": {
+                        "org.opencontainers.image.ref.name": "latest"
+                    }
+                }]
+            })
+            .to_string(),
+        )
+        .expect("index");
+        fs::write(
+            layout_dir
+                .join("blobs")
+                .join("sha256")
+                .join(invalid_manifest_digest),
+            invalid_manifest,
+        )
+        .expect("manifest");
+
+        let error = resolve_feature_artifact(
+            "ghcr.io/acme/features/local-feature",
+            Some(workspace.as_path()),
+        )
+        .expect_err("invalid manifest");
+        assert!(error.contains("invalid JSON"), "{error}");
+
+        fs::write(
+            layout_dir.join("index.json"),
+            json!({
+                "schemaVersion": 2,
+                "manifests": [{
+                    "digest": "sha512:abc",
+                    "annotations": {
+                        "org.opencontainers.image.ref.name": "latest"
+                    }
+                }]
+            })
+            .to_string(),
+        )
+        .expect("index");
+        let error = resolve_feature_artifact(
+            "ghcr.io/acme/features/local-feature",
+            Some(workspace.as_path()),
+        )
+        .expect_err("unsupported digest");
+        assert!(error.contains("Unsupported OCI digest"), "{error}");
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn manifest_and_layer_metadata_errors_are_reported() {
+        let parsed = parse_oci_reference("ghcr.io/acme/features/fake:1.0.0").expect("reference");
+
+        let error = metadata_from_manifest_annotation(&json!({
+            "annotations": {
+                "dev.containers.metadata": "{not-json"
+            }
+        }))
+        .expect_err("invalid annotation");
+        assert!(error.contains("invalid JSON"), "{error}");
+
+        let error = metadata_from_feature_layer(
+            &parsed,
+            &OciFeatureLayer::Missing,
+            &FakeTransport::default(),
+        )
+        .expect_err("missing metadata");
+        assert!(error.contains("does not provide metadata"), "{error}");
+
+        let layer_dir = crate::test_support::unique_temp_dir("devcontainer-oci-layer");
+        fs::create_dir_all(&layer_dir).expect("layer dir");
+        let layer_path = layer_dir.join("layer.tar");
+        let mut archive = Vec::new();
+        {
+            let mut builder = Builder::new(&mut archive);
+            append_file(&mut builder, "README.md", b"no manifest here");
+            builder.finish().expect("finish archive");
+        }
+        fs::write(&layer_path, &archive).expect("layer");
+        let error = metadata_from_feature_layer(
+            &parsed,
+            &OciFeatureLayer::LocalPath {
+                digest: format!("sha256:{}", super::sha256_digest(&archive)),
+                media_type: "application/vnd.devcontainers.layer.v1+tar".to_string(),
+                path: layer_path,
+            },
+            &FakeTransport::default(),
+        )
+        .expect_err("manifest missing");
+        assert!(
+            error.contains("does not contain devcontainer-feature.json"),
+            "{error}"
+        );
+        let _ = fs::remove_dir_all(layer_dir);
+    }
+
+    #[test]
     fn fixture_tags_are_sorted_by_latest_semver() {
         assert_eq!(
             fixture_tags("ghcr.io/devcontainers/features/git").expect("fixture tags"),
@@ -2352,6 +2542,62 @@ mod tests {
     }
 
     #[test]
+    fn materialize_registry_layer_uses_transport_and_verifies_digest() {
+        let destination = crate::test_support::unique_temp_dir("devcontainer-oci-registry-layer");
+        let transport = FakeTransport::default();
+        let layer = layer_bytes(false);
+        let digest = format!("sha256:{}", super::sha256_digest(&layer));
+        let artifact = OciFeatureArtifact {
+            original_reference: "ghcr.io/acme/features/fake:1.0.0".to_string(),
+            resource: "ghcr.io/acme/features/fake".to_string(),
+            registry: "ghcr.io".to_string(),
+            repository: "acme/features/fake".to_string(),
+            tag: Some("1.0.0".to_string()),
+            reference_digest: None,
+            manifest_digest: "sha256:manifest".to_string(),
+            manifest: json!({}),
+            metadata: json!({"id":"fake"}),
+            layer: OciFeatureLayer::Registry {
+                digest: digest.clone(),
+                media_type: "application/vnd.devcontainers.layer.v1+tar".to_string(),
+            },
+        };
+        transport.add(
+            &format!("https://ghcr.io/v2/acme/features/fake/blobs/{digest}"),
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: layer,
+            },
+        );
+
+        materialize_feature_artifact_with_transport(&artifact, &destination, &transport)
+            .expect("registry layer");
+        assert!(destination.join("repo").join("data.txt").is_file());
+
+        let wrong = OciFeatureArtifact {
+            layer: OciFeatureLayer::Registry {
+                digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    .to_string(),
+                media_type: "application/vnd.devcontainers.layer.v1+tar".to_string(),
+            },
+            ..artifact
+        };
+        transport.add(
+            "https://ghcr.io/v2/acme/features/fake/blobs/sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: layer_bytes(false),
+            },
+        );
+        let error = materialize_feature_artifact_with_transport(&wrong, &destination, &transport)
+            .expect_err("digest mismatch");
+        assert!(error.contains("Feature layer digest mismatch"), "{error}");
+        let _ = fs::remove_dir_all(destination);
+    }
+
+    #[test]
     fn extracts_plain_and_gzip_feature_layers_safely() {
         for (gzip, media_type) in [
             (false, "application/vnd.devcontainers.layer.v1+tar"),
@@ -2423,6 +2669,7 @@ mod tests {
             Path::new("nested/file")
         );
         assert!(safe_archive_path(Path::new("/absolute")).is_err());
+        assert!(safe_archive_path(Path::new("../escape")).is_err());
         let _ = fs::remove_dir_all(destination);
     }
 
