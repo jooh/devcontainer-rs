@@ -175,7 +175,9 @@ mod tests {
     use crate::commands::common::DEVCONTAINER_LOCAL_FOLDER_LABEL;
     use crate::test_support::unique_temp_dir;
 
-    use super::{load_resolved_config, load_resolved_config_with_id_labels};
+    use super::{
+        load_resolved_config, load_resolved_config_with_id_labels, resolve_override_config_path,
+    };
 
     #[test]
     fn load_resolved_config_with_id_labels_recomputes_devcontainer_id_from_override_labels() {
@@ -210,5 +212,50 @@ mod tests {
         assert_ne!(current["postAttachCommand"], legacy["postAttachCommand"]);
 
         let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn load_resolved_config_defaults_remote_workspace_folder_from_workspace() {
+        let workspace = unique_temp_dir("devcontainer-config-resolution-default-workspace");
+        let config_dir = workspace.join(".devcontainer");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        fs::write(
+            config_dir.join("devcontainer.json"),
+            "{\n  \"image\": \"alpine:3.20\",\n  \"remoteEnv\": {\"PWD\": \"${containerWorkspaceFolder}\"}\n}\n",
+        )
+        .expect("config write");
+
+        let (_, _, resolved) = load_resolved_config(&[
+            "--workspace-folder".to_string(),
+            workspace.display().to_string(),
+        ])
+        .expect("resolved config");
+
+        let expected_workspace = format!(
+            "/workspaces/{}",
+            workspace
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap()
+        );
+        assert_eq!(
+            resolved
+                .get("remoteEnv")
+                .and_then(|value| value.get("PWD"))
+                .and_then(serde_json::Value::as_str),
+            Some(expected_workspace.as_str())
+        );
+    }
+
+    #[test]
+    fn resolve_override_config_path_reports_relative_missing_paths() {
+        let err = resolve_override_config_path(&[
+            "--override-config".to_string(),
+            "missing-devcontainer-override.json".to_string(),
+        ])
+        .expect_err("missing override");
+
+        assert!(err.contains("Unable to locate an override dev container config"));
+        assert!(err.contains("missing-devcontainer-override.json"));
     }
 }

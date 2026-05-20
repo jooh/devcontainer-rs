@@ -13,6 +13,15 @@ pub(crate) fn package_collection_target(
     manifest_name: &str,
     prefix: &str,
 ) -> Result<PathBuf, String> {
+    package_collection_target_with_tar(target, manifest_name, prefix, "tar")
+}
+
+fn package_collection_target_with_tar(
+    target: &Path,
+    manifest_name: &str,
+    prefix: &str,
+    tar_program: &str,
+) -> Result<PathBuf, String> {
     let _ = parse_manifest(target, manifest_name)?;
     let archive_name = format!(
         "{}-{}.tgz",
@@ -25,7 +34,7 @@ pub(crate) fn package_collection_target(
     let archive_path = target.parent().unwrap_or(target).join(archive_name);
 
     let result = process_runner::run_process(&ProcessRequest {
-        program: "tar".to_string(),
+        program: tar_program.to_string(),
         args: vec![
             "-czf".to_string(),
             archive_path.display().to_string(),
@@ -59,4 +68,37 @@ pub(crate) fn copy_directory_recursive(source: &Path, destination: &Path) -> Res
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use crate::test_support::{unique_temp_dir, write_executable_script};
+
+    use super::package_collection_target_with_tar;
+
+    #[test]
+    fn package_collection_target_reports_tar_stderr_on_archive_failure() {
+        let root = unique_temp_dir("package-target-tar-failure");
+        let target = root.join("feature");
+        fs::create_dir_all(&target).expect("target");
+        fs::write(
+            target.join("devcontainer-feature.json"),
+            r#"{"id":"example","version":"1.0.0"}"#,
+        )
+        .expect("manifest");
+        let tar = root.join("tar");
+        write_executable_script(&tar, "#!/bin/sh\nprintf 'archive failed\\n' >&2\nexit 9\n");
+
+        let err = package_collection_target_with_tar(
+            &target,
+            "devcontainer-feature.json",
+            "feature",
+            &tar.display().to_string(),
+        )
+        .expect_err("tar failure");
+
+        assert_eq!(err, "archive failed\n");
+    }
 }

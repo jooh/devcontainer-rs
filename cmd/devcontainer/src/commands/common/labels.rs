@@ -160,6 +160,29 @@ mod tests {
     }
 
     #[test]
+    fn normalize_devcontainer_label_path_handles_unc_relative_and_root_cases() {
+        assert_eq!(
+            normalize_devcontainer_label_path_for_platform("linux", "/Work/../Code"),
+            "/Work/../Code"
+        );
+        assert_eq!(
+            normalize_devcontainer_label_path_for_platform(
+                "windows",
+                r"\\server/share/project/../devcontainer.json"
+            ),
+            r"\\server\share\devcontainer.json"
+        );
+        assert_eq!(
+            normalize_devcontainer_label_path_for_platform("windows", r"..\project\.\config"),
+            r"..\project\config"
+        );
+        assert_eq!(
+            normalize_devcontainer_label_path_for_platform("windows", ""),
+            "."
+        );
+    }
+
+    #[test]
     fn default_devcontainer_id_labels_use_normalized_windows_paths() {
         let [(workspace_key, workspace_value), (config_key, config_value)] =
             default_devcontainer_id_label_pairs_for_platform(

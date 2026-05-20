@@ -256,10 +256,15 @@ pub(crate) fn secrets_env(args: &[String]) -> Result<HashMap<String, String>, St
 mod tests {
     //! Unit tests for shared command-line parsing.
 
+    use std::fs;
+
     use crate::process_runner::ProcessLogLevel;
+    use crate::test_support::unique_temp_dir;
 
     use super::{
-        runtime_options, validate_choice_option, validate_number_option, validate_paired_options,
+        parse_bool_option, parse_json_string_array_option, parse_remote_env, remote_env_overrides,
+        runtime_options, secrets_env, validate_choice_option, validate_number_option,
+        validate_option_values, validate_paired_options,
     };
 
     #[test]
@@ -356,6 +361,61 @@ mod tests {
     }
 
     #[test]
+    fn bool_options_accept_presence_truthy_values_and_defaults() {
+        assert!(parse_bool_option(
+            &["--flag".to_string(), "--next".to_string()],
+            "--flag",
+            false
+        ));
+        assert!(parse_bool_option(
+            &["--flag".to_string(), "yes".to_string()],
+            "--flag",
+            false
+        ));
+        assert!(parse_bool_option(&["--flag".to_string()], "--flag", false));
+        assert!(parse_bool_option(&[], "--flag", true));
+    }
+
+    #[test]
+    fn option_value_helpers_report_missing_and_invalid_json_arrays() {
+        assert_eq!(
+            validate_option_values(&["--name".to_string()], &["--name"])
+                .expect_err("missing value"),
+            "Missing value for option: --name"
+        );
+        assert_eq!(
+            validate_option_values(&["--name".to_string(), "--other".to_string()], &["--name"],)
+                .expect_err("missing value before next option"),
+            "Missing value for option: --name"
+        );
+
+        assert_eq!(
+            parse_json_string_array_option(&[], "--features").expect("missing option"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            parse_json_string_array_option(
+                &["--features".to_string(), "[\"a\",\"b\"]".to_string()],
+                "--features",
+            )
+            .expect("string array"),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert!(parse_json_string_array_option(
+            &["--features".to_string(), "{}".to_string()],
+            "--features",
+        )
+        .expect_err("array required")
+        .contains("JSON array"));
+        assert!(parse_json_string_array_option(
+            &["--features".to_string(), "[1]".to_string()],
+            "--features",
+        )
+        .expect_err("string entries required")
+        .contains("entries must be strings"));
+    }
+
+    #[test]
     fn choice_options_reject_unknown_values() {
         let error = validate_choice_option(
             &["--log-level".to_string(), "warning".to_string()],
@@ -391,5 +451,56 @@ mod tests {
 
         assert!(error.contains("--terminal-columns"));
         assert!(error.contains("--terminal-rows"));
+    }
+
+    #[test]
+    fn remote_env_and_secrets_helpers_parse_supported_shapes() {
+        let args = vec![
+            "--remote-env".to_string(),
+            "A=one".to_string(),
+            "--remote-env".to_string(),
+            "malformed".to_string(),
+            "--remote-env".to_string(),
+            "B=two=three".to_string(),
+        ];
+        let remote_env = parse_remote_env(&args);
+        assert_eq!(remote_env["A"], "one");
+        assert_eq!(remote_env["B"], "two=three");
+        assert_eq!(remote_env_overrides(&args)["A"], "one");
+
+        let root = unique_temp_dir("secrets-env");
+        fs::create_dir_all(&root).expect("root");
+        let secrets_file = root.join("secrets.jsonc");
+        fs::write(
+            &secrets_file,
+            r#"{
+                "NULL_VALUE": null,
+                "BOOL_VALUE": true,
+                "NUMBER_VALUE": 42,
+                "STRING_VALUE": "secret",
+                "OBJECT_VALUE": {"nested": true}
+            }"#,
+        )
+        .expect("secrets file");
+        let secrets = secrets_env(&[
+            "--secrets-file".to_string(),
+            secrets_file.display().to_string(),
+        ])
+        .expect("secrets");
+
+        assert!(!secrets.contains_key("NULL_VALUE"));
+        assert_eq!(secrets["BOOL_VALUE"], "true");
+        assert_eq!(secrets["NUMBER_VALUE"], "42");
+        assert_eq!(secrets["STRING_VALUE"], "secret");
+        assert_eq!(secrets["OBJECT_VALUE"], r#"{"nested":true}"#);
+
+        let array_file = root.join("array.json");
+        fs::write(&array_file, "[]").expect("array file");
+        assert!(secrets_env(&[
+            "--secrets-file".to_string(),
+            array_file.display().to_string()
+        ])
+        .expect_err("object required")
+        .contains("JSON object"));
     }
 }
