@@ -372,6 +372,11 @@ mod tests {
             "--flag",
             false
         ));
+        assert!(parse_bool_option(
+            &["--flag".to_string(), "maybe".to_string()],
+            "--flag",
+            false
+        ));
         assert!(parse_bool_option(&["--flag".to_string()], "--flag", false));
         assert!(parse_bool_option(&[], "--flag", true));
     }

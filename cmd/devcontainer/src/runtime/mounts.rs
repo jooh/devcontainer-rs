@@ -227,6 +227,8 @@ mod tests {
             "type=bind,source=/tmp/src,target=/tmp/dst,consistency=delegated,bind.propagation=rshared,readonly",
         )
         .expect("valid mount");
+        validate_cli_mount_value(r#"type=bind,source="/tmp/src",target="/tmp/dst",ro"#)
+            .expect("quoted mount values");
     }
 
     #[test]

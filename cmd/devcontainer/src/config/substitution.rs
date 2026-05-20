@@ -222,3 +222,69 @@ pub fn substitute_container_env(value: &Value, env: &HashMap<String, String>) ->
         _ => value.clone(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    use serde_json::json;
+
+    use super::{
+        encode_base32hex_lower, substitute_container_env, substitute_local_context, ConfigContext,
+    };
+
+    #[test]
+    fn substitution_preserves_unknown_and_unclosed_tokens() {
+        let context = ConfigContext {
+            workspace_folder: PathBuf::from("/workspace"),
+            env: HashMap::new(),
+            container_workspace_folder: None,
+            id_labels: HashMap::new(),
+        };
+
+        let substituted = substitute_local_context(
+            &json!({
+                "unknown": "${unknown:value}",
+                "unclosed": "prefix ${localWorkspaceFolder",
+                "bool": true
+            }),
+            &context,
+        );
+
+        assert_eq!(substituted["unknown"], "${unknown:value}");
+        assert_eq!(substituted["unclosed"], "prefix ${localWorkspaceFolder");
+        assert_eq!(substituted["bool"], true);
+    }
+
+    #[test]
+    fn container_env_substitution_recurses_arrays_objects_and_scalars() {
+        let substituted = substitute_container_env(
+            &json!({
+                "items": [
+                    "${containerEnv:PATH}",
+                    {
+                        "fallback": "${containerEnv:MISSING:/bin}"
+                    },
+                    false
+                ]
+            }),
+            &HashMap::from([("PATH".to_string(), "/usr/bin".to_string())]),
+        );
+
+        assert_eq!(substituted["items"][0], "/usr/bin");
+        assert_eq!(substituted["items"][1]["fallback"], "/bin");
+        assert_eq!(substituted["items"][2], false);
+    }
+
+    #[test]
+    fn base32hex_encoding_pads_short_hash_inputs() {
+        let zero = encode_base32hex_lower(&[0]);
+        assert_eq!(zero.len(), 52);
+        assert!(zero.ends_with("00"));
+
+        let ones = encode_base32hex_lower(&[0xff]);
+        assert_eq!(ones.len(), 52);
+        assert!(ones.ends_with("vs"));
+    }
+}
