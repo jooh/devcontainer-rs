@@ -193,3 +193,120 @@ pub(super) fn execute_feature_tests_with_runtime<R: FeatureTestRuntime>(
 
     Ok(results)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use crate::test_support::{unique_temp_dir, write_executable_script};
+
+    use super::{ContainerEngineFeatureTestRuntime, FeatureTestRuntime};
+
+    #[test]
+    fn container_engine_runtime_executes_engine_commands_and_reports_failures() {
+        let root = unique_temp_dir("feature-test-runtime");
+        fs::create_dir_all(&root).expect("root");
+        let fake_engine = root.join("docker");
+        let log = root.join("engine.log");
+        write_executable_script(
+            &fake_engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+printf '%s\n' "$*" >> '{}'
+case "$1" in
+  build)
+    if [ -f "$ROOT/build-fails" ]; then
+      echo "build failed" >&2
+      exit 2
+    fi
+    exit 0
+    ;;
+  run)
+    if [ -f "$ROOT/run-fails" ]; then
+      echo "run failed" >&2
+      exit 3
+    fi
+    printf 'container-123\n'
+    exit 0
+    ;;
+  exec)
+    exit 7
+    ;;
+  rm)
+    if [ -f "$ROOT/rm-fails" ]; then
+      echo "rm failed" >&2
+      exit 4
+    fi
+    exit 0
+    ;;
+esac
+exit 9
+"#,
+                log.display()
+            ),
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            fake_engine.display().to_string(),
+        ];
+        let dockerfile = root.join("Dockerfile");
+        fs::write(&dockerfile, "FROM alpine:3.20\n").expect("dockerfile");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let mut runtime = ContainerEngineFeatureTestRuntime;
+
+        runtime
+            .build_image(&args, "feature-test:image", &dockerfile, &root)
+            .expect("build");
+        assert_eq!(
+            runtime
+                .start_container(&args, "feature-test:image", &workspace)
+                .expect("start"),
+            "container-123"
+        );
+        assert_eq!(
+            runtime
+                .exec_script(
+                    &args,
+                    "container-123",
+                    &workspace,
+                    Some("vscode"),
+                    &[("COLOR".to_string(), "blue".to_string())],
+                    "test.sh",
+                )
+                .expect("exec status"),
+            7
+        );
+        runtime
+            .remove_container(&args, "container-123")
+            .expect("remove");
+        let invocations = fs::read_to_string(&log).expect("log");
+        assert!(invocations.contains("build --tag feature-test:image --file"));
+        assert!(invocations.contains("run -d --label devcontainer.is_test_run=true"));
+        assert!(invocations.contains("exec --workdir /workspace --user vscode -e COLOR=blue"));
+        assert!(invocations.contains("rm -f container-123"));
+
+        fs::write(root.join("build-fails"), "").expect("build flag");
+        let error = runtime
+            .build_image(&args, "feature-test:image", &dockerfile, &root)
+            .expect_err("build failure");
+        assert!(error.contains("build failed"), "{error}");
+        fs::remove_file(root.join("build-fails")).expect("clear build flag");
+
+        fs::write(root.join("run-fails"), "").expect("run flag");
+        let error = runtime
+            .start_container(&args, "feature-test:image", &workspace)
+            .expect_err("run failure");
+        assert!(error.contains("run failed"), "{error}");
+        fs::remove_file(root.join("run-fails")).expect("clear run flag");
+
+        fs::write(root.join("rm-fails"), "").expect("rm flag");
+        let error = runtime
+            .remove_container(&args, "container-123")
+            .expect_err("rm failure");
+        assert!(error.contains("rm failed"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+}

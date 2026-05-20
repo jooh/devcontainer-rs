@@ -218,3 +218,45 @@ fn parse_feature_test_options(args: &[String]) -> Result<FeatureTestOptions, Str
         quiet,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_feature_test_options, run_features_test, DEFAULT_FEATURE_TEST_BASE_IMAGE};
+
+    #[test]
+    fn feature_test_option_parsing_supports_aliases_and_defaults() {
+        let options = parse_feature_test_options(&["/tmp/project".to_string()]).expect("options");
+        assert_eq!(
+            options.project_folder,
+            std::path::PathBuf::from("/tmp/project")
+        );
+        assert_eq!(options.base_image, DEFAULT_FEATURE_TEST_BASE_IMAGE);
+        assert_eq!(options.remote_user, None);
+        assert!(!options.preserve_test_containers);
+        assert!(!options.permit_randomization);
+        assert!(!options.quiet);
+
+        let options = parse_feature_test_options(&[
+            "--projectFolder".to_string(),
+            "/tmp/project".to_string(),
+            "--base-image".to_string(),
+            "ubuntu:24.04".to_string(),
+            "--remote-user".to_string(),
+            "vscode".to_string(),
+            "--preserve-test-containers".to_string(),
+            "--permit-randomization".to_string(),
+            "-q".to_string(),
+        ])
+        .expect("aliased options");
+        assert_eq!(options.base_image, "ubuntu:24.04");
+        assert_eq!(options.remote_user.as_deref(), Some("vscode"));
+        assert!(options.preserve_test_containers);
+        assert!(options.permit_randomization);
+        assert!(options.quiet);
+    }
+
+    #[test]
+    fn run_features_test_reports_option_errors() {
+        assert_eq!(run_features_test(&[]), std::process::ExitCode::from(1));
+    }
+}

@@ -427,6 +427,55 @@ fn features_test_accepts_published_feature_dependencies_in_scenarios() {
 }
 
 #[test]
+fn features_test_builds_scenario_base_images_before_feature_layers() {
+    let root = unique_temp_dir();
+    let src = root.join("src").join("demo");
+    let test = root.join("test").join("demo");
+    fs::create_dir_all(&src).expect("feature src");
+    fs::create_dir_all(&test).expect("feature test");
+    fs::write(
+        src.join("devcontainer-feature.json"),
+        "{\n  \"id\": \"demo\",\n  \"name\": \"Demo Feature\",\n  \"version\": \"1.0.0\"\n}\n",
+    )
+    .expect("manifest");
+    fs::write(src.join("install.sh"), "#!/bin/sh\nexit 0\n").expect("install script");
+    fs::write(test.join("custom.sh"), "#!/bin/sh\nexit 0\n").expect("scenario script");
+    fs::write(test.join("Dockerfile"), "FROM alpine:3.20\n").expect("scenario dockerfile");
+    fs::write(
+        test.join("scenarios.json"),
+        "{\n  \"custom\": {\n    \"build\": {\n      \"dockerfile\": \"Dockerfile\",\n      \"context\": \".\"\n    },\n    \"features\": {\n      \"demo\": {}\n    }\n  }\n}\n",
+    )
+    .expect("scenarios");
+
+    let mut runtime = FakeFeatureTestRuntime::default();
+    let results = execute_feature_tests_with_runtime(
+        &[
+            "--preserve-test-containers".to_string(),
+            root.display().to_string(),
+        ],
+        &mut runtime,
+    )
+    .expect("test execution");
+
+    assert_eq!(results.len(), 1);
+    assert!(results[0].passed);
+    assert_eq!(runtime.build_calls.len(), 2);
+    assert!(runtime.build_calls[0]
+        .1
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| name == "Dockerfile"));
+    assert_eq!(
+        fs::read_to_string(runtime.build_calls[0].2.join("Dockerfile")).expect("copied dockerfile"),
+        "FROM alpine:3.20\n"
+    );
+    assert!(runtime.build_calls[1]
+        .0
+        .starts_with("devcontainer-feature-test-"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn features_test_duplicate_cases_accept_permit_randomization() {
     let root = unique_temp_dir();
     let src = root.join("src").join("demo");
