@@ -113,7 +113,9 @@ pub fn run(raw_args: Vec<String>) -> ExitCode {
 mod tests {
     use std::process::ExitCode;
 
-    use super::{native_only_mode_value_enabled, run};
+    use super::{
+        native_only_mode_enabled, native_only_mode_value_enabled, run, NATIVE_ONLY_ENV_VAR,
+    };
 
     #[test]
     fn native_only_mode_uses_environment_switch() {
@@ -123,6 +125,12 @@ mod tests {
         assert!(!native_only_mode_value_enabled("0"));
         assert!(!native_only_mode_value_enabled("false"));
         assert!(!native_only_mode_value_enabled("no"));
+
+        std::env::remove_var(NATIVE_ONLY_ENV_VAR);
+        assert!(!native_only_mode_enabled());
+        std::env::set_var(NATIVE_ONLY_ENV_VAR, "yes");
+        assert!(native_only_mode_enabled());
+        std::env::remove_var(NATIVE_ONLY_ENV_VAR);
     }
 
     #[test]
@@ -165,5 +173,20 @@ mod tests {
             run(vec!["read-configuration".to_string()]),
             ExitCode::from(1)
         );
+    }
+
+    #[test]
+    fn run_reports_unsupported_native_paths_with_json_and_native_only_suffix() {
+        std::env::set_var(NATIVE_ONLY_ENV_VAR, "yes");
+        assert_eq!(
+            run(vec![
+                "--log-format".to_string(),
+                "json".to_string(),
+                "read-configuration".to_string(),
+                "not-a-native-option".to_string(),
+            ]),
+            ExitCode::from(2)
+        );
+        std::env::remove_var(NATIVE_ONLY_ENV_VAR);
     }
 }
