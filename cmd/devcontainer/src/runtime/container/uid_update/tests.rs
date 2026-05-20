@@ -58,6 +58,85 @@ fn remote_user_uid_update_respects_option_and_config_overrides() {
 }
 
 #[test]
+fn prepare_up_image_skips_when_platform_unsupported_default_never_or_config_false() {
+    let workspace = unique_uid_update_build_context();
+    fs::create_dir_all(&workspace).expect("workspace");
+    let unsupported = resolved_config(
+        json!({
+            "remoteUser": "vscode"
+        }),
+        &workspace,
+    );
+    let never = resolved_config(
+        json!({
+            "remoteUser": "vscode"
+        }),
+        &workspace,
+    );
+    let disabled = resolved_config(
+        json!({
+            "remoteUser": "vscode",
+            "updateRemoteUserUID": false
+        }),
+        &workspace,
+    );
+
+    assert_eq!(
+        prepare_up_image_for_platform(&unsupported, &[], "alpine:3.20", false)
+            .expect("unsupported platform"),
+        "alpine:3.20"
+    );
+    assert_eq!(
+        prepare_up_image_for_platform(
+            &never,
+            &[
+                "--update-remote-user-uid-default".to_string(),
+                "never".to_string()
+            ],
+            "alpine:3.20",
+            true,
+        )
+        .expect("default never"),
+        "alpine:3.20"
+    );
+    assert_eq!(
+        prepare_up_image_for_platform(&disabled, &[], "alpine:3.20", true)
+            .expect("config disabled"),
+        "alpine:3.20"
+    );
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn prepare_up_image_skips_root_and_numeric_configured_users() {
+    let workspace = unique_uid_update_build_context();
+    fs::create_dir_all(&workspace).expect("workspace");
+    let root_user = resolved_config(
+        json!({
+            "remoteUser": "root"
+        }),
+        &workspace,
+    );
+    let numeric_user = resolved_config(
+        json!({
+            "containerUser": "1000"
+        }),
+        &workspace,
+    );
+
+    assert_eq!(
+        prepare_up_image_for_platform(&root_user, &[], "alpine:3.20", true).expect("root user"),
+        "alpine:3.20"
+    );
+    assert_eq!(
+        prepare_up_image_for_platform(&numeric_user, &[], "alpine:3.20", true)
+            .expect("numeric user"),
+        "alpine:3.20"
+    );
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[test]
 fn uid_update_details_fall_back_to_the_image_user() {
     let details = uid_update_details(
         &json!({}),
@@ -162,6 +241,118 @@ fn prepare_up_image_pulls_missing_image_before_uid_update() {
 }
 
 #[test]
+fn prepare_up_image_returns_original_when_image_inspect_missing_for_non_image_config() {
+    let fixture = FakeEngineFixture::new();
+    fixture.write("image-inspect.exit", "1\n");
+    fixture.write(
+        "image-inspect.stderr",
+        "Error: No such image: local-build\n",
+    );
+    let workspace = fixture.root.join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    let resolved = resolved_config(
+        json!({
+            "build": {
+                "dockerfile": "Dockerfile"
+            },
+            "remoteUser": "vscode"
+        }),
+        &workspace,
+    );
+
+    let image = prepare_up_image_for_platform(&resolved, &fixture.args(), "local-build", true)
+        .expect("missing build image");
+
+    assert_eq!(image, "local-build");
+    assert!(!fixture.invocations().contains("pull local-build"));
+}
+
+#[test]
+fn prepare_up_image_reports_pull_failure() {
+    let fixture = FakeEngineFixture::new();
+    fixture.write("image-inspect.exit", "1\n");
+    fixture.write(
+        "image-inspect.stderr",
+        "Error: image not known: ghcr.io/example/app:latest\n",
+    );
+    fixture.write("pull.exit", "5\n");
+    fixture.write("pull.stderr", "pull failed\n");
+    let workspace = fixture.root.join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    let resolved = resolved_config(
+        json!({
+            "image": "ghcr.io/example/app:latest",
+            "remoteUser": "vscode"
+        }),
+        &workspace,
+    );
+
+    let error = prepare_up_image_for_platform(
+        &resolved,
+        &fixture.args(),
+        "ghcr.io/example/app:latest",
+        true,
+    )
+    .expect_err("pull failure");
+
+    assert!(error.contains("pull failed"), "{error}");
+}
+
+#[test]
+fn prepare_up_image_reports_image_inspect_failure() {
+    let fixture = FakeEngineFixture::new();
+    fixture.write("image-inspect.exit", "6\n");
+    fixture.write("image-inspect.stderr", "inspect failed\n");
+    let workspace = fixture.root.join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    let resolved = resolved_config(
+        json!({
+            "remoteUser": "vscode"
+        }),
+        &workspace,
+    );
+
+    let error = prepare_up_image_for_platform(
+        &resolved,
+        &fixture.args(),
+        "ghcr.io/example/app:latest",
+        true,
+    )
+    .expect_err("inspect failure");
+
+    assert!(error.contains("inspect failed"), "{error}");
+}
+
+#[test]
+fn prepare_up_image_reports_build_failure() {
+    let fixture = FakeEngineFixture::new();
+    fixture.write(
+        "image-inspect.stdout",
+        &image_inspect_output("node", Some("linux/amd64")),
+    );
+    fixture.write("build.exit", "7\n");
+    fixture.write("build.stderr", "uid build failed\n");
+    let workspace = fixture.root.join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    let resolved = resolved_config(
+        json!({
+            "remoteUser": "vscode"
+        }),
+        &workspace,
+    );
+
+    let error = prepare_up_image_for_platform(
+        &resolved,
+        &fixture.args(),
+        "ghcr.io/example/app:latest",
+        true,
+    )
+    .expect_err("build failure");
+
+    assert!(error.contains("uid build failed"), "{error}");
+}
+
+#[test]
 fn prepare_up_image_uses_run_args_user_for_uid_update_selection() {
     let fixture = FakeEngineFixture::new();
     fixture.write(
@@ -188,6 +379,38 @@ fn prepare_up_image_uses_run_args_user_for_uid_update_selection() {
     assert!(invocations.contains("build "));
     assert!(invocations.contains("--build-arg REMOTE_USER=vscode"));
     assert!(invocations.contains("--build-arg IMAGE_USER=root"));
+}
+
+#[test]
+fn uid_update_run_args_user_uses_last_user_flag_and_equals_forms() {
+    let fixture = FakeEngineFixture::new();
+    fixture.write(
+        "image-inspect.stdout",
+        &image_inspect_output("root", Some("linux/amd64")),
+    );
+    let workspace = fixture.root.join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    let resolved = resolved_config(
+        json!({
+            "runArgs": [
+                "--user=first",
+                "-u",
+                "second",
+                "-u=third",
+                "--user",
+                "vscode"
+            ]
+        }),
+        &workspace,
+    );
+
+    let updated_image =
+        prepare_up_image_for_platform(&resolved, &fixture.args(), "alpine:3.20", true)
+            .expect("prepare up image");
+    let invocations = fixture.invocations();
+
+    assert!(updated_image.ends_with("-uid"));
+    assert!(invocations.contains("--build-arg REMOTE_USER=vscode"));
 }
 
 #[test]
