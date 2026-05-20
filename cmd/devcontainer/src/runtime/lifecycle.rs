@@ -196,6 +196,9 @@ mod tests {
             "b": ["/bin/echo", "two"]
         }))
         .is_some());
+        assert!(lifecycle_command_group(&json!({ "ignored": true })).is_none());
+        assert!(lifecycle_command_group(&json!({ "ignored": [] })).is_none());
+        assert!(lifecycle_command_group(&json!(true)).is_none());
     }
 
     #[test]
@@ -214,6 +217,17 @@ mod tests {
         );
 
         assert_eq!(steps.len(), 4);
+
+        let skipped_before_initialize = selected_lifecycle_steps(
+            &json!({
+                "initializeCommand": "echo init",
+                "onCreateCommand": "echo on-create",
+                "waitFor": "initializeCommand"
+            }),
+            &["--skip-non-blocking-commands".to_string()],
+            LifecycleMode::RunUserCommands,
+        );
+        assert!(skipped_before_initialize.is_empty());
 
         let reused = selected_lifecycle_steps(
             &json!({
@@ -311,6 +325,13 @@ mod tests {
         assert_eq!(request.log_level, ProcessLogLevel::Trace);
         assert_eq!(request.env.get("COLUMNS").map(String::as_str), Some("120"));
         assert_eq!(request.env.get("LINES").map(String::as_str), Some("40"));
+
+        let empty = host_lifecycle_request(
+            &[],
+            std::path::Path::new("/workspace"),
+            LifecycleCommand::Exec(Vec::new()),
+        );
+        assert_eq!(empty.program, "");
     }
 
     #[test]
