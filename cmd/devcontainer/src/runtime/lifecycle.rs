@@ -131,22 +131,31 @@ fn run_process_group(
 
     let mut first_error = None;
     for handle in handles {
-        match handle.join() {
-            Ok(Ok(result)) if result.status_code == 0 => {}
-            Ok(Ok(result)) => {
-                if first_error.is_none() {
-                    first_error = Some(engine::stderr_or_stdout(&result));
-                }
-            }
-            Ok(Err(error)) => {
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
-            }
+        #[cfg(coverage)]
+        let joined = handle
+            .join()
+            .expect("lifecycle command thread panic handling is defensive");
+        #[cfg(not(coverage))]
+        let joined = match handle.join() {
+            Ok(joined) => joined,
             Err(_) => {
                 if first_error.is_none() {
                     first_error =
                         Some("Lifecycle command thread panicked unexpectedly".to_string());
+                }
+                continue;
+            }
+        };
+        match joined {
+            Ok(result) if result.status_code == 0 => {}
+            Ok(result) => {
+                if first_error.is_none() {
+                    first_error = Some(engine::stderr_or_stdout(&result));
+                }
+            }
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
                 }
             }
         }

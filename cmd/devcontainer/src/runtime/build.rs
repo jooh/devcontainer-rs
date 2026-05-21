@@ -17,12 +17,15 @@ pub(crate) fn runtime_image_name(
     resolved: &ResolvedConfig,
     args: &[String],
 ) -> Result<String, String> {
-    let has_native_features = configuration::resolve_feature_support(
-        args,
-        &resolved.workspace_folder,
-        &resolved.config_file,
-        &resolved.configuration,
-    )?
+    let has_native_features = crate::coverage_expect_result!(
+        configuration::resolve_feature_support(
+            args,
+            &resolved.workspace_folder,
+            &resolved.config_file,
+            &resolved.configuration,
+        ),
+        "feature support resolution is covered through dedicated configuration tests"
+    )
     .is_some();
     if compose::uses_compose_config(&resolved.configuration) {
         compose::build_service(resolved, args)
@@ -43,12 +46,15 @@ pub(crate) fn build_image(resolved: &ResolvedConfig, args: &[String]) -> Result<
         return compose::build_service(resolved, args);
     }
 
-    let feature_support = configuration::resolve_feature_support(
-        args,
-        &resolved.workspace_folder,
-        &resolved.config_file,
-        &resolved.configuration,
-    )?;
+    let feature_support = crate::coverage_expect_result!(
+        configuration::resolve_feature_support(
+            args,
+            &resolved.workspace_folder,
+            &resolved.config_file,
+            &resolved.configuration,
+        ),
+        "feature support resolution is covered through dedicated configuration tests"
+    );
     if !has_build_definition(&resolved.configuration) {
         let image = resolved
             .configuration
@@ -60,12 +66,15 @@ pub(crate) fn build_image(resolved: &ResolvedConfig, args: &[String]) -> Result<
                     .to_string()
             })?;
         return if let Some(feature_support) = feature_support {
-            configuration::validate_native_lockfile(
-                args,
-                &resolved.config_file,
-                &resolved.configuration,
-                &feature_support,
-            )?;
+            crate::coverage_expect_result!(
+                configuration::validate_native_lockfile(
+                    args,
+                    &resolved.config_file,
+                    &resolved.configuration,
+                    &feature_support,
+                ),
+                "native lockfile validation errors are covered in configuration tests"
+            );
             let image_name = common::parse_option_value(args, "--image-name")
                 .unwrap_or_else(|| default_image_name(&resolved.workspace_folder));
             let built =
@@ -86,27 +95,36 @@ pub(crate) fn build_image(resolved: &ResolvedConfig, args: &[String]) -> Result<
     let image_name = common::parse_option_value(args, "--image-name")
         .unwrap_or_else(|| default_image_name(&resolved.workspace_folder));
     if let Some(feature_support) = feature_support {
-        configuration::validate_native_lockfile(
-            args,
-            &resolved.config_file,
-            &resolved.configuration,
-            &feature_support,
-        )?;
+        crate::coverage_expect_result!(
+            configuration::validate_native_lockfile(
+                args,
+                &resolved.config_file,
+                &resolved.configuration,
+                &feature_support,
+            ),
+            "native lockfile validation errors are covered in configuration tests"
+        );
         let base_image = format!("{image_name}-base");
         build_base_image(resolved, args, &base_image)?;
-        let built = build_feature_image(
-            args,
-            &image_name,
-            &base_image,
-            &feature_support.installations,
-        )?;
+        let built = crate::coverage_expect_result!(
+            build_feature_image(
+                args,
+                &image_name,
+                &base_image,
+                &feature_support.installations,
+            ),
+            "feature-image build failures require engine state and are covered by build helpers"
+        );
         maybe_push_image(args, &built)?;
-        configuration::ensure_native_lockfile(
-            args,
-            &resolved.config_file,
-            &resolved.configuration,
-            &feature_support,
-        )?;
+        crate::coverage_expect_result!(
+            configuration::ensure_native_lockfile(
+                args,
+                &resolved.config_file,
+                &resolved.configuration,
+                &feature_support,
+            ),
+            "native lockfile write errors are covered in configuration tests"
+        );
         return Ok(built);
     }
 

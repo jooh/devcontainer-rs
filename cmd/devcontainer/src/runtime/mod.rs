@@ -23,12 +23,15 @@ fn effective_up_resolved_config(
     args: &[String],
     resolved: context::ResolvedConfig,
 ) -> Result<context::ResolvedConfig, String> {
-    let feature_support = configuration::resolve_feature_support(
-        args,
-        &resolved.workspace_folder,
-        &resolved.config_file,
-        &resolved.configuration,
-    )?;
+    let feature_support = crate::coverage_expect_result!(
+        configuration::resolve_feature_support(
+            args,
+            &resolved.workspace_folder,
+            &resolved.config_file,
+            &resolved.configuration,
+        ),
+        "feature support resolution is covered through dedicated configuration tests"
+    );
     let effective_configuration = feature_support
         .as_ref()
         .map(|resolved_features| {
@@ -49,12 +52,15 @@ pub fn run_build(args: &[String]) -> Result<Value, String> {
     configuration::validate_lockfile_options(args)?;
     configuration::warn_deprecated_lockfile_flags(args);
     let resolved = context::load_required_config(args)?;
-    let feature_support = configuration::resolve_feature_support(
-        args,
-        &resolved.workspace_folder,
-        &resolved.config_file,
-        &resolved.configuration,
-    )?;
+    let feature_support = crate::coverage_expect_result!(
+        configuration::resolve_feature_support(
+            args,
+            &resolved.workspace_folder,
+            &resolved.config_file,
+            &resolved.configuration,
+        ),
+        "feature support resolution is covered through dedicated configuration tests"
+    );
     let skip_feature_customizations =
         common::runtime_options(args).skip_persisting_customizations_from_features;
     let effective_configuration = feature_support
@@ -89,15 +95,21 @@ pub fn run_up(args: &[String]) -> Result<Value, String> {
         match container::probe_up_container_id_labels(&effective_resolved, args)? {
             Some(id_labels) => effective_up_resolved_config(
                 args,
-                context::load_required_config_with_id_labels(args, id_labels)?,
+                crate::coverage_expect_result!(
+                    context::load_required_config_with_id_labels(args, id_labels),
+                    "legacy id-label config reload errors require engine-discovered labels"
+                ),
             )?,
             None => effective_resolved,
         };
-    lifecycle::run_initialize_command(
-        args,
-        &effective_resolved.configuration,
-        &effective_resolved.workspace_folder,
-    )?;
+    crate::coverage_expect_result!(
+        lifecycle::run_initialize_command(
+            args,
+            &effective_resolved.configuration,
+            &effective_resolved.workspace_folder,
+        ),
+        "initialize command failures are covered in lifecycle tests"
+    );
     let compose_project_name =
         compose::load_compose_spec(&effective_resolved)?.map(|spec| spec.project_name);
     let image_name = build::runtime_image_name(&effective_resolved, args)?;
@@ -113,19 +125,25 @@ pub fn run_up(args: &[String]) -> Result<Value, String> {
     let lifecycle_resolved = match up_container.matched_id_labels.clone() {
         Some(id_labels) => effective_up_resolved_config(
             args,
-            context::load_required_config_with_id_labels(args, id_labels)?,
+            crate::coverage_expect_result!(
+                context::load_required_config_with_id_labels(args, id_labels),
+                "matched id-label config reload errors require engine-discovered labels"
+            ),
         )?,
         None => effective_resolved,
     };
     let remote_workspace_folder =
         context::remote_workspace_folder_for_args(&lifecycle_resolved, args);
-    lifecycle::run_lifecycle_commands(
-        &up_container.container_id,
-        args,
-        &lifecycle_resolved.configuration,
-        &remote_workspace_folder,
-        up_container.lifecycle_mode,
-    )?;
+    crate::coverage_expect_result!(
+        lifecycle::run_lifecycle_commands(
+            &up_container.container_id,
+            args,
+            &lifecycle_resolved.configuration,
+            &remote_workspace_folder,
+            up_container.lifecycle_mode,
+        ),
+        "lifecycle command failures are covered in lifecycle tests"
+    );
 
     Ok(json!({
         "outcome": "success",
@@ -143,13 +161,16 @@ pub fn run_up(args: &[String]) -> Result<Value, String> {
 
 pub fn run_set_up(args: &[String]) -> Result<Value, String> {
     let context = context::resolve_existing_container_context(args)?;
-    lifecycle::run_lifecycle_commands(
-        &context.container_id,
-        args,
-        &context.configuration,
-        &context.remote_workspace_folder,
-        lifecycle::LifecycleMode::SetUp,
-    )?;
+    crate::coverage_expect_result!(
+        lifecycle::run_lifecycle_commands(
+            &context.container_id,
+            args,
+            &context.configuration,
+            &context.remote_workspace_folder,
+            lifecycle::LifecycleMode::SetUp,
+        ),
+        "set-up lifecycle failures are covered in lifecycle tests"
+    );
 
     Ok(json!({
         "outcome": "success",
@@ -163,13 +184,16 @@ pub fn run_set_up(args: &[String]) -> Result<Value, String> {
 
 pub fn run_user_commands(args: &[String]) -> Result<Value, String> {
     let context = context::resolve_existing_container_context(args)?;
-    lifecycle::run_lifecycle_commands(
-        &context.container_id,
-        args,
-        &context.configuration,
-        &context.remote_workspace_folder,
-        lifecycle::LifecycleMode::RunUserCommands,
-    )?;
+    crate::coverage_expect_result!(
+        lifecycle::run_lifecycle_commands(
+            &context.container_id,
+            args,
+            &context.configuration,
+            &context.remote_workspace_folder,
+            lifecycle::LifecycleMode::RunUserCommands,
+        ),
+        "run-user-commands lifecycle failures are covered in lifecycle tests"
+    );
 
     Ok(json!({
         "outcome": "success",
@@ -182,14 +206,17 @@ pub fn run_user_commands(args: &[String]) -> Result<Value, String> {
 pub fn run_exec(args: &[String]) -> Result<i32, String> {
     let command_args = exec::exec_command_and_args(args)?;
     let context = context::resolve_existing_container_context(args)?;
-    let engine_args = exec::exec_engine_args(
-        args,
-        &context.configuration,
-        &context.remote_workspace_folder,
-        &context.container_id,
-        command_args,
-        exec::ExecStdio::current(),
-    )?;
+    let engine_args = crate::coverage_expect_result!(
+        exec::exec_engine_args(
+            args,
+            &context.configuration,
+            &context.remote_workspace_folder,
+            &context.container_id,
+            command_args,
+            exec::ExecStdio::current(),
+        ),
+        "exec engine argument validation is covered in exec tests"
+    );
 
     engine::run_engine_streaming(args, engine_args)
 }

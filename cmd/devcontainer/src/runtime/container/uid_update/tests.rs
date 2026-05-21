@@ -9,7 +9,8 @@ use crate::runtime::context::ResolvedConfig;
 
 use super::{
     command_stdout, prepare_up_image_for_platform, should_update_remote_user_uid,
-    uid_update_details, uid_update_local_image_name, unique_uid_update_build_context,
+    uid_update_details, uid_update_local_image_name, uid_update_run_args_user,
+    unique_uid_update_build_context,
 };
 
 #[test]
@@ -63,6 +64,28 @@ fn remote_user_uid_update_respects_option_and_config_overrides() {
         &[],
         false,
     ));
+}
+
+#[test]
+fn uid_update_run_args_user_handles_missing_and_non_string_entries() {
+    assert_eq!(
+        uid_update_run_args_user(&json!({
+            "runArgs": [42, "--user", "node", "-u=dev", "--user"]
+        }))
+        .as_deref(),
+        Some("dev")
+    );
+    assert_eq!(
+        uid_update_run_args_user(&json!({
+            "runArgs": ["--user=app"]
+        }))
+        .as_deref(),
+        Some("app")
+    );
+    assert!(uid_update_run_args_user(&json!({
+        "runArgs": ["--user"]
+    }))
+    .is_none());
 }
 
 #[test]

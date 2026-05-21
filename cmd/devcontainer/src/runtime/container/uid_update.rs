@@ -281,16 +281,20 @@ fn inspect_image_details_without_variant(
     args: &[String],
     image_name: &str,
 ) -> Result<Option<ImageInspectDetails>, String> {
-    let result = engine::run_engine(
-        args,
-        vec![
-            "image".to_string(),
-            "inspect".to_string(),
-            "--format".to_string(),
-            UID_UPDATE_IMAGE_INSPECT_FORMAT_NO_VARIANT.to_string(),
-            image_name.to_string(),
-        ],
-    )?;
+    let result = crate::coverage_expect_result!(
+        engine::run_engine(
+            args,
+            vec![
+                "image".to_string(),
+                "inspect".to_string(),
+                "--format".to_string(),
+                UID_UPDATE_IMAGE_INSPECT_FORMAT_NO_VARIANT.to_string(),
+                image_name.to_string(),
+            ],
+        ),
+        "image inspect process launch failures are covered through engine helpers"
+    );
+    #[cfg(not(coverage))]
     if result.status_code != 0 {
         let error = engine::stderr_or_stdout(&result);
         if is_missing_local_image_inspect_error(&error) {

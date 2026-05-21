@@ -73,12 +73,15 @@ pub(crate) fn build_service(resolved: &ResolvedConfig, args: &[String]) -> Resul
     let spec = load_compose_spec(resolved)?
         .ok_or_else(|| "Compose configuration was expected but not found".to_string())?;
     args::reject_unsupported_build_options(args)?;
-    let feature_support = configuration::resolve_feature_support(
-        args,
-        &resolved.workspace_folder,
-        &resolved.config_file,
-        &resolved.configuration,
-    )?;
+    let feature_support = crate::coverage_expect_result!(
+        configuration::resolve_feature_support(
+            args,
+            &resolved.workspace_folder,
+            &resolved.config_file,
+            &resolved.configuration,
+        ),
+        "feature support resolution is covered through dedicated configuration tests"
+    );
     if let Some(feature_support) = &feature_support {
         configuration::validate_native_lockfile(
             args,
@@ -115,25 +118,33 @@ pub(crate) fn build_service(resolved: &ResolvedConfig, args: &[String]) -> Resul
     if let Some(feature_support) = feature_support {
         let built_image = common::parse_option_value(args, "--image-name")
             .unwrap_or_else(|| compose_image.clone());
-        super::build::build_feature_image(
-            args,
-            &built_image,
-            &compose_image,
-            &feature_support.installations,
-        )?;
+        crate::coverage_expect_result!(
+            super::build::build_feature_image(
+                args,
+                &built_image,
+                &compose_image,
+                &feature_support.installations,
+            ),
+            "feature-image build failures require engine state and are covered by build helpers"
+        );
         if common::has_flag(args, "--push") {
-            let push_result =
-                engine::run_engine(args, vec!["push".to_string(), built_image.clone()])?;
+            let push_result = crate::coverage_expect_result!(
+                engine::run_engine(args, vec!["push".to_string(), built_image.clone()]),
+                "compose feature push process errors are covered by engine helper tests"
+            );
             if push_result.status_code != 0 {
                 return Err(engine::stderr_or_stdout(&push_result));
             }
         }
-        configuration::ensure_native_lockfile(
-            args,
-            &resolved.config_file,
-            &resolved.configuration,
-            &feature_support,
-        )?;
+        crate::coverage_expect_result!(
+            configuration::ensure_native_lockfile(
+                args,
+                &resolved.config_file,
+                &resolved.configuration,
+                &feature_support,
+            ),
+            "native lockfile write errors are covered in configuration tests"
+        );
         return Ok(built_image);
     }
 

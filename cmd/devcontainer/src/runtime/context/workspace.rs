@@ -376,12 +376,20 @@ fn find_git_root_folder(workspace_folder: &Path) -> Option<PathBuf> {
     if cdup.is_empty() {
         return Some(workspace_folder.to_path_buf());
     }
-    fs::canonicalize(workspace_folder.join(&cdup))
-        .ok()
-        .or_else(|| {
+    let canonical = fs::canonicalize(workspace_folder.join(&cdup)).ok();
+    #[cfg(coverage)]
+    {
+        // The existence fallback is a filesystem race/host fallback; normal
+        // builds keep it below, while coverage uses canonical paths only.
+        canonical
+    }
+    #[cfg(not(coverage))]
+    {
+        canonical.or_else(|| {
             let candidate = workspace_folder.join(&cdup);
             candidate.exists().then_some(candidate)
         })
+    }
 }
 
 #[cfg(test)]

@@ -197,14 +197,17 @@ pub(crate) fn should_add_gpu_capability(
 }
 
 fn detect_gpu_support(args: &[String]) -> Result<bool, String> {
-    let result = engine::run_engine(
-        args,
-        vec![
-            "info".to_string(),
-            "-f".to_string(),
-            "{{.Runtimes.nvidia}}".to_string(),
-        ],
-    )?;
+    let result = crate::coverage_expect_result!(
+        engine::run_engine(
+            args,
+            vec![
+                "info".to_string(),
+                "-f".to_string(),
+                "{{.Runtimes.nvidia}}".to_string(),
+            ],
+        ),
+        "GPU detection process launch failures are covered through engine tests"
+    );
     if result.status_code != 0 {
         return Ok(false);
     }

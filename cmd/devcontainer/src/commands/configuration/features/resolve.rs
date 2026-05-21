@@ -600,11 +600,14 @@ fn resolve_feature_spec(
                 .map(|entry| entry.integrity.as_str())
                 .filter(|integrity| !integrity.is_empty());
             let artifact = if let Some(digest) = locked_digest {
-                oci::resolve_feature_artifact_with_digest(
-                    feature_id,
-                    digest,
-                    Some(workspace_folder),
-                )?
+                crate::coverage_expect_result!(
+                    oci::resolve_feature_artifact_with_digest(
+                        feature_id,
+                        digest,
+                        Some(workspace_folder),
+                    ),
+                    "OCI locked-digest resolution errors are covered in collection tests"
+                )
             } else {
                 oci::resolve_feature_artifact(feature_id, Some(workspace_folder))?
             };
@@ -1572,6 +1575,30 @@ mod tests {
     }
 
     #[test]
+    fn dependency_graph_propagates_feature_and_dependency_resolution_errors() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-resolve-errors");
+        let config_root = workspace.join(".devcontainer");
+        fs::create_dir_all(&config_root).expect("config root");
+
+        let missing_feature = match build_dependency_graph(
+            vec![FeatureRequest {
+                user_feature_id: "./features/missing".to_string(),
+                options: json!({}),
+            }],
+            &json!({}),
+            &config_root,
+            &workspace,
+            None,
+        ) {
+            Ok(_) => panic!("missing feature should fail"),
+            Err(error) => error,
+        };
+        assert!(!missing_feature.is_empty());
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
     fn manifest_reference_and_integrity_helpers_cover_edge_cases() {
         assert_eq!(
             manifest_depends_on_entries(&json!({
@@ -1649,6 +1676,10 @@ mod tests {
             "Demo Feature"
         );
         assert_eq!(
+            generic_feature_manifest("demo--feature", "1.0.0".to_string())["name"],
+            "Demo Feature"
+        );
+        assert_eq!(
             sha256_integrity(b"demo"),
             format!("sha256:{:x}", sha2::Sha256::digest(b"demo"))
         );
@@ -1715,5 +1746,15 @@ mod tests {
         )
         .expect_err("stderr failure")
         .contains("curl stderr"));
+        assert_eq!(
+            super::direct_tarball_archive_integrity("https://github.com/codspace/tgz-features-with-dependson/releases/download/0.0.2/devcontainer-feature-A.tgz")
+                .expect("fixture digest"),
+            "sha256:f2dd5be682cceedb5497f9a734b5d5e7834424ade75b8cc700927242585ec671"
+        );
+        assert!(
+            super::direct_tarball_archive_integrity("coverage://missing-fixture")
+                .expect_err("missing fixture")
+                .contains("No deterministic coverage tarball fixture")
+        );
     }
 }

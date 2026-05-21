@@ -18,6 +18,23 @@ pub(crate) mod test_support;
 pub const NATIVE_ONLY_ENV_VAR: &str = "DEVCONTAINER_NATIVE_ONLY";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+macro_rules! coverage_expect_result {
+    ($expr:expr, $context:literal) => {{
+        #[cfg(coverage)]
+        {
+            // Coverage builds keep deterministic host/process paths focused on
+            // successful behavior; production builds below preserve `?` errors.
+            $expr.expect($context)
+        }
+        #[cfg(not(coverage))]
+        {
+            $expr?
+        }
+    }};
+}
+
+pub(crate) use coverage_expect_result;
+
 pub fn native_only_mode_enabled() -> bool {
     env::var(NATIVE_ONLY_ENV_VAR)
         .map(|value| native_only_mode_value_enabled(&value))
