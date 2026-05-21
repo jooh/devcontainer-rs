@@ -1,7 +1,6 @@
 //! Feature declaration parsing, dependency ordering, and source resolution helpers.
 
 use std::cmp::Ordering;
-#[cfg(not(coverage))]
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::env;
@@ -19,7 +18,6 @@ use crate::commands::collections::registry::{
     normalize_collection_reference, published_feature_manifest,
 };
 use crate::commands::common;
-#[cfg(not(coverage))]
 use crate::process_runner::{self, ProcessLogLevel, ProcessRequest};
 
 use super::super::{catalog::exact_catalog_entry, Lockfile, LockfileEntry};
@@ -809,6 +807,31 @@ fn direct_tarball_archive_integrity(uri: &str) -> Result<String, String> {
         }
         "https://github.com/codspace/tgz-features-with-dependson/releases/download/0.0.2/devcontainer-feature-A.tgz" => {
             Ok("sha256:f2dd5be682cceedb5497f9a734b5d5e7834424ade75b8cc700927242585ec671".to_string())
+        }
+        local if local.starts_with("http://127.0.0.1:") => {
+            let temp = TempDownloadedTarball::new();
+            let result = process_runner::run_process(&ProcessRequest {
+                program: "curl".to_string(),
+                args: vec![
+                    "-fsSL".to_string(),
+                    "--max-time".to_string(),
+                    "30".to_string(),
+                    "-o".to_string(),
+                    temp.path.display().to_string(),
+                    local.to_string(),
+                ],
+                cwd: None,
+                env: HashMap::new(),
+                log_level: ProcessLogLevel::Info,
+            })
+            .map_err(|error| error.to_string())?;
+            assert_eq!(
+                result.status_code, 0,
+                "coverage localhost tarball fixture curl failed: {}",
+                result.stderr
+            );
+            let bytes = fs::read(&temp.path).map_err(|error| error.to_string())?;
+            Ok(sha256_integrity(&bytes))
         }
         other => Err(format!("No deterministic coverage tarball fixture for {other}")),
     }
