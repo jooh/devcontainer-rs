@@ -29,14 +29,14 @@ fn native_only_mode_value_enabled(value: &str) -> bool {
     !normalized.is_empty() && normalized != "0" && normalized != "false" && normalized != "no"
 }
 
-#[cfg(not(coverage))]
+#[cfg(not(all(coverage, test)))]
 pub fn run_from_env() -> ExitCode {
     run(env::args().skip(1).collect())
 }
 
-#[cfg(coverage)]
+#[cfg(all(coverage, test))]
 pub fn run_from_env() -> ExitCode {
-    // Coverage tests exercise `run` directly; avoid counting host argv/env plumbing.
+    // Unit coverage tests exercise `run` directly; integration binaries still use real argv.
     run(Vec::new())
 }
 
