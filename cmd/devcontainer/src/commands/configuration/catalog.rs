@@ -559,6 +559,7 @@ mod tests {
     use super::{
         build_feature_version_info, catalog_entries, compare_versions_desc, exact_catalog_entry,
         latest_oci_version, major_string, parse_selector, parse_version, resolve_wanted_version,
+        version_info_json,
     };
 
     fn feature_ref(
@@ -930,6 +931,31 @@ mod tests {
         assert_eq!(static_digest_info["wanted"], "1.0.6");
         assert_eq!(static_digest_info["current"], "1.0.6");
         assert_eq!(unknown_info, json!({}));
+    }
+
+    #[test]
+    fn build_feature_version_info_reports_catalog_current_wanted_and_latest_versions() {
+        let feature_id = "https://github.com/codspace/tgz-features-with-dependson/releases/download/0.0.2/devcontainer-feature-A.tgz";
+        let feature = feature_ref(feature_id, feature_id, None, None);
+        let locked = lockfile_with(feature_id, "2.0.0");
+
+        let info = build_feature_version_info(&feature, Some(&locked), None)
+            .expect("catalog info")
+            .expect("payload");
+
+        assert_eq!(info["current"], "2.0.0");
+        assert_eq!(info["wanted"], "2.0.0");
+        assert_eq!(info["latest"], "2.0.1");
+        assert_eq!(info["wantedMajor"], "2");
+        assert_eq!(info["latestMajor"], "2");
+    }
+
+    #[test]
+    fn version_info_json_omits_empty_fields_and_exact_selector_matches_semver() {
+        assert_eq!(version_info_json(None, None, None, None, None), json!({}));
+        assert!(parse_selector("1.2.3")
+            .expect("exact selector")
+            .matches("1.2.3"));
     }
 
     #[test]

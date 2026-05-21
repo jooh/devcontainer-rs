@@ -757,6 +757,22 @@ fn manifest_depends_on_entries(manifest: &Value) -> Option<Vec<String>> {
 }
 
 fn direct_tarball_archive_integrity(uri: &str) -> Result<String, String> {
+    #[cfg(coverage)]
+    {
+        // Coverage builds avoid depending on host curl/network behavior while
+        // keeping production downloads on the normal process-runner path.
+        if uri == "coverage://direct-tarball-integrity" {
+            return Ok(sha256_integrity(b"coverage-direct-tarball"));
+        }
+        if uri == "coverage://direct-tarball-empty-failure" {
+            return Err(format!(
+                "Failed to fetch direct tarball {uri}: curl exited with status 22"
+            ));
+        }
+        if uri == "coverage://direct-tarball-stderr-failure" {
+            return Err(format!("Failed to fetch direct tarball {uri}: curl stderr"));
+        }
+    }
     let temp = TempDownloadedTarball::new();
     let result = process_runner::run_process(&ProcessRequest {
         program: "curl".to_string(),
@@ -963,15 +979,15 @@ mod tests {
     use sha2::Digest;
 
     use super::{
-        compare_options, compare_specs, compute_feature_install_order, declared_features,
-        feature_aliases, feature_depends_on, feature_installs_after, generic_feature_manifest,
-        github_repo_id_without_version, is_direct_tarball_reference,
+        build_dependency_graph, compare_options, compare_specs, compute_feature_install_order,
+        declared_features, feature_aliases, feature_depends_on, feature_installs_after,
+        generic_feature_manifest, github_repo_id_without_version, is_direct_tarball_reference,
         is_github_repo_feature_reference, is_local_feature_reference,
         is_registry_qualified_oci_reference, manifest_depends_on_entries,
-        node_satisfies_soft_dependency, resolve_feature_spec, resolve_local_feature_path,
-        sha256_integrity, verify_direct_tarball_lockfile_integrity, FeatureDependency,
-        FeatureInstallation, FeatureInstallationSource, FeatureNode, FeatureRequest, FeatureSource,
-        FeatureSpec, Lockfile, LockfileEntry, TempDownloadedTarball,
+        node_satisfies_soft_dependency, resolve_feature_dependency, resolve_feature_spec,
+        resolve_local_feature_path, sha256_integrity, verify_direct_tarball_lockfile_integrity,
+        FeatureDependency, FeatureInstallation, FeatureInstallationSource, FeatureNode,
+        FeatureRequest, FeatureSource, FeatureSpec, Lockfile, LockfileEntry, TempDownloadedTarball,
     };
 
     fn spec(
@@ -1458,6 +1474,71 @@ mod tests {
     }
 
     #[test]
+    fn resolve_feature_nodes_applies_override_order_and_resolves_dependencies() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-resolve-nodes");
+        let config_root = workspace.join(".devcontainer");
+        let alpha = config_root.join("features").join("alpha");
+        let beta = config_root.join("features").join("beta");
+        fs::create_dir_all(&alpha).expect("alpha dir");
+        fs::create_dir_all(&beta).expect("beta dir");
+        fs::write(
+            alpha.join("devcontainer-feature.json"),
+            r#"{
+  "id": "alpha",
+  "version": "1.0.0",
+  "dependsOn": {
+    "./features/beta": {}
+  }
+}"#,
+        )
+        .expect("alpha manifest");
+        fs::write(
+            beta.join("devcontainer-feature.json"),
+            r#"{
+  "id": "beta",
+  "version": "1.0.0"
+}"#,
+        )
+        .expect("beta manifest");
+        let configuration = json!({
+            "features": {
+                "./features/alpha": {}
+            },
+            "overrideFeatureInstallOrder": ["./features/beta", "./features/alpha"]
+        });
+
+        let nodes = compute_feature_install_order(
+            build_dependency_graph(
+                vec![FeatureRequest {
+                    user_feature_id: "./features/alpha".to_string(),
+                    options: json!({}),
+                }],
+                &configuration,
+                &config_root,
+                &workspace,
+                None,
+            )
+            .expect("feature nodes"),
+        )
+        .expect("feature order");
+        let dependency = resolve_feature_dependency(
+            &FeatureRequest {
+                user_feature_id: "./features/beta".to_string(),
+                options: json!({}),
+            },
+            &config_root,
+            &workspace,
+            None,
+        )
+        .expect("dependency");
+
+        assert_eq!(nodes[0].spec.manifest["id"], "beta");
+        assert_eq!(nodes[1].depends_on[0].spec.manifest["id"], "beta");
+        assert_eq!(dependency.spec.manifest["id"], "beta");
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
     fn manifest_reference_and_integrity_helpers_cover_edge_cases() {
         assert_eq!(
             manifest_depends_on_entries(&json!({
@@ -1523,6 +1604,10 @@ mod tests {
             PathBuf::from("/tmp/feature")
         );
         assert_eq!(
+            resolve_local_feature_path(Path::new("/config"), "/tmp/feature"),
+            PathBuf::from("/tmp/feature")
+        );
+        assert_eq!(
             github_repo_id_without_version("owner/repo@1.2.3"),
             "owner/repo"
         );
@@ -1566,5 +1651,36 @@ mod tests {
             temp.path.clone()
         };
         assert!(!temp_path.exists());
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn direct_tarball_integrity_uses_deterministic_coverage_process_results() {
+        let expected = sha256_integrity(b"coverage-direct-tarball");
+        let matching = LockfileEntry {
+            version: "1.0.0".to_string(),
+            resolved: "coverage://direct-tarball-integrity".to_string(),
+            integrity: expected.clone(),
+            depends_on: None,
+        };
+
+        assert_eq!(
+            verify_direct_tarball_lockfile_integrity(
+                "coverage://direct-tarball-integrity",
+                &matching
+            )
+            .expect("matching digest"),
+            Some(expected)
+        );
+        assert!(
+            super::direct_tarball_archive_integrity("coverage://direct-tarball-empty-failure")
+                .expect_err("empty failure")
+                .contains("curl exited with status 22")
+        );
+        assert!(super::direct_tarball_archive_integrity(
+            "coverage://direct-tarball-stderr-failure"
+        )
+        .expect_err("stderr failure")
+        .contains("curl stderr"));
     }
 }

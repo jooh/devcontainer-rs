@@ -215,6 +215,39 @@ mod tests {
     }
 
     #[test]
+    fn feature_object_migrates_single_legacy_customization_shapes() {
+        let extensions = feature_object(
+            &json!({
+                "id": "demo",
+                "extensions": ["legacy.extension"]
+            }),
+            &json!({}),
+            &json!({}),
+        );
+        let settings = feature_object(
+            &json!({
+                "id": "demo",
+                "settings": {
+                    "legacy.setting": true
+                }
+            }),
+            &json!({}),
+            &json!({}),
+        );
+
+        assert_eq!(
+            extensions["customizations"]["vscode"]["extensions"],
+            json!(["legacy.extension"])
+        );
+        assert_eq!(
+            settings["customizations"]["vscode"]["settings"],
+            json!({
+                "legacy.setting": true
+            })
+        );
+    }
+
+    #[test]
     fn feature_object_leaves_customizations_absent_without_legacy_fields() {
         let feature = feature_object(&json!({ "id": "demo" }), &json!({}), &json!({}));
 

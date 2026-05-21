@@ -159,6 +159,23 @@ mod tests {
         assert_eq!(run(vec!["unknown".to_string()]), ExitCode::from(2));
     }
 
+    #[test]
+    fn run_handles_log_format_empty_and_command_scoped_version_requests() {
+        assert_eq!(
+            run(vec!["--log-format".to_string(), "text".to_string()]),
+            ExitCode::from(2)
+        );
+        assert_eq!(
+            run(vec![
+                "--log-format".to_string(),
+                "json".to_string(),
+                "up".to_string(),
+                "--version".to_string()
+            ]),
+            ExitCode::SUCCESS
+        );
+    }
+
     #[cfg(coverage)]
     #[test]
     fn run_from_env_coverage_shim_delegates_to_run() {
@@ -201,5 +218,19 @@ mod tests {
             ExitCode::from(2)
         );
         std::env::remove_var(NATIVE_ONLY_ENV_VAR);
+    }
+
+    #[test]
+    fn run_reports_unsupported_native_paths_without_native_only_suffix() {
+        std::env::remove_var(NATIVE_ONLY_ENV_VAR);
+        assert_eq!(
+            run(vec![
+                "--log-format".to_string(),
+                "json".to_string(),
+                "read-configuration".to_string(),
+                "not-a-native-option".to_string(),
+            ]),
+            ExitCode::from(2)
+        );
     }
 }

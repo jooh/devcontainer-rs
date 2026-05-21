@@ -2237,25 +2237,30 @@ mod tests {
             assert_eq!(platform_default_credential_helper(), None);
         }
 
-        if let Some(value) = original_oci_auth {
-            env::set_var("DEVCONTAINERS_OCI_AUTH", value);
-        } else {
-            env::remove_var("DEVCONTAINERS_OCI_AUTH");
-        }
-        if let Some(value) = original_github_token {
-            env::set_var("GITHUB_TOKEN", value);
-        } else {
-            env::remove_var("GITHUB_TOKEN");
-        }
-        if let Some(value) = original_docker_config {
-            env::set_var("DOCKER_CONFIG", value);
-        } else {
-            env::remove_var("DOCKER_CONFIG");
-        }
-        if let Some(value) = original_path {
-            env::set_var("PATH", value);
-        }
+        restore_env_var("DEVCONTAINERS_OCI_AUTH", original_oci_auth);
+        restore_env_var("GITHUB_TOKEN", original_github_token);
+        restore_env_var("DOCKER_CONFIG", original_docker_config);
+        restore_env_var("PATH", original_path);
         let _ = fs::remove_dir_all(config_dir);
+    }
+
+    #[cfg(not(coverage))]
+    fn restore_env_var(name: &str, value: Option<std::ffi::OsString>) {
+        if let Some(value) = value {
+            env::set_var(name, value);
+        } else {
+            env::remove_var(name);
+        }
+    }
+
+    #[cfg(coverage)]
+    fn restore_env_var(name: &str, value: Option<std::ffi::OsString>) {
+        // Coverage builds exercise the auth-resolution behavior, not the
+        // test-only matrix of which host env vars happened to be set.
+        match value {
+            Some(value) => env::set_var(name, value),
+            None => env::remove_var(name),
+        }
     }
 
     #[test]

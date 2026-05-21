@@ -297,4 +297,26 @@ mod tests {
             ])
         );
     }
+
+    #[test]
+    fn feature_metadata_last_value_keys_replace_previous_entries() {
+        let merged = apply_feature_metadata(
+            &json!({
+                "remoteUser": "config-user"
+            }),
+            &[
+                json!({
+                    "remoteUser": "first-user",
+                    "containerUser": "feature-user"
+                }),
+                json!({
+                    "remoteUser": "second-user"
+                }),
+            ],
+            false,
+        );
+
+        assert_eq!(merged["remoteUser"], "config-user");
+        assert_eq!(merged["containerUser"], "feature-user");
+    }
 }
