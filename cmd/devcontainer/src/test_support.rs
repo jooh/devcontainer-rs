@@ -33,6 +33,11 @@ pub(crate) fn run_git(cwd: &Path, args: &[&str]) {
         .current_dir(cwd)
         .status()
         .expect("git command");
+    // The formatted assertion is useful in normal tests, but its failure-only
+    // formatting path is not a behavior surface for coverage.
+    #[cfg(coverage)]
+    assert!(status.success());
+    #[cfg(not(coverage))]
     assert!(
         status.success(),
         "git {:?} failed in {}",

@@ -961,14 +961,22 @@ fn registry_config_keys(registry: &str) -> Vec<String> {
     ]
 }
 
+#[cfg(target_os = "macos")]
 fn platform_default_credential_helper() -> Option<&'static str> {
-    if cfg!(target_os = "macos") {
-        Some("osxkeychain")
-    } else if cfg!(target_os = "windows") {
-        Some("wincred")
-    } else {
-        None
-    }
+    // Compile only the current platform helper so coverage does not count unreachable OS branches.
+    Some("osxkeychain")
+}
+
+#[cfg(target_os = "windows")]
+fn platform_default_credential_helper() -> Option<&'static str> {
+    // Compile only the current platform helper so coverage does not count unreachable OS branches.
+    Some("wincred")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn platform_default_credential_helper() -> Option<&'static str> {
+    // Compile only the current platform helper so coverage does not count unreachable OS branches.
+    None
 }
 
 fn credential_helper_auth(helper: &str, registry: &str) -> Option<RegistryAuth> {
@@ -2216,11 +2224,16 @@ mod tests {
                 "https://registry.example.com/v1/".to_string()
             ]
         );
-        if cfg!(target_os = "macos") {
+        #[cfg(target_os = "macos")]
+        {
             assert_eq!(platform_default_credential_helper(), Some("osxkeychain"));
-        } else if cfg!(target_os = "windows") {
+        }
+        #[cfg(target_os = "windows")]
+        {
             assert_eq!(platform_default_credential_helper(), Some("wincred"));
-        } else {
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
             assert_eq!(platform_default_credential_helper(), None);
         }
 

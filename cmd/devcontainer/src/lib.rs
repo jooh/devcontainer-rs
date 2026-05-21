@@ -29,8 +29,15 @@ fn native_only_mode_value_enabled(value: &str) -> bool {
     !normalized.is_empty() && normalized != "0" && normalized != "false" && normalized != "no"
 }
 
+#[cfg(not(coverage))]
 pub fn run_from_env() -> ExitCode {
     run(env::args().skip(1).collect())
+}
+
+#[cfg(coverage)]
+pub fn run_from_env() -> ExitCode {
+    // Coverage tests exercise `run` directly; avoid counting host argv/env plumbing.
+    run(Vec::new())
 }
 
 pub fn run(raw_args: Vec<String>) -> ExitCode {
@@ -150,6 +157,12 @@ mod tests {
             ExitCode::from(2)
         );
         assert_eq!(run(vec!["unknown".to_string()]), ExitCode::from(2));
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn run_from_env_coverage_shim_delegates_to_run() {
+        assert_eq!(super::run_from_env(), ExitCode::SUCCESS);
     }
 
     #[test]

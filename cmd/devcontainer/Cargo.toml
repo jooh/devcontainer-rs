@@ -21,6 +21,7 @@ tar = "0.4"
 rust_2018_idioms = { level = "deny", priority = -1 }
 unsafe_code = "forbid"
 unreachable_pub = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
 
 [lints.rustdoc]
 bare_urls = "deny"

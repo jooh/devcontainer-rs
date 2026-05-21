@@ -392,8 +392,16 @@ fn has_registry_hostname(image_name: &str) -> bool {
     dot.is_some_and(|dot| slash.is_some_and(|slash| dot < slash))
 }
 
+#[cfg(target_os = "linux")]
 fn is_uid_update_platform_supported() -> bool {
-    cfg!(target_os = "linux")
+    // Compile only the current platform branch so coverage does not count unreachable OS switches.
+    true
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_uid_update_platform_supported() -> bool {
+    // Compile only the current platform branch so coverage does not count unreachable OS switches.
+    false
 }
 
 fn uid_update_dockerfile_path() -> PathBuf {
