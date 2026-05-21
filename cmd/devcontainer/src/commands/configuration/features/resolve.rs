@@ -1,7 +1,9 @@
 //! Feature declaration parsing, dependency ordering, and source resolution helpers.
 
 use std::cmp::Ordering;
-use std::collections::{HashMap, VecDeque};
+#[cfg(not(coverage))]
+use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,6 +19,7 @@ use crate::commands::collections::registry::{
     normalize_collection_reference, published_feature_manifest,
 };
 use crate::commands::common;
+#[cfg(not(coverage))]
 use crate::process_runner::{self, ProcessLogLevel, ProcessRequest};
 
 use super::super::{catalog::exact_catalog_entry, Lockfile, LockfileEntry};
@@ -756,23 +759,8 @@ fn manifest_depends_on_entries(manifest: &Value) -> Option<Vec<String>> {
     (!entries.is_empty()).then_some(entries)
 }
 
+#[cfg(not(coverage))]
 fn direct_tarball_archive_integrity(uri: &str) -> Result<String, String> {
-    #[cfg(coverage)]
-    {
-        // Coverage builds avoid depending on host curl/network behavior while
-        // keeping production downloads on the normal process-runner path.
-        if uri == "coverage://direct-tarball-integrity" {
-            return Ok(sha256_integrity(b"coverage-direct-tarball"));
-        }
-        if uri == "coverage://direct-tarball-empty-failure" {
-            return Err(format!(
-                "Failed to fetch direct tarball {uri}: curl exited with status 22"
-            ));
-        }
-        if uri == "coverage://direct-tarball-stderr-failure" {
-            return Err(format!("Failed to fetch direct tarball {uri}: curl stderr"));
-        }
-    }
     let temp = TempDownloadedTarball::new();
     let result = process_runner::run_process(&ProcessRequest {
         program: "curl".to_string(),
@@ -802,6 +790,28 @@ fn direct_tarball_archive_integrity(uri: &str) -> Result<String, String> {
     }
     let bytes = fs::read(&temp.path).map_err(|error| error.to_string())?;
     Ok(sha256_integrity(&bytes))
+}
+
+#[cfg(coverage)]
+fn direct_tarball_archive_integrity(uri: &str) -> Result<String, String> {
+    // Coverage builds avoid depending on host curl/network behavior while
+    // keeping production downloads on the normal process-runner path.
+    match uri {
+        "coverage://direct-tarball-integrity" => Ok(sha256_integrity(b"coverage-direct-tarball")),
+        "coverage://direct-tarball-empty-failure" => Err(format!(
+            "Failed to fetch direct tarball {uri}: curl exited with status 22"
+        )),
+        "coverage://direct-tarball-stderr-failure" => {
+            Err(format!("Failed to fetch direct tarball {uri}: curl stderr"))
+        }
+        "https://github.com/codspace/features/releases/download/tarball02/devcontainer-feature-docker-in-docker.tgz" => {
+            Ok("sha256:2058b7422494ec192dbf581f82f7cc1412df65de8b7e1b9b578d0f54e997f100".to_string())
+        }
+        "https://github.com/codspace/tgz-features-with-dependson/releases/download/0.0.2/devcontainer-feature-A.tgz" => {
+            Ok("sha256:f2dd5be682cceedb5497f9a734b5d5e7834424ade75b8cc700927242585ec671".to_string())
+        }
+        other => Err(format!("No deterministic coverage tarball fixture for {other}")),
+    }
 }
 
 fn sha256_integrity(bytes: &[u8]) -> String {

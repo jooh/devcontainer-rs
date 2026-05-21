@@ -1887,6 +1887,51 @@ mod tests {
     }
 
     #[test]
+    fn registry_transport_errors_propagate_and_empty_fake_routes_are_reported() {
+        let reference = parse_oci_reference("registry.example.com/acme/features/fake:1.0.0")
+            .expect("reference");
+        let missing_manifest =
+            registry_feature_artifact(&reference, &FakeTransport::default()).expect_err("route");
+        assert!(
+            missing_manifest.contains("missing fake route"),
+            "{missing_manifest}"
+        );
+
+        let artifact = OciFeatureArtifact {
+            original_reference: "registry.example.com/acme/features/fake:1.0.0".to_string(),
+            resource: "registry.example.com/acme/features/fake".to_string(),
+            registry: "registry.example.com".to_string(),
+            repository: "acme/features/fake".to_string(),
+            tag: Some("1.0.0".to_string()),
+            reference_digest: None,
+            manifest_digest: "sha256:manifest".to_string(),
+            manifest: json!({}),
+            metadata: json!({}),
+            layer: OciFeatureLayer::Missing,
+        };
+        let missing_blob =
+            registry_blob(&artifact, "sha256:layer", &FakeTransport::default()).expect_err("route");
+        assert!(
+            missing_blob.contains("missing fake route"),
+            "{missing_blob}"
+        );
+
+        let transport = FakeTransport::default();
+        let url = "https://registry.example.com/v2/acme/features/fake/blobs/sha256:layer";
+        transport.add(
+            url,
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: Vec::new(),
+            },
+        );
+        let _ = registry_blob(&artifact, "sha256:layer", &transport).expect("first blob");
+        let exhausted = registry_blob(&artifact, "sha256:layer", &transport).expect_err("empty");
+        assert!(exhausted.contains("missing fake route"), "{exhausted}");
+    }
+
+    #[test]
     fn registry_tag_manifest_and_token_errors_are_reported() {
         let reference = OciReference {
             original: "registry.example.com/acme/features/fake:1.0.0".to_string(),

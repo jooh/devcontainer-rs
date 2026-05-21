@@ -64,6 +64,23 @@ fn feature_dependency_resolution_respects_override_order() {
 }
 
 #[test]
+fn feature_info_rejects_unsupported_output_modes() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("feature root");
+    fs::write(
+        root.join("devcontainer-feature.json"),
+        "{\n  \"id\": \"local-feature\",\n  \"version\": \"1.0.0\"\n}\n",
+    )
+    .expect("feature manifest");
+
+    let error = build_feature_info_payload("unsupported", &root.display().to_string())
+        .expect_err("unsupported mode");
+
+    assert_eq!(error, "Unsupported features info mode: unsupported");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn feature_dependency_resolution_ignores_existing_lockfile() {
     let root = unique_temp_dir();
     let config_dir = root.join(".devcontainer");

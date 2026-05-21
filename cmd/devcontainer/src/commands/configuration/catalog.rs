@@ -959,6 +959,22 @@ mod tests {
     }
 
     #[test]
+    fn resolve_wanted_version_uses_lockfile_for_digest_pinned_references() {
+        let feature = feature_ref(
+            "https://example.com/feature.tgz@sha256:abc",
+            "https://example.com/feature.tgz",
+            None,
+            Some("sha256:abc"),
+        );
+        let locked = lockfile_with("https://example.com/feature.tgz@sha256:abc", "4.5.6");
+
+        assert_eq!(
+            resolve_wanted_version(&feature, Some(&locked), None).as_deref(),
+            Some("4.5.6")
+        );
+    }
+
+    #[test]
     fn version_parsing_and_comparison_cover_selector_shapes() {
         assert_eq!(
             parse_version("1"),
