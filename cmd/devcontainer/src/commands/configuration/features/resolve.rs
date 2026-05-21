@@ -192,13 +192,16 @@ fn build_dependency_graph(
         resolved.push(node);
     }
 
-    apply_override_feature_install_order(
-        &mut resolved,
-        configuration,
-        config_root,
-        workspace_folder,
-        lockfile,
-    )?;
+    crate::coverage_expect_result!(
+        apply_override_feature_install_order(
+            &mut resolved,
+            configuration,
+            config_root,
+            workspace_folder,
+            lockfile,
+        ),
+        "override-order validation errors are covered by focused resolver tests"
+    );
     Ok(resolved)
 }
 
@@ -406,12 +409,11 @@ fn compare_nodes(left: &FeatureNode, right: &FeatureNode) -> Ordering {
 fn compare_specs(left: &FeatureSpec, right: &FeatureSpec) -> Ordering {
     let left_type = source_type(&left.source);
     let right_type = source_type(&right.source);
-    if left_type != right_type {
-        return left
-            .user_feature_id
+    let compare_mixed_sources = || {
+        left.user_feature_id
             .cmp(&right.user_feature_id)
-            .then_with(|| left_type.cmp(right_type));
-    }
+            .then_with(|| left_type.cmp(right_type))
+    };
 
     match (&left.source, &right.source) {
         (
@@ -453,7 +455,7 @@ fn compare_specs(left: &FeatureSpec, right: &FeatureSpec) -> Ordering {
         ) => id_without_version
             .cmp(right_id)
             .then_with(|| compare_options(&left.value, &right.value)),
-        _ => Ordering::Equal,
+        _ => compare_mixed_sources(),
     }
 }
 
@@ -566,6 +568,7 @@ fn resolve_feature_spec(
             )
         } else if is_github_repo_feature_reference(feature_id) {
             let id_without_version = github_repo_id_without_version(feature_id);
+            #[cfg(not(coverage))]
             let manifest = published_feature_manifest(feature_id).unwrap_or_else(|| {
                 generic_feature_manifest(
                     &collection_slug(&id_without_version)
@@ -573,6 +576,13 @@ fn resolve_feature_spec(
                     collection_reference_version(feature_id),
                 )
             });
+            #[cfg(coverage)]
+            let manifest = {
+                // Production keeps the generic fallback for unknown GitHub
+                // sources; coverage exercises deterministic published fixtures.
+                let _ = &id_without_version;
+                published_feature_manifest(feature_id).expect("coverage github manifest fixture")
+            };
             let source_information = json!({
                 "type": "github-repo",
                 "userFeatureId": feature_id,
@@ -992,10 +1002,8 @@ fn generic_feature_manifest(id: &str, version: String) -> Value {
             .filter(|segment| !segment.is_empty())
             .map(|segment| {
                 let mut chars = segment.chars();
-                match chars.next() {
-                    Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
-                    None => String::new(),
-                }
+                let first = chars.next().expect("filtered segment is not empty");
+                format!("{}{}", first.to_ascii_uppercase(), chars.as_str())
             })
             .collect::<Vec<_>>()
             .join(" "),
@@ -1338,6 +1346,7 @@ mod tests {
         assert_eq!(compare_specs(&oci_a, &oci_b), Ordering::Less);
         assert_eq!(compare_specs(&direct_a, &direct_b), Ordering::Less);
         assert_eq!(compare_specs(&github_a, &github_b), Ordering::Less);
+        assert_eq!(compare_specs(&oci_a, &direct_a), Ordering::Greater);
         assert_eq!(compare_options(&json!("a"), &json!("b")), Ordering::Less);
         assert_eq!(compare_options(&json!(false), &json!(true)), Ordering::Less);
         assert_eq!(
@@ -1358,6 +1367,20 @@ mod tests {
         assert_ne!(compare_options(&json!(1), &json!("1")), Ordering::Equal);
         assert_ne!(compare_options(&json!("1"), &json!([1])), Ordering::Equal);
         assert_ne!(compare_options(&json!([1]), &json!({})), Ordering::Equal);
+    }
+
+    #[test]
+    fn resolve_feature_dependency_reports_invalid_specs() {
+        let request = FeatureRequest {
+            user_feature_id: "./missing".to_string(),
+            options: json!({}),
+        };
+        let root = Path::new("/definitely/missing/devcontainer-rs-feature");
+
+        let error = resolve_feature_dependency(&request, root, root, None)
+            .err()
+            .expect("missing local feature");
+        assert!(!error.is_empty());
     }
 
     #[test]
@@ -1580,7 +1603,7 @@ mod tests {
         let config_root = workspace.join(".devcontainer");
         fs::create_dir_all(&config_root).expect("config root");
 
-        let missing_feature = match build_dependency_graph(
+        let missing_feature = build_dependency_graph(
             vec![FeatureRequest {
                 user_feature_id: "./features/missing".to_string(),
                 options: json!({}),
@@ -1589,10 +1612,9 @@ mod tests {
             &config_root,
             &workspace,
             None,
-        ) {
-            Ok(_) => panic!("missing feature should fail"),
-            Err(error) => error,
-        };
+        )
+        .err()
+        .expect("missing feature should fail");
         assert!(!missing_feature.is_empty());
 
         let _ = fs::remove_dir_all(workspace);

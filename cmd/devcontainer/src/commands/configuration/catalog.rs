@@ -92,10 +92,12 @@ pub(super) fn resolve_wanted_version(
     lockfile: Option<&Lockfile>,
     workspace_folder: Option<&Path>,
 ) -> Option<String> {
-    if let Some(entry) = lockfile.and_then(|value| value.features.get(&feature.original)) {
-        if feature.tag.is_none() || feature.digest.is_some() {
-            return Some(entry.version.clone());
-        }
+    if let Some(version) = lockfile
+        .and_then(|value| value.features.get(&feature.original))
+        .filter(|_| feature.tag.is_none() || feature.digest.is_some())
+        .map(|entry| entry.version.clone())
+    {
+        return Some(version);
     }
 
     let tag = feature.tag.as_deref()?;
@@ -874,6 +876,23 @@ mod tests {
         assert_eq!(
             resolve_wanted_version(&untagged, Some(&locked), None).as_deref(),
             Some("1.0.4")
+        );
+        assert_eq!(
+            resolve_wanted_version(
+                &feature_ref(
+                    "ghcr.io/devcontainers/features/git@sha256:locked",
+                    "ghcr.io/devcontainers/features/git",
+                    None,
+                    Some("sha256:locked"),
+                ),
+                Some(&lockfile_with(
+                    "ghcr.io/devcontainers/features/git@sha256:locked",
+                    "9.9.9",
+                )),
+                None,
+            )
+            .as_deref(),
+            Some("9.9.9")
         );
         assert_eq!(
             resolve_wanted_version(&latest, None, None).as_deref(),

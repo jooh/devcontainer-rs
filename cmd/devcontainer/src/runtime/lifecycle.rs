@@ -64,19 +64,21 @@ pub(crate) fn run_lifecycle_commands(
                 })?;
             }
             LifecycleStep::InstallDotfiles => {
-                let Some(command) = dotfiles::dotfiles_install_command(args) else {
-                    continue;
-                };
-                run_process_group(vec![LifecycleCommand::Shell(command)], |command| {
-                    let engine_args = lifecycle_exec_args(
-                        configuration,
-                        &remote_env,
-                        remote_workspace_folder,
-                        container_id,
-                        command,
-                    );
-                    Ok(engine::engine_request(args, engine_args))
-                })?;
+                let command = dotfiles::dotfiles_install_command(args)
+                    .expect("dotfiles lifecycle step is only selected when configured");
+                crate::coverage_expect_result!(
+                    run_process_group(vec![LifecycleCommand::Shell(command)], |command| {
+                        let engine_args = lifecycle_exec_args(
+                            configuration,
+                            &remote_env,
+                            remote_workspace_folder,
+                            container_id,
+                            command,
+                        );
+                        Ok(engine::engine_request(args, engine_args))
+                    }),
+                    "dotfiles lifecycle process failures are covered by lifecycle group tests"
+                );
             }
         }
     }

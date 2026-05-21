@@ -8,9 +8,9 @@ use serde_json::json;
 use crate::runtime::context::ResolvedConfig;
 
 use super::{
-    command_stdout, prepare_up_image_for_platform, should_update_remote_user_uid,
-    uid_update_details, uid_update_local_image_name, uid_update_run_args_user,
-    unique_uid_update_build_context,
+    command_stdout, has_registry_hostname, prepare_up_image_for_platform,
+    should_update_remote_user_uid, uid_update_details, uid_update_local_image_name,
+    uid_update_run_args_user, unique_uid_update_build_context,
 };
 
 #[test]
@@ -30,6 +30,15 @@ fn command_stdout_reports_non_success_stderr() {
         .expect_err("command failure");
 
     assert_eq!(error, "uid-failed");
+}
+
+#[test]
+fn registry_hostname_detection_accepts_localhost_and_qualified_names() {
+    assert!(has_registry_hostname("localhost/devcontainer:latest"));
+    assert!(has_registry_hostname(
+        "registry.example.com/devcontainer:latest"
+    ));
+    assert!(!has_registry_hostname("library/devcontainer:latest"));
 }
 
 #[test]

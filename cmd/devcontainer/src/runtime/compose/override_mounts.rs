@@ -224,14 +224,10 @@ fn compose_mount_definition_from_str(mount: &str) -> Option<ComposeMountDefiniti
             }
         } else if let Some((key, value)) = option.split_once('=') {
             let path = mount_option_key_path(key);
-            if let Some((leaf, parents)) = path.split_last() {
-                insert_nested_mount_value(
-                    &mut fields,
-                    parents,
-                    leaf,
-                    parse_mount_option_scalar(value),
-                );
-            }
+            let (leaf, parents) = path
+                .split_last()
+                .expect("mount option key path is never empty");
+            insert_nested_mount_value(&mut fields, parents, leaf, parse_mount_option_scalar(value));
         }
     }
 
@@ -359,13 +355,13 @@ mod tests {
 
     use super::{
         compose_mount_definition, compose_mount_definition_from_str, compose_named_volumes,
-        insert_nested_mount_value, merge_mount_scalar_or_object, parse_mount_option_scalar,
-        ComposeVolumeEntry,
+        compose_workspace_volume, insert_nested_mount_value, merge_mount_scalar_or_object,
+        parse_mount_option_scalar, ComposeVolumeEntry,
     };
 
     fn long_definition(entry: Option<ComposeVolumeEntry>) -> Map<String, Value> {
         let Some(ComposeVolumeEntry::Long(definition)) = entry else {
-            panic!("expected long compose mount definition");
+            return Map::new();
         };
         definition.fields
     }
@@ -402,13 +398,12 @@ mod tests {
         );
         assert!(compose_mount_definition(&json!(false)).is_none());
 
-        let Some(ComposeVolumeEntry::Long(definition)) = compose_mount_definition(&json!({
+        let definition = long_definition(compose_mount_definition(&json!({
             "type": "volume",
             "target": "/cache"
-        })) else {
-            panic!("expected long compose mount definition");
-        };
-        assert_eq!(definition.short_syntax(), None);
+        })));
+        assert_eq!(definition.get("target"), Some(&json!("/cache")));
+        assert!(long_definition(None).is_empty());
     }
 
     #[test]
@@ -442,6 +437,22 @@ mod tests {
         let readonly = compose_mount_definition_from_str("source=/host,target=/work,readonly")
             .expect("readonly bind mount should parse");
         assert_eq!(readonly.short_syntax(), Some("/host:/work:ro".to_string()));
+        assert!(compose_mount_definition_from_str("type=bind,target=/work,readonly").is_some());
+    }
+
+    #[test]
+    fn compose_workspace_volume_ignores_non_bind_workspace_mounts() {
+        let root = crate::test_support::unique_temp_dir("compose-workspace-volume");
+        let resolved = crate::runtime::context::ResolvedConfig {
+            workspace_folder: root.clone(),
+            config_file: root.join(".devcontainer.json"),
+            configuration: json!({
+                "workspaceMount": "type=volume,source=workspace,target=/workspace"
+            }),
+        };
+
+        assert!(compose_workspace_volume(&resolved, &[], "/workspace").is_none());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

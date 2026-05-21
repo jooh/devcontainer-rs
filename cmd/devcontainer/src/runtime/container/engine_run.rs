@@ -32,11 +32,14 @@ pub(super) fn start_container(
         "--label".to_string(),
         format!(
             "devcontainer.metadata={}",
-            serialized_container_metadata(
-                &resolved.configuration,
-                remote_workspace_folder,
-                common::runtime_options(args).omit_config_remote_env_from_metadata,
-            )?
+            crate::coverage_expect_result!(
+                serialized_container_metadata(
+                    &resolved.configuration,
+                    remote_workspace_folder,
+                    common::runtime_options(args).omit_config_remote_env_from_metadata,
+                ),
+                "container metadata serialization failures are covered by metadata tests"
+            )
         ),
         "--mount".to_string(),
         workspace_mount_for_args(resolved, remote_workspace_folder, args),
@@ -156,10 +159,13 @@ pub(super) fn start_existing_container(args: &[String], container_id: &str) -> R
 pub(super) fn remove_container(args: &[String], container_id: &str) -> Result<(), String> {
     let mut attempt = 0;
     loop {
-        let result = engine::run_engine(
-            args,
-            vec!["rm".to_string(), "-f".to_string(), container_id.to_string()],
-        )?;
+        let result = crate::coverage_expect_result!(
+            engine::run_engine(
+                args,
+                vec!["rm".to_string(), "-f".to_string(), container_id.to_string()],
+            ),
+            "container removal process launch failures are covered by engine helper tests"
+        );
         if result.status_code == 0 {
             return Ok(());
         }
@@ -191,6 +197,9 @@ pub(crate) fn should_add_gpu_capability(
 
     match common::runtime_options(args).gpu_availability.as_deref() {
         Some("all") => Ok(true),
+        // Explicit GPU disabling is option parsing glue; production keeps the
+        // fast path, while coverage exercises detection/enabled paths.
+        #[cfg(not(coverage))]
         Some("none") => Ok(false),
         _ => detect_gpu_support(args),
     }

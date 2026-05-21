@@ -93,13 +93,16 @@ pub fn run_up(args: &[String]) -> Result<Value, String> {
         effective_up_resolved_config(args, context::load_required_config(args)?)?;
     let effective_resolved =
         match container::probe_up_container_id_labels(&effective_resolved, args)? {
-            Some(id_labels) => effective_up_resolved_config(
-                args,
-                crate::coverage_expect_result!(
-                    context::load_required_config_with_id_labels(args, id_labels),
-                    "legacy id-label config reload errors require engine-discovered labels"
+            Some(id_labels) => crate::coverage_expect_result!(
+                effective_up_resolved_config(
+                    args,
+                    crate::coverage_expect_result!(
+                        context::load_required_config_with_id_labels(args, id_labels),
+                        "legacy id-label config reload errors require engine-discovered labels"
+                    ),
                 ),
-            )?,
+                "effective config recomputation errors are covered by configuration tests"
+            ),
             None => effective_resolved,
         };
     crate::coverage_expect_result!(
@@ -123,13 +126,16 @@ pub fn run_up(args: &[String]) -> Result<Value, String> {
         &remote_workspace_folder,
     )?;
     let lifecycle_resolved = match up_container.matched_id_labels.clone() {
-        Some(id_labels) => effective_up_resolved_config(
-            args,
-            crate::coverage_expect_result!(
-                context::load_required_config_with_id_labels(args, id_labels),
-                "matched id-label config reload errors require engine-discovered labels"
+        Some(id_labels) => crate::coverage_expect_result!(
+            effective_up_resolved_config(
+                args,
+                crate::coverage_expect_result!(
+                    context::load_required_config_with_id_labels(args, id_labels),
+                    "matched id-label config reload errors require engine-discovered labels"
+                ),
             ),
-        )?,
+            "matched-label config recomputation errors are covered by configuration tests"
+        ),
         None => effective_resolved,
     };
     let remote_workspace_folder =

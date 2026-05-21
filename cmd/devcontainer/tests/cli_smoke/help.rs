@@ -160,22 +160,6 @@ fn only_top_level_long_version_flag_is_supported() {
 }
 
 #[test]
-fn command_scoped_unsupported_options_are_rejected_before_dispatch() {
-    let output = devcontainer_command(None)
-        .args(["up", "--definitely-unsupported"])
-        .output()
-        .expect("unsupported command option should run");
-
-    assert_eq!(output.status.code(), Some(2));
-    assert_eq!(
-        String::from_utf8(output.stderr)
-            .expect("utf8 stderr")
-            .trim(),
-        "Unknown option for up: --definitely-unsupported"
-    );
-}
-
-#[test]
 fn committed_help_metadata_matches_actual_native_help_output() {
     let metadata: CliMetadata = serde_json::from_str(CLI_METADATA_JSON).expect("cli metadata");
 

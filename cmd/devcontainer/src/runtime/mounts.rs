@@ -117,15 +117,16 @@ pub(crate) fn validate_cli_mount_value(mount: &str) -> Result<(), String> {
             return Err(invalid_cli_mount_error(mount));
         };
         let value = value.trim_matches('"');
-        match key {
-            "type" if matches!(value, "bind" | "volume") => {
-                has_mount_type = true;
-                is_volume_mount = value == "volume";
+        if key == "type" {
+            if !matches!(value, "bind" | "volume") {
+                return Err(invalid_cli_mount_error(mount));
             }
-            "type" => return Err(invalid_cli_mount_error(mount)),
-            "source" | "src" if !value.is_empty() => has_source = true,
-            "target" | "destination" | "dst" if !value.is_empty() => has_target = true,
-            _ => {}
+            has_mount_type = true;
+            is_volume_mount = value == "volume";
+        } else if matches!(key, "source" | "src") && !value.is_empty() {
+            has_source = true;
+        } else if matches!(key, "target" | "destination" | "dst") && !value.is_empty() {
+            has_target = true;
         }
     }
 

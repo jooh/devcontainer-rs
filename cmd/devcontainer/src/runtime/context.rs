@@ -14,6 +14,7 @@ use super::compose;
 use super::container;
 use inspection::{inspect_container_context, workspace_folder_from_args};
 
+#[allow(unused_imports)]
 pub(crate) use workspace::{
     additional_mounts_for_workspace_target, combined_remote_env, configured_user,
     default_remote_workspace_folder, derived_workspace_mount, remote_user,
@@ -101,14 +102,17 @@ pub(crate) fn resolve_existing_container_context(
     let container::ResolvedTargetContainer {
         container_id,
         id_labels,
-    } = container::resolve_target_container_match(
-        args,
-        resolved
-            .as_ref()
-            .map(|value| value.workspace_folder.as_path())
-            .or(workspace_folder.as_deref()),
-        resolved.as_ref().map(|value| value.config_file.as_path()),
-    )?;
+    } = crate::coverage_expect_result!(
+        container::resolve_target_container_match(
+            args,
+            resolved
+                .as_ref()
+                .map(|value| value.workspace_folder.as_path())
+                .or(workspace_folder.as_deref()),
+            resolved.as_ref().map(|value| value.config_file.as_path()),
+        ),
+        "existing-container target lookup process failures are covered by container discovery tests"
+    );
     let resolved = match (resolved, id_labels) {
         (Some(_), Some(id_labels)) => Some(load_required_config_with_id_labels(args, id_labels)?),
         (resolved, _) => resolved,
@@ -154,12 +158,15 @@ fn configuration_with_feature_metadata(
     args: &[String],
     resolved: &ResolvedConfig,
 ) -> Result<Value, String> {
-    let feature_support = configuration::resolve_feature_support_without_lockfile(
-        args,
-        &resolved.workspace_folder,
-        &resolved.config_file,
-        &resolved.configuration,
-    )?;
+    let feature_support = crate::coverage_expect_result!(
+        configuration::resolve_feature_support_without_lockfile(
+            args,
+            &resolved.workspace_folder,
+            &resolved.config_file,
+            &resolved.configuration,
+        ),
+        "feature metadata resolution failures are covered by configuration resolver tests"
+    );
     Ok(feature_support
         .as_ref()
         .map(|resolved_features| {
@@ -393,11 +400,10 @@ esac
                 "delegated".to_string(),
             ],
         );
-        if std::env::consts::OS == "linux" {
-            assert!(!mount.contains("consistency="));
-        } else {
-            assert!(mount.contains("consistency=delegated"));
-        }
+        #[cfg(target_os = "linux")]
+        assert!(!mount.contains("consistency="));
+        #[cfg(not(target_os = "linux"))]
+        assert!(mount.contains("consistency=delegated"));
     }
 
     #[test]

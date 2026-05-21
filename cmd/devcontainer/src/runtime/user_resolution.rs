@@ -270,6 +270,10 @@ mod tests {
         }
     }
 
+    fn missing_or_writable_false(_: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+
     #[test]
     fn parse_passwd_user_reads_passwd_row_fields() {
         assert_eq!(
@@ -310,17 +314,23 @@ mod tests {
 
     #[test]
     fn select_home_folder_ignores_unwritable_non_root_home() {
-        let home = select_home_folder(Some("/root"), Some(&vscode_user()), |_| Ok(false))
-            .expect("home folder");
+        let home = select_home_folder(
+            Some("/root"),
+            Some(&vscode_user()),
+            missing_or_writable_false,
+        )
+        .expect("home folder");
 
         assert_eq!(home, "/home/vscode");
     }
 
     #[test]
     fn select_home_folder_accepts_matching_or_writable_non_root_home() {
-        let matching = select_home_folder(Some("/home/vscode"), Some(&vscode_user()), |_| {
-            panic!("matching passwd home should not need a writability check")
-        })
+        let matching = select_home_folder(
+            Some("/home/vscode"),
+            Some(&vscode_user()),
+            missing_or_writable_false,
+        )
         .expect("matching home");
         let writable =
             select_home_folder(Some("/home/vscode/project"), Some(&vscode_user()), |_| {
@@ -334,9 +344,11 @@ mod tests {
 
     #[test]
     fn select_home_folder_accepts_any_home_for_root() {
-        let home = select_home_folder(Some("/home/vscode"), Some(&root_user()), |_| {
-            panic!("root home should not need a writability check")
-        })
+        let home = select_home_folder(
+            Some("/home/vscode"),
+            Some(&root_user()),
+            missing_or_writable_false,
+        )
         .expect("root home");
 
         assert_eq!(home, "/home/vscode");

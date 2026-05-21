@@ -378,12 +378,8 @@ pub(super) fn humanize_collection_slug(slug: &str) -> String {
         .filter(|segment| !segment.is_empty())
         .map(|segment| {
             let mut chars = segment.chars();
-            match chars.next() {
-                Some(first) => {
-                    format!("{}{}", first.to_ascii_uppercase(), chars.as_str())
-                }
-                None => String::new(),
-            }
+            let first = chars.next().expect("filtered segment is not empty");
+            format!("{}{}", first.to_ascii_uppercase(), chars.as_str())
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -401,8 +397,11 @@ fn workspace_oci_layout_dir(reference: &str, workspace_folder: Option<&Path>) ->
 }
 
 fn resolve_local_oci_manifest_digest(reference: &str, layout_dir: &Path) -> Option<String> {
-    if let Some((_, digest)) = reference.rsplit_once("@sha256:") {
-        return Some(digest.to_string());
+    if let Some(digest) = reference
+        .rsplit_once("@sha256:")
+        .map(|(_, digest)| digest.to_string())
+    {
+        return Some(digest);
     }
 
     let wanted_tag = collection_reference_version(reference);
@@ -751,6 +750,11 @@ mod tests {
             artifact.layer_path.as_deref(),
             Some(expected_layer_path.as_path())
         );
+        assert!(local_oci_artifact(
+            &format!("ghcr.io/acme/templates/local-template@sha256:{manifest_digest}"),
+            Some(workspace.as_path()),
+        )
+        .is_some());
         assert!(local_oci_artifact(
             "ghcr.io/acme/templates/local-template:not-present",
             Some(workspace.as_path()),

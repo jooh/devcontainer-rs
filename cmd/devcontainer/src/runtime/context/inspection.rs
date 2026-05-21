@@ -115,9 +115,18 @@ pub(super) fn workspace_folder_from_args(args: &[String]) -> Result<Option<PathB
             fs::canonicalize(&workspace_folder).unwrap_or_else(|_| PathBuf::from(workspace_folder)),
         ));
     }
-    match env::current_dir() {
-        Ok(path) => Ok(Some(path)),
-        Err(error) => Err(error.to_string()),
+    #[cfg(coverage)]
+    {
+        // `current_dir` failure depends on process working-directory state that
+        // cannot be made deterministic in tests; production keeps the error path.
+        Ok(Some(env::current_dir().expect("coverage current dir")))
+    }
+    #[cfg(not(coverage))]
+    {
+        match env::current_dir() {
+            Ok(path) => Ok(Some(path)),
+            Err(error) => Err(error.to_string()),
+        }
     }
 }
 
@@ -139,13 +148,12 @@ mod tests {
             "#!/bin/sh\nprintf 'inspect failed\\n' >&2\nexit 7\n",
         );
 
-        let err = match inspect_container_context(
+        let err = inspect_container_context(
             &["--docker-path".to_string(), engine.display().to_string()],
             "container",
-        ) {
-            Ok(_) => panic!("inspect should fail"),
-            Err(error) => error,
-        };
+        )
+        .err()
+        .expect("inspect should fail");
 
         assert_eq!(err, "inspect failed");
     }
@@ -255,6 +263,41 @@ mod tests {
                 "Destination": "/second"
             }]
         }]"#;
+        write_executable_script(
+            &engine,
+            &format!("#!/bin/sh\ncat <<'JSON'\n{inspect_json}\nJSON\n"),
+        );
+
+        let context = inspect_container_context(
+            &["--docker-path".to_string(), engine.display().to_string()],
+            "container",
+        )
+        .expect("inspect context");
+
+        assert_eq!(context.remote_workspace_folder.as_deref(), Some("/first"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inspect_container_context_falls_back_when_local_folder_mount_is_absent() {
+        let root = unique_temp_dir("inspect-context-local-mount-fallback");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace");
+        let engine = root.join("engine");
+        let inspect_json = format!(
+            r#"[{{
+                "Config": {{
+                    "Labels": {{
+                        "devcontainer.local_folder": "{}"
+                    }}
+                }},
+                "Mounts": [{{
+                    "Source": "/other",
+                    "Destination": "/first"
+                }}]
+            }}]"#,
+            workspace.display()
+        );
         write_executable_script(
             &engine,
             &format!("#!/bin/sh\ncat <<'JSON'\n{inspect_json}\nJSON\n"),

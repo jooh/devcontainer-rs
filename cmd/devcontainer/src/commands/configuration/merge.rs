@@ -278,12 +278,12 @@ fn merge_host_requirements(entries: &[Value]) -> Option<Value> {
     }
 
     let mut merged = Map::new();
-    if cpus != 0.0 {
+    merged.extend((cpus != 0.0).then(|| {
         let cpu_value = serde_json::Number::from_f64(cpus)
             .map(Value::Number)
             .unwrap_or_else(|| Value::from(cpus as i64));
-        merged.insert("cpus".to_string(), cpu_value);
-    }
+        ("cpus".to_string(), cpu_value)
+    }));
     if memory != 0 {
         merged.insert("memory".to_string(), Value::String(memory.to_string()));
     }
@@ -561,6 +561,10 @@ mod tests {
         assert_eq!(
             merge_gpu_requirement_values(&json!("optional"), &json!("optional")),
             json!("optional")
+        );
+        assert_eq!(
+            merge_gpu_requirement_values(&json!("required"), &json!("required")),
+            json!(true)
         );
         assert_eq!(
             merge_gpu_requirement_values(&json!(true), &json!(true)),

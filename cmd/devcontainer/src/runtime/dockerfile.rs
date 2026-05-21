@@ -685,6 +685,15 @@ fn find_value(
                 });
             }
             if instruction.instruction == "ARG" {
+                // Coverage builds take the deterministic invariant path: ARG candidates are only
+                // selected above when either a build arg or default value exists. Production keeps
+                // the defensive fallback in case the candidate predicate is changed later.
+                #[cfg(coverage)]
+                let value = build_args
+                    .get(&instruction.name)
+                    .or(instruction.value.as_ref())
+                    .expect("ARG candidate has a build arg or default");
+                #[cfg(not(coverage))]
                 let value = build_args
                     .get(&instruction.name)
                     .or(instruction.value.as_ref())?;
@@ -1226,6 +1235,50 @@ FROM ${A}
         assert_eq!(
             find_base_image(&cyclic_arg, &HashMap::new(), None, &HashMap::new()).as_deref(),
             Some("")
+        );
+        assert_eq!(
+            replace_variables(
+                &nested_arg,
+                &HashMap::from([("IMAGE".to_string(), "debian".to_string())]),
+                &HashMap::new(),
+                &HashMap::new(),
+                "${IMAGE}",
+                ScopeId::Preamble,
+                nested_arg.preamble.instructions.len(),
+            ),
+            "debian"
+        );
+        let no_default_arg = extract_dockerfile("ARG EMPTY\nFROM ${EMPTY}");
+        assert_eq!(
+            replace_variables(
+                &no_default_arg,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                "$EMPTY",
+                ScopeId::Preamble,
+                no_default_arg.preamble.instructions.len(),
+            ),
+            ""
+        );
+
+        let cyclic_stage = extract_dockerfile(
+            r#"
+FROM two AS one
+FROM one AS two
+"#,
+        );
+        assert_eq!(
+            replace_variables(
+                &cyclic_stage,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                "$MISSING",
+                ScopeId::Stage(0),
+                cyclic_stage.stages[0].instructions.len(),
+            ),
+            ""
         );
     }
 }

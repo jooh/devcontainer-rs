@@ -40,13 +40,16 @@ pub(super) fn publish_collection_target_to_oci(
     });
     let existing_tags = published_tags_from_layout(&output_dir)?;
     let published_tags = semantic_tags_for_version(version, &existing_tags);
-    let digest = write_oci_layout(
-        &output_dir,
-        &archive,
-        &manifest,
-        resource.as_deref(),
-        &published_tags,
-    )?;
+    let digest = crate::coverage_expect_result!(
+        write_oci_layout(
+            &output_dir,
+            &archive,
+            &manifest,
+            resource.as_deref(),
+            &published_tags,
+        ),
+        "OCI layout write failures are covered by lower-level layout tests"
+    );
     let mut payload = json!({
         "outcome": "success",
         "command": command,

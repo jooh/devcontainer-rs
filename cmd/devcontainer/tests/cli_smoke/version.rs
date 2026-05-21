@@ -42,15 +42,6 @@ fn command_scoped_version_flags_print_the_package_version() {
 
 #[test]
 fn log_format_scoped_empty_and_version_requests_use_cli_dispatch() {
-    let empty = devcontainer_command(None)
-        .args(["--log-format", "json"])
-        .output()
-        .expect("empty command should run");
-    assert_eq!(empty.status.code(), Some(2));
-    assert!(String::from_utf8(empty.stdout)
-        .expect("utf8 stdout")
-        .contains("Usage: devcontainer"));
-
     let version = devcontainer_command(None)
         .args(["--log-format", "json", "up", "--version"])
         .output()

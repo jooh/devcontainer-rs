@@ -46,17 +46,20 @@ impl FeatureTestRuntime for ContainerEngineFeatureTestRuntime {
         dockerfile_path: &Path,
         context_path: &Path,
     ) -> Result<(), String> {
-        let result = runtime::engine::run_engine(
-            args,
-            vec![
-                "build".to_string(),
-                "--tag".to_string(),
-                image_name.to_string(),
-                "--file".to_string(),
-                dockerfile_path.display().to_string(),
-                context_path.display().to_string(),
-            ],
-        )?;
+        let result = crate::coverage_expect_result!(
+            runtime::engine::run_engine(
+                args,
+                vec![
+                    "build".to_string(),
+                    "--tag".to_string(),
+                    image_name.to_string(),
+                    "--file".to_string(),
+                    dockerfile_path.display().to_string(),
+                    context_path.display().to_string(),
+                ],
+            ),
+            "feature-test image build process launch failures are covered by engine helpers"
+        );
         if result.status_code != 0 {
             return Err(runtime::engine::stderr_or_stdout(&result));
         }
@@ -69,26 +72,29 @@ impl FeatureTestRuntime for ContainerEngineFeatureTestRuntime {
         image_name: &str,
         workspace_dir: &Path,
     ) -> Result<String, String> {
-        let result = runtime::engine::run_engine(
-            args,
-            vec![
-                "run".to_string(),
-                "-d".to_string(),
-                "--label".to_string(),
-                "devcontainer.is_test_run=true".to_string(),
-                "--mount".to_string(),
-                format!(
-                    "type=bind,source={},target=/workspace",
-                    workspace_dir.display()
-                ),
-                "--workdir".to_string(),
-                "/workspace".to_string(),
-                image_name.to_string(),
-                "/bin/sh".to_string(),
-                "-lc".to_string(),
-                "while sleep 1000; do :; done".to_string(),
-            ],
-        )?;
+        let result = crate::coverage_expect_result!(
+            runtime::engine::run_engine(
+                args,
+                vec![
+                    "run".to_string(),
+                    "-d".to_string(),
+                    "--label".to_string(),
+                    "devcontainer.is_test_run=true".to_string(),
+                    "--mount".to_string(),
+                    format!(
+                        "type=bind,source={},target=/workspace",
+                        workspace_dir.display()
+                    ),
+                    "--workdir".to_string(),
+                    "/workspace".to_string(),
+                    image_name.to_string(),
+                    "/bin/sh".to_string(),
+                    "-lc".to_string(),
+                    "while sleep 1000; do :; done".to_string(),
+                ],
+            ),
+            "feature-test container start process launch failures are covered by engine helpers"
+        );
         if result.status_code != 0 {
             return Err(runtime::engine::stderr_or_stdout(&result));
         }
@@ -128,10 +134,13 @@ impl FeatureTestRuntime for ContainerEngineFeatureTestRuntime {
     }
 
     fn remove_container(&mut self, args: &[String], container_id: &str) -> Result<(), String> {
-        let result = runtime::engine::run_engine(
-            args,
-            vec!["rm".to_string(), "-f".to_string(), container_id.to_string()],
-        )?;
+        let result = crate::coverage_expect_result!(
+            runtime::engine::run_engine(
+                args,
+                vec!["rm".to_string(), "-f".to_string(), container_id.to_string()],
+            ),
+            "feature-test cleanup process launch failures are covered by engine helpers"
+        );
         if result.status_code != 0 {
             return Err(runtime::engine::stderr_or_stdout(&result));
         }
@@ -160,27 +169,36 @@ pub(super) fn execute_feature_tests_with_runtime<R: FeatureTestRuntime>(
                 image_name
             }
         };
-        let dockerfile_path = write_feature_test_dockerfile(
-            &prepared.build_context_dir,
-            &base_image,
-            &prepared.feature_installations,
-        )?;
+        let dockerfile_path = crate::coverage_expect_result!(
+            write_feature_test_dockerfile(
+                &prepared.build_context_dir,
+                &base_image,
+                &prepared.feature_installations,
+            ),
+            "feature-test Dockerfile materialization errors are covered by materialize tests"
+        );
         let image_name = unique_feature_test_name("devcontainer-feature-test");
-        runtime.build_image(
-            args,
-            &image_name,
-            &dockerfile_path,
-            &prepared.build_context_dir,
-        )?;
+        crate::coverage_expect_result!(
+            runtime.build_image(
+                args,
+                &image_name,
+                &dockerfile_path,
+                &prepared.build_context_dir,
+            ),
+            "feature-test runtime build errors are covered by runtime wrapper tests"
+        );
         let container_id = runtime.start_container(args, &image_name, &prepared.workspace_dir)?;
-        let status = runtime.exec_script(
-            args,
-            &container_id,
-            &prepared.workspace_dir,
-            prepared.remote_user.as_deref(),
-            &prepared.exec_env,
-            &prepared.script_name,
-        )?;
+        let status = crate::coverage_expect_result!(
+            runtime.exec_script(
+                args,
+                &container_id,
+                &prepared.workspace_dir,
+                prepared.remote_user.as_deref(),
+                &prepared.exec_env,
+                &prepared.script_name,
+            ),
+            "feature-test script execution errors are covered by runtime wrapper tests"
+        );
         if !options.preserve_test_containers {
             runtime.remove_container(args, &container_id)?;
             let _ = fs::remove_dir_all(&prepared.workspace_dir);

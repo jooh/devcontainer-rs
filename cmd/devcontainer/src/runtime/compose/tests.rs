@@ -591,6 +591,52 @@ fn metadata_override_file_merges_config_entrypoint_into_wrapper_without_duplicat
 }
 
 #[test]
+fn metadata_override_file_preserves_compose_command_shapes() {
+    let root = unique_temp_dir("devcontainer-compose-command-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine\n    command: ['sleep', 'infinity']\n  entrypoint-only:\n    image: alpine\n    entrypoint: ['/bin/custom']\n",
+    )
+    .expect("compose file");
+
+    let command_resolved = compose_resolved(
+        &root,
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+    let command_override =
+        compose_metadata_override_file(&command_resolved, &[], "/workspace", None)
+            .expect("override result")
+            .expect("override path");
+    let command_content = fs::read_to_string(&command_override).expect("override content");
+    assert!(command_content.contains("sleep"), "{command_content}");
+
+    let entrypoint_resolved = compose_resolved(
+        &root,
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "entrypoint-only"
+        }),
+    );
+    let entrypoint_override =
+        compose_metadata_override_file(&entrypoint_resolved, &[], "/workspace", None)
+            .expect("override result")
+            .expect("override path");
+    let entrypoint_content = fs::read_to_string(&entrypoint_override).expect("override content");
+    assert!(
+        entrypoint_content.contains("command: []"),
+        "{entrypoint_content}"
+    );
+
+    let _ = fs::remove_file(command_override);
+    let _ = fs::remove_file(entrypoint_override);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn metadata_override_file_declares_named_volumes_top_level() {
     let root = unique_temp_dir("devcontainer-compose-test");
     fs::create_dir_all(&root).expect("workspace root");

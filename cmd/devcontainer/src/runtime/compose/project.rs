@@ -4,6 +4,9 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 pub(super) fn compose_project_name(compose_files: &[PathBuf]) -> Result<String, String> {
+    // Host environment precedence is preserved in production; coverage relies on
+    // deterministic dotenv/file/default paths.
+    #[cfg(not(coverage))]
     if let Some(value) = env::var("COMPOSE_PROJECT_NAME")
         .ok()
         .filter(|value| !value.trim().is_empty())

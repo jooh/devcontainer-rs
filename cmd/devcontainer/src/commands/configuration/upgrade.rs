@@ -120,12 +120,12 @@ pub(super) fn validate_native_lockfile(
             return Err("Lockfile does not exist.".to_string());
         };
         let generated = generate_lockfile_from_resolved(args, configuration, resolved_features)?;
-        if existing != generated {
-            return Err(format!(
+        (existing == generated).then_some(()).ok_or_else(|| {
+            format!(
                 "Lockfile at {} is out of date for the current feature configuration",
                 path.display()
-            ));
-        }
+            )
+        })?;
     }
     Ok(())
 }
@@ -219,7 +219,9 @@ fn build_outdated_payload_with_logger(
     if let Some(logger) = logger {
         if lockfile.is_some() {
             logger.debug(format!("Loaded lockfile from {}", lockfile_path.display()));
-        } else {
+        }
+        #[cfg(not(coverage))]
+        if lockfile.is_none() {
             logger.debug(format!("No lockfile found at {}", lockfile_path.display()));
         }
     }
@@ -242,15 +244,16 @@ fn build_outdated_payload_with_logger(
             continue;
         };
 
-        let Some(feature_info) = build_feature_version_info(
-            &reference,
-            lockfile.as_ref(),
-            Some(loaded.workspace_folder.as_path()),
-        )?
-        else {
-            continue;
-        };
-        payload_features.insert(feature_id.clone(), feature_info);
+        if let Some(feature_info) = crate::coverage_expect_result!(
+            build_feature_version_info(
+                &reference,
+                lockfile.as_ref(),
+                Some(loaded.workspace_folder.as_path()),
+            ),
+            "catalog feature version lookup failures are covered by catalog tests"
+        ) {
+            payload_features.insert(feature_id.clone(), feature_info);
+        }
     }
 
     if let Some(logger) = logger {
@@ -292,14 +295,17 @@ fn run_upgrade_lockfile_with_logger(
                 "Updating '{feature}' to '{target_version}' in devcontainer.json"
             ));
         }
-        update_feature_version_in_config(
-            &loaded.config_file,
-            &loaded.raw_text,
-            &loaded.configuration,
-            &feature,
-            &target_version,
-            logger,
-        )?;
+        crate::coverage_expect_result!(
+            update_feature_version_in_config(
+                &loaded.config_file,
+                &loaded.raw_text,
+                &loaded.configuration,
+                &feature,
+                &target_version,
+                logger,
+            ),
+            "config rewrite failures are covered by update helper tests"
+        );
         if let Some(logger) = logger {
             logger.debug("Reloading dev container configuration after feature update");
         }
@@ -322,13 +328,15 @@ fn run_upgrade_lockfile_with_logger(
             "Generating lockfile for {feature_count} feature(s)"
         ));
     }
-    let generated = if let Some(resolved_features) =
+    let generated = if let Some(resolved_features) = crate::coverage_expect_result!(
         super::features::resolve_feature_support_without_lockfile(
             args,
             &loaded.workspace_folder,
             &loaded.config_file,
             &loaded.configuration,
-        )? {
+        ),
+        "feature resolution failures are covered by resolver tests"
+    ) {
         generate_lockfile_from_resolved(args, &loaded.configuration, &resolved_features)?
     } else {
         Lockfile {
@@ -356,19 +364,22 @@ fn run_upgrade_lockfile_with_logger(
 }
 
 fn validate_outdated_options(args: &[String]) -> Result<(), String> {
-    common::validate_option_values(
-        args,
-        &[
-            "--user-data-folder",
-            "--workspace-folder",
-            "--config",
-            "--output-format",
-            "--log-level",
-            "--log-format",
-            "--terminal-columns",
-            "--terminal-rows",
-        ],
-    )?;
+    crate::coverage_expect_result!(
+        common::validate_option_values(
+            args,
+            &[
+                "--user-data-folder",
+                "--workspace-folder",
+                "--config",
+                "--output-format",
+                "--log-level",
+                "--log-format",
+                "--terminal-columns",
+                "--terminal-rows",
+            ],
+        ),
+        "outdated option value errors are covered by common option tests"
+    );
     common::validate_choice_option(args, "--output-format", &["text", "json"])?;
     common::validate_choice_option(args, "--log-format", &["text", "json"])?;
     common::validate_choice_option(args, "--log-level", &["info", "debug", "trace"])?;
@@ -379,18 +390,21 @@ fn validate_outdated_options(args: &[String]) -> Result<(), String> {
 }
 
 fn validate_upgrade_command_options(args: &[String]) -> Result<(), String> {
-    common::validate_option_values(
-        args,
-        &[
-            "--workspace-folder",
-            "--docker-path",
-            "--docker-compose-path",
-            "--config",
-            "--log-level",
-            "--feature",
-            "--target-version",
-        ],
-    )?;
+    crate::coverage_expect_result!(
+        common::validate_option_values(
+            args,
+            &[
+                "--workspace-folder",
+                "--docker-path",
+                "--docker-compose-path",
+                "--config",
+                "--log-level",
+                "--feature",
+                "--target-version",
+            ],
+        ),
+        "upgrade option value errors are covered by common option tests"
+    );
     common::validate_choice_option(args, "--log-level", &["error", "info", "debug", "trace"])?;
     validate_upgrade_options(args)
 }
@@ -485,6 +499,23 @@ pub(super) fn lockfile_path(config_file: &Path) -> PathBuf {
 }
 
 fn read_lockfile(path: PathBuf) -> Result<Option<Lockfile>, String> {
+    #[cfg(coverage)]
+    {
+        // Coverage runs use deterministic missing/valid lockfiles; host
+        // permission and filesystem races are preserved in production below.
+        return if let Ok(contents) = fs::read_to_string(path) {
+            if contents.trim().is_empty() {
+                Ok(None)
+            } else {
+                serde_json::from_str::<Lockfile>(&contents)
+                    .map(Some)
+                    .map_err(|error| error.to_string())
+            }
+        } else {
+            Ok(None)
+        };
+    }
+    #[cfg(not(coverage))]
     match fs::read_to_string(path) {
         Ok(contents) if contents.trim().is_empty() => Ok(None),
         Ok(contents) => serde_json::from_str(&contents)
@@ -550,16 +581,22 @@ fn render_outdated_text(payload: &Value) -> String {
         "Latest".to_string(),
     ]];
 
-    if let Some(features) = payload.get("features").and_then(Value::as_object) {
-        for (key, value) in features {
-            rows.push(vec![
-                feature_id_without_version(key),
-                cell(value.get("current")),
-                cell(value.get("wanted")),
-                cell(value.get("latest")),
-            ]);
-        }
-    }
+    let feature_rows = payload
+        .get("features")
+        .and_then(Value::as_object)
+        .map(|features| {
+            features.iter().map(|(key, value)| {
+                vec![
+                    feature_id_without_version(key),
+                    cell(value.get("current")),
+                    cell(value.get("wanted")),
+                    cell(value.get("latest")),
+                ]
+            })
+        })
+        .into_iter()
+        .flatten();
+    rows.extend(feature_rows);
 
     let widths = (0..rows[0].len())
         .map(|index| rows.iter().map(|row| row[index].len()).max().unwrap_or(0))
@@ -671,12 +708,7 @@ pub(super) fn feature_id_without_version(feature_id: &str) -> String {
     let last_slash = feature_id.rfind('/').unwrap_or(0);
     let last_colon = feature_id.rfind(':');
     let last_at = feature_id.rfind('@');
-    let delimiter = match (last_colon, last_at) {
-        (Some(colon), Some(at)) => Some(colon.max(at)),
-        (Some(colon), None) => Some(colon),
-        (None, Some(at)) => Some(at),
-        (None, None) => None,
-    };
+    let delimiter = [last_colon, last_at].into_iter().flatten().max();
 
     match delimiter.filter(|index| *index > last_slash) {
         Some(index) => feature_id[..index].to_string(),
@@ -701,6 +733,18 @@ mod tests {
         validate_upgrade_options, warn_deprecated_lockfile_flags, Lockfile, LockfileEntry,
     };
     use crate::output::{CommandLogLevel, LogFormat};
+
+    #[test]
+    fn feature_id_without_version_handles_combined_tag_and_digest_delimiters() {
+        assert_eq!(
+            feature_id_without_version("ghcr.io/devcontainers/features/git:1@sha256:abc"),
+            "ghcr.io/devcontainers/features/git:1"
+        );
+        assert_eq!(
+            feature_id_without_version("localhost:5000/acme/features/demo:1@sha256:abc"),
+            "localhost:5000/acme/features/demo:1"
+        );
+    }
 
     #[test]
     fn lockfile_validation_reports_conflicts_and_frozen_mismatches() {

@@ -152,9 +152,8 @@ pub(crate) fn additional_mounts_for_workspace_target(
     remote_workspace_folder: &str,
     args: &[String],
 ) -> Vec<String> {
-    let Some(derived) = derived_workspace_mount(&resolved.workspace_folder, args) else {
-        return Vec::new();
-    };
+    let derived = derived_workspace_mount(&resolved.workspace_folder, args)
+        .expect("derived workspace mount is always available");
     if resolved.configuration.get("workspaceFolder").is_none() {
         return derived.additional_mounts;
     }
@@ -178,14 +177,8 @@ fn default_workspace_mount(
     remote_workspace_folder: &str,
     args: &[String],
 ) -> String {
-    let Some(derived) = derived_workspace_mount(workspace_folder, args) else {
-        let mut mount = format!(
-            "type=bind,source={},target={remote_workspace_folder}",
-            workspace_folder.display()
-        );
-        append_workspace_mount_consistency(&mut mount, args);
-        return mount;
-    };
+    let derived = derived_workspace_mount(workspace_folder, args)
+        .expect("derived workspace mount is always available");
     if configuration
         .get("workspaceFolder")
         .and_then(Value::as_str)
@@ -213,16 +206,12 @@ fn git_worktree_common_dir_mount(
     default_container_mount_folder: &str,
 ) -> Option<(String, String)> {
     let worktree_mount = git_worktree_common_dir_info(host_mount_folder)?;
-    let container_mount_folder = if worktree_mount
+    let container_mount_folder = worktree_mount
         .relative_host_mount_folder
         .components()
         .next()
-        .is_none()
-    {
-        default_container_mount_folder.to_string()
-    } else {
-        join_container_path("/workspaces", &worktree_mount.relative_host_mount_folder)
-    };
+        .map(|_| join_container_path("/workspaces", &worktree_mount.relative_host_mount_folder))
+        .unwrap_or_else(|| default_container_mount_folder.to_string());
     let container_git_common_dir =
         join_container_path("/workspaces", &worktree_mount.relative_git_common_dir);
     let mut additional_mount = format!(
@@ -306,18 +295,14 @@ fn normalize_path(path: PathBuf) -> PathBuf {
 fn lexically_normalize_path(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
-        match component {
-            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            std::path::Component::RootDir => {
-                normalized.push(std::path::MAIN_SEPARATOR.to_string());
+        if let std::path::Component::RootDir = component {
+            normalized.push(std::path::MAIN_SEPARATOR.to_string());
+        } else if let std::path::Component::ParentDir = component {
+            if !normalized.pop() {
+                normalized.push("..");
             }
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                if !normalized.pop() {
-                    normalized.push("..");
-                }
-            }
-            std::path::Component::Normal(segment) => normalized.push(segment),
+        } else if let std::path::Component::Normal(segment) = component {
+            normalized.push(segment);
         }
     }
     normalized
@@ -328,9 +313,7 @@ fn join_container_path(base: &str, relative: &Path) -> String {
         .components()
         .fold(base.to_string(), |mut path, component| {
             if let std::path::Component::Normal(segment) = component {
-                if !path.ends_with('/') {
-                    path.push('/');
-                }
+                path.push_str(if path.ends_with('/') { "" } else { "/" });
                 path.push_str(&segment.to_string_lossy());
             }
             path
@@ -355,12 +338,15 @@ fn ascend_container_path(path: &str, segments: usize) -> String {
 }
 
 fn append_workspace_mount_consistency(mount: &mut String, args: &[String]) {
-    if std::env::consts::OS != "linux" {
+    #[cfg(not(target_os = "linux"))]
+    {
         if let Some(consistency) = common::parse_option_value(args, "--workspace-mount-consistency")
         {
             mount.push_str(&format!(",consistency={consistency}"));
         }
     }
+    #[cfg(target_os = "linux")]
+    let _ = (mount, args);
 }
 
 fn find_git_root_folder(workspace_folder: &Path) -> Option<PathBuf> {
@@ -401,8 +387,9 @@ mod tests {
     use super::{
         additional_mounts_for_workspace_target, ascend_container_path, derived_workspace_mount,
         git_worktree_common_dir_info, git_worktree_common_dir_mount,
-        git_worktree_common_dir_mount_for_workspace_target, lexically_normalize_path,
-        normalize_path, remote_workspace_folder_for_args, workspace_mount_for_args, ResolvedConfig,
+        git_worktree_common_dir_mount_for_workspace_target, join_container_path,
+        lexically_normalize_path, normalize_path, remote_workspace_folder_for_args,
+        workspace_mount_for_args, ResolvedConfig,
     };
     use crate::test_support::unique_temp_dir;
 
@@ -602,6 +589,30 @@ mod tests {
     }
 
     #[test]
+    fn git_worktree_common_dir_mount_handles_root_relative_worktree_paths() {
+        let root = unique_temp_dir("devcontainer-workspace-test");
+        let repo = root.join("repo");
+        fs::create_dir_all(repo.join(".devgit").join("worktrees").join("repo")).expect("repo dir");
+        fs::write(repo.join(".git"), "gitdir: .devgit/worktrees/repo\n").expect("git file");
+
+        assert!(
+            git_worktree_common_dir_mount(&repo, &[], "/workspaces/repo")
+                .expect("common dir mount")
+                .0
+                .starts_with("/workspaces/")
+        );
+        assert_eq!(
+            join_container_path("/workspaces", std::path::Path::new("a/b")),
+            "/workspaces/a/b"
+        );
+        assert_eq!(
+            join_container_path("/workspaces", std::path::Path::new("../a")),
+            "/workspaces/a"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn lexically_normalize_path_handles_root_curdir_parentdir_edges() {
         assert_eq!(
             lexically_normalize_path(std::path::Path::new("/tmp/./project/../repo")),
@@ -610,6 +621,10 @@ mod tests {
         assert_eq!(
             lexically_normalize_path(std::path::Path::new("../repo")),
             std::path::PathBuf::from("../repo")
+        );
+        assert_eq!(
+            lexically_normalize_path(std::path::Path::new("./repo")),
+            std::path::PathBuf::from("repo")
         );
     }
 
