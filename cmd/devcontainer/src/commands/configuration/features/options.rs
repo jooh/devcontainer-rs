@@ -215,6 +215,13 @@ mod tests {
     }
 
     #[test]
+    fn feature_object_leaves_customizations_absent_without_legacy_fields() {
+        let feature = feature_object(&json!({ "id": "demo" }), &json!({}), &json!({}));
+
+        assert!(feature.get("customizations").is_none());
+    }
+
+    #[test]
     fn feature_options_merge_non_object_manifests_and_json_env_values() {
         assert_eq!(
             feature_options(

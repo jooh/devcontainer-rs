@@ -265,4 +265,36 @@ mod tests {
             .iter()
             .any(|mount| mount["dst"] == "/logs"));
     }
+
+    #[test]
+    fn feature_metadata_mounts_deduplicate_entries_without_targets() {
+        let merged = apply_feature_metadata(
+            &json!({}),
+            &[
+                json!({
+                    "mounts": [
+                        { "type": "volume", "source": "cache" },
+                        { "type": "volume", "source": "cache" },
+                        42
+                    ]
+                }),
+                json!({
+                    "mounts": [
+                        42,
+                        { "type": "volume", "source": "other" }
+                    ]
+                }),
+            ],
+            false,
+        );
+
+        assert_eq!(
+            merged["mounts"],
+            json!([
+                { "type": "volume", "source": "cache" },
+                42,
+                { "type": "volume", "source": "other" }
+            ])
+        );
+    }
 }

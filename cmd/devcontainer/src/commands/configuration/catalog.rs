@@ -785,6 +785,19 @@ mod tests {
     }
 
     #[test]
+    fn latest_oci_version_falls_back_to_manifest_metadata_without_exact_tags() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-catalog-test");
+        let base = "ghcr.io/acme/features/published-feature";
+        let digest = write_layout_version(&workspace, base, "3.0.0", None);
+        replace_layout_tags(&workspace, base, &[("latest", &digest), ("3", &digest)]);
+
+        let latest = latest_oci_version(base, Some(workspace.as_path())).expect("latest version");
+
+        assert_eq!(latest.as_deref(), Some("3.0.0"));
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
     fn workspace_oci_layout_supports_exact_digest_lookup() {
         let workspace = crate::test_support::unique_temp_dir("devcontainer-catalog-test");
         let digest = write_layout_version(
@@ -890,6 +903,12 @@ mod tests {
             None,
             Some("sha256:abc"),
         );
+        let static_digest = feature_ref(
+            "ghcr.io/devcontainers/features/git-lfs@sha256:24d5802c837b2519b666a8403a9514c7296d769c9607048e9f1e040e7d7e331c",
+            "ghcr.io/devcontainers/features/git-lfs",
+            None,
+            Some("sha256:24d5802c837b2519b666a8403a9514c7296d769c9607048e9f1e040e7d7e331c"),
+        );
         let unknown = feature_ref("example-feature", "example-feature", None, None);
 
         let oci_info = build_feature_version_info(&oci, None, None)
@@ -898,6 +917,9 @@ mod tests {
         let digest_info = build_feature_version_info(&digest, None, None)
             .expect("digest info")
             .expect("digest payload");
+        let static_digest_info = build_feature_version_info(&static_digest, None, None)
+            .expect("static digest info")
+            .expect("static digest payload");
         let unknown_info = build_feature_version_info(&unknown, None, None)
             .expect("unknown info")
             .expect("unknown payload");
@@ -905,6 +927,8 @@ mod tests {
         assert!(oci_info.get("wanted").is_some());
         assert!(oci_info.get("latest").is_some());
         assert_eq!(digest_info, json!({}));
+        assert_eq!(static_digest_info["wanted"], "1.0.6");
+        assert_eq!(static_digest_info["current"], "1.0.6");
         assert_eq!(unknown_info, json!({}));
     }
 
@@ -935,6 +959,9 @@ mod tests {
             .matches("1.2.9"));
         assert!(!parse_selector("1.2")
             .expect("major minor selector")
+            .matches("not-semver"));
+        assert!(!parse_selector("1.2.3")
+            .expect("exact selector")
             .matches("not-semver"));
         assert_eq!(major_string("2.3.4").as_deref(), Some("2"));
         assert_eq!(compare_versions_desc("beta", "alpha"), Ordering::Less);
