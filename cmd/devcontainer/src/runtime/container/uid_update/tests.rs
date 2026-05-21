@@ -8,8 +8,8 @@ use serde_json::json;
 use crate::runtime::context::ResolvedConfig;
 
 use super::{
-    prepare_up_image_for_platform, should_update_remote_user_uid, uid_update_details,
-    uid_update_local_image_name, unique_uid_update_build_context,
+    command_stdout, prepare_up_image_for_platform, should_update_remote_user_uid,
+    uid_update_details, uid_update_local_image_name, unique_uid_update_build_context,
 };
 
 #[test]
@@ -21,6 +21,14 @@ fn remote_user_uid_update_defaults_to_on_for_supported_platforms() {
         &[],
         true,
     ));
+}
+
+#[test]
+fn command_stdout_reports_non_success_stderr() {
+    let error = command_stdout("sh", &["-c", "printf uid-failed >&2; exit 7"])
+        .expect_err("command failure");
+
+    assert_eq!(error, "uid-failed");
 }
 
 #[test]

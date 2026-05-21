@@ -1051,6 +1051,44 @@ exit 2
 }
 
 #[test]
+fn resolve_container_id_reports_engine_ps_failure() {
+    let root = unique_temp_dir("devcontainer-compose-ps-test");
+    fs::create_dir_all(root.join(".devcontainer")).expect("config dir");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: example/app:base\n",
+    )
+    .expect("compose file");
+    let fake_engine = root.join("docker");
+    write_executable_script(
+        &fake_engine,
+        r#"#!/bin/sh
+echo "ps failed" >&2
+exit 3
+"#,
+    );
+    let resolved = compose_resolved(
+        &root,
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+
+    let error = resolve_container_id(
+        &resolved,
+        &[
+            "--docker-path".to_string(),
+            fake_engine.display().to_string(),
+        ],
+    )
+    .expect_err("ps failure");
+
+    assert_eq!(error, "ps failed");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn reject_unsupported_build_options_rejects_label_cache_output_platform_push() {
     assert_eq!(
         reject_unsupported_build_options(&["--label".to_string(), "a=b".to_string()])
