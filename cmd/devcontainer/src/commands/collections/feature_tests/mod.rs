@@ -247,7 +247,56 @@ fn feature_test_project_folder_arg(args: &[String]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{all_feature_tests_passed, feature_test_project_folder_arg, FeatureTestResult};
+    use std::fs;
+    use std::path::Path;
+
+    use super::{
+        all_feature_tests_passed, execute_feature_tests_with_runtime,
+        feature_test_project_folder_arg, run_features_test, FeatureTestResult, FeatureTestRuntime,
+    };
+
+    struct UnusedRuntime;
+
+    impl FeatureTestRuntime for UnusedRuntime {
+        fn build_image(
+            &mut self,
+            _args: &[String],
+            _image_name: &str,
+            _dockerfile_path: &Path,
+            _context_path: &Path,
+        ) -> Result<(), String> {
+            panic!("runtime should not be called")
+        }
+
+        fn start_container(
+            &mut self,
+            _args: &[String],
+            _image_name: &str,
+            _workspace_dir: &Path,
+        ) -> Result<String, String> {
+            panic!("runtime should not be called")
+        }
+
+        fn exec_script(
+            &mut self,
+            _args: &[String],
+            _container_id: &str,
+            _workspace_dir: &Path,
+            _remote_user: Option<&str>,
+            _env: &[(String, String)],
+            _script_name: &str,
+        ) -> Result<i32, String> {
+            panic!("runtime should not be called")
+        }
+
+        fn remove_container(
+            &mut self,
+            _args: &[String],
+            _container_id: &str,
+        ) -> Result<(), String> {
+            panic!("runtime should not be called")
+        }
+    }
 
     #[test]
     fn feature_test_project_folder_arg_uses_trailing_positionals() {
@@ -296,5 +345,34 @@ mod tests {
                 passed: false,
             },
         ]));
+    }
+
+    #[test]
+    fn run_features_test_suppresses_cleanup_report_when_preserving_containers() {
+        let root = crate::test_support::unique_temp_dir("feature-test-mod");
+        fs::create_dir_all(&root).expect("root");
+
+        let status = run_features_test(&[
+            "--preserve-test-containers".to_string(),
+            root.display().to_string(),
+        ]);
+
+        assert_eq!(status, std::process::ExitCode::SUCCESS);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn execute_feature_tests_with_runtime_reports_discovery_errors_after_option_parsing() {
+        let root = crate::test_support::unique_temp_dir("feature-test-mod");
+        let test_dir = root.join("test").join("demo");
+        fs::create_dir_all(&test_dir).expect("test dir");
+        fs::write(test_dir.join("scenarios.json"), "{").expect("invalid scenarios");
+        let mut runtime = UnusedRuntime;
+
+        let error = execute_feature_tests_with_runtime(&[root.display().to_string()], &mut runtime)
+            .expect_err("discovery should fail");
+
+        assert!(!error.is_empty());
+        let _ = fs::remove_dir_all(root);
     }
 }

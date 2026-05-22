@@ -199,7 +199,59 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use super::{ContainerEngineFeatureTestRuntime, FeatureTestRuntime};
+    use serde_json::json;
+
+    use super::super::{FeatureTestCase, FeatureTestExecution, FeatureTestOptions};
+    use super::{
+        execute_feature_tests_with_runtime, ContainerEngineFeatureTestRuntime, FeatureTestRuntime,
+    };
+
+    #[derive(Default)]
+    struct FailingBaseBuildRuntime {
+        context_paths: Vec<PathBuf>,
+    }
+
+    impl FeatureTestRuntime for FailingBaseBuildRuntime {
+        fn build_image(
+            &mut self,
+            _args: &[String],
+            _image_name: &str,
+            _dockerfile_path: &Path,
+            context_path: &Path,
+        ) -> Result<(), String> {
+            self.context_paths.push(context_path.to_path_buf());
+            Err("base build failed".to_string())
+        }
+
+        fn start_container(
+            &mut self,
+            _args: &[String],
+            _image_name: &str,
+            _workspace_dir: &Path,
+        ) -> Result<String, String> {
+            panic!("container should not start")
+        }
+
+        fn exec_script(
+            &mut self,
+            _args: &[String],
+            _container_id: &str,
+            _workspace_dir: &Path,
+            _remote_user: Option<&str>,
+            _env: &[(String, String)],
+            _script_name: &str,
+        ) -> Result<i32, String> {
+            panic!("script should not execute")
+        }
+
+        fn remove_container(
+            &mut self,
+            _args: &[String],
+            _container_id: &str,
+        ) -> Result<(), String> {
+            panic!("container should not be removed")
+        }
+    }
 
     fn write_engine_script(root: &Path, fail_command: Option<&str>) -> PathBuf {
         fs::create_dir_all(root).expect("runtime test root");
@@ -242,6 +294,18 @@ esac
             ),
         );
         script_path
+    }
+
+    fn write_feature_manifest(feature_dir: &Path) {
+        fs::create_dir_all(feature_dir).expect("feature dir");
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            r#"{
+  "id": "demo",
+  "version": "1.0.0"
+}"#,
+        )
+        .expect("manifest");
     }
 
     #[test]
@@ -383,6 +447,51 @@ esac
             );
         }
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn execute_feature_tests_with_runtime_reports_scenario_base_build_failures() {
+        let root = crate::test_support::unique_temp_dir("feature-test-runtime");
+        let feature_dir = root.join("src").join("demo");
+        let test_dir = root.join("test").join("demo");
+        let scenario_dir = test_dir.join("custom");
+        write_feature_manifest(&feature_dir);
+        fs::create_dir_all(&scenario_dir).expect("scenario dir");
+        fs::write(test_dir.join("custom.sh"), "#!/bin/sh\n").expect("scenario script");
+        fs::write(scenario_dir.join("Dockerfile.base"), "FROM scratch\n").expect("dockerfile");
+        let options = FeatureTestOptions {
+            project_folder: root.clone(),
+            base_image: "debian:bookworm-slim".to_string(),
+            remote_user: None,
+            preserve_test_containers: true,
+            permit_randomization: false,
+            quiet: true,
+        };
+        let case = FeatureTestCase {
+            name: "custom".to_string(),
+            script_path: test_dir.join("custom.sh"),
+            execution: FeatureTestExecution::Scenario {
+                scenario_dir: "custom".to_string(),
+                config: json!({
+                    "build": {
+                        "dockerfile": "Dockerfile.base",
+                        "context": "."
+                    }
+                }),
+            },
+        };
+        let mut runtime = FailingBaseBuildRuntime::default();
+
+        let error = execute_feature_tests_with_runtime(&[], &mut runtime, &options, vec![case])
+            .expect_err("base build should fail");
+
+        assert_eq!(error, "base build failed");
+        for context_path in &runtime.context_paths {
+            if let Some(workspace_dir) = context_path.parent() {
+                let _ = fs::remove_dir_all(workspace_dir);
+            }
+        }
         let _ = fs::remove_dir_all(root);
     }
 }
