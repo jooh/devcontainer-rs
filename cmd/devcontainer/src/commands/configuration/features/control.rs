@@ -101,24 +101,32 @@ fn control_manifest(args: &[String]) -> Result<DevContainerControlManifest, Stri
         return Ok(DevContainerControlManifest::default());
     }
 
-    let raw = fs::read_to_string(&manifest_path).map_err(|error| error.to_string())?;
-    let parsed = crate::config::parse_jsonc_value(&raw)?;
-    Ok(sanitize_control_manifest(&parsed))
+    fs::read_to_string(&manifest_path)
+        .map_err(io_error_to_string)
+        .and_then(|raw| crate::config::parse_jsonc_value(&raw))
+        .map(|parsed| sanitize_control_manifest(&parsed))
 }
 
 fn control_manifest_path(args: &[String]) -> PathBuf {
-    common::parse_option_value(args, "--user-data-folder")
-        .map(PathBuf::from)
-        .unwrap_or_else(default_user_data_folder)
-        .join("control-manifest.json")
+    let user_data_folder = match common::parse_option_value(args, "--user-data-folder") {
+        Some(path) => PathBuf::from(path),
+        None => default_user_data_folder(),
+    };
+    user_data_folder.join("control-manifest.json")
 }
 
 fn default_user_data_folder() -> PathBuf {
-    if cfg!(target_os = "linux") {
-        let username = env::var("USER").unwrap_or_else(|_| "unknown".to_string());
-        return env::temp_dir().join(format!("devcontainercli-{username}"));
-    }
+    default_user_data_folder_impl()
+}
 
+#[cfg(target_os = "linux")]
+fn default_user_data_folder_impl() -> PathBuf {
+    let username = env::var("USER").unwrap_or("unknown".to_string());
+    env::temp_dir().join(format!("devcontainercli-{username}"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn default_user_data_folder_impl() -> PathBuf {
     env::temp_dir().join("devcontainercli")
 }
 
@@ -133,38 +141,52 @@ fn sanitize_control_manifest(value: &Value) -> DevContainerControlManifest {
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .filter_map(|entry| {
-                let object = entry.as_object()?;
-                let feature_id_prefix = object.get("featureIdPrefix")?.as_str()?.to_string();
-                Some(DisallowedFeature {
-                    feature_id_prefix,
-                    documentation_url: object
-                        .get("documentationURL")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                })
-            })
+            .filter_map(disallowed_feature_from_value)
             .collect(),
         feature_advisories: entries
             .get("featureAdvisories")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .filter_map(|entry| {
-                let object = entry.as_object()?;
-                Some(FeatureAdvisory {
-                    feature_id: object.get("featureId")?.as_str()?.to_string(),
-                    introduced_in_version: object.get("introducedInVersion")?.as_str()?.to_string(),
-                    fixed_in_version: object.get("fixedInVersion")?.as_str()?.to_string(),
-                    description: object.get("description")?.as_str()?.to_string(),
-                    documentation_url: object
-                        .get("documentationURL")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                })
-            })
+            .filter_map(feature_advisory_from_value)
             .collect(),
     }
+}
+
+fn disallowed_feature_from_value(entry: &Value) -> Option<DisallowedFeature> {
+    entry.as_object().and_then(|object| {
+        json_string_field(object, "featureIdPrefix").map(|feature_id_prefix| DisallowedFeature {
+            feature_id_prefix,
+            documentation_url: json_string_field(object, "documentationURL"),
+        })
+    })
+}
+
+fn feature_advisory_from_value(entry: &Value) -> Option<FeatureAdvisory> {
+    entry.as_object().and_then(|object| {
+        json_string_field(object, "featureId")
+            .zip(json_string_field(object, "introducedInVersion"))
+            .zip(json_string_field(object, "fixedInVersion"))
+            .zip(json_string_field(object, "description"))
+            .map(
+                |(((feature_id, introduced_in_version), fixed_in_version), description)| {
+                    FeatureAdvisory {
+                        feature_id,
+                        introduced_in_version,
+                        fixed_in_version,
+                        description,
+                        documentation_url: json_string_field(object, "documentationURL"),
+                    }
+                },
+            )
+    })
+}
+
+fn json_string_field(object: &Map<String, Value>, field: &str) -> Option<String> {
+    object
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn find_disallowed_feature_entry<'a>(
@@ -178,12 +200,13 @@ fn find_disallowed_feature_entry<'a>(
 }
 
 fn feature_matches_prefix(feature_id: &str, prefix: &str) -> bool {
+    const FEATURE_ID_SEPARATORS: &[u8] = b"/:@";
+
     feature_id.starts_with(prefix)
-        && (feature_id.len() == prefix.len()
-            || matches!(
-                feature_id.as_bytes().get(prefix.len()).copied(),
-                Some(b'/') | Some(b':') | Some(b'@')
-            ))
+        && feature_id
+            .as_bytes()
+            .get(prefix.len())
+            .is_none_or(|separator| FEATURE_ID_SEPARATORS.contains(separator))
 }
 
 fn feature_version_is_affected(
@@ -191,28 +214,32 @@ fn feature_version_is_affected(
     introduced_in_version: &str,
     fixed_in_version: &str,
 ) -> bool {
-    let Some(feature_version) = parse_version(feature_version) else {
-        return false;
-    };
-    let Some(introduced_in_version) = parse_version(introduced_in_version) else {
-        return false;
-    };
-    let Some(fixed_in_version) = parse_version(fixed_in_version) else {
-        return false;
-    };
-
-    feature_version >= introduced_in_version && feature_version < fixed_in_version
+    parse_version(feature_version)
+        .zip(parse_version(introduced_in_version))
+        .zip(parse_version(fixed_in_version))
+        .is_some_and(
+            |((feature_version, introduced_in_version), fixed_in_version)| {
+                feature_version >= introduced_in_version && feature_version < fixed_in_version
+            },
+        )
 }
 
 fn parse_version(input: &str) -> Option<(u64, u64, u64)> {
     let mut parts = input.split('.');
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next().unwrap_or("0").parse().ok()?;
-    let patch = parts.next().unwrap_or("0").parse().ok()?;
+    let major = parts.next().and_then(parse_version_part);
+    let minor = parts.next().map_or(Some(0), parse_version_part);
+    let patch = parts.next().map_or(Some(0), parse_version_part);
     if parts.next().is_some() {
         return None;
     }
-    Some((major, minor, patch))
+    major
+        .zip(minor)
+        .zip(patch)
+        .map(|((major, minor), patch)| (major, minor, patch))
+}
+
+fn parse_version_part(input: &str) -> Option<u64> {
+    input.parse().ok()
 }
 
 fn feature_advisory_json(advisory: &FeatureAdvisory) -> Value {
@@ -225,13 +252,18 @@ fn feature_advisory_json(advisory: &FeatureAdvisory) -> Value {
     })
 }
 
+fn io_error_to_string(error: std::io::Error) -> String {
+    error.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{json, Map, Value};
 
     use super::{
-        ensure_no_disallowed_features, feature_advisories_for_oci_features, feature_matches_prefix,
-        sanitize_control_manifest,
+        default_user_data_folder, ensure_no_disallowed_features,
+        feature_advisories_for_oci_features, feature_matches_prefix, feature_version_is_affected,
+        parse_version, sanitize_control_manifest,
     };
     use crate::test_support::{unique_temp_dir, write_test_control_manifest};
 
@@ -282,6 +314,11 @@ mod tests {
         )
         .expect("allowed features");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ensure_no_disallowed_features_accepts_empty_feature_sets_without_manifest_lookup() {
+        ensure_no_disallowed_features(&[], &Map::new()).expect("empty feature set");
     }
 
     #[test]
@@ -465,6 +502,8 @@ mod tests {
 
     #[test]
     fn sanitize_control_manifest_filters_invalid_entries() {
+        assert_eq!(sanitize_control_manifest(&json!(null)), Default::default());
+
         let manifest = sanitize_control_manifest(&json!({
             "disallowedFeatures": [
                 { "featureIdPrefix": "example.io/test/node" },
@@ -485,5 +524,20 @@ mod tests {
 
         assert_eq!(manifest.disallowed_features.len(), 1);
         assert_eq!(manifest.feature_advisories.len(), 1);
+    }
+
+    #[test]
+    fn version_helpers_reject_malformed_advisory_versions() {
+        assert!(!feature_version_is_affected("bad", "1.0.0", "2.0.0"));
+        assert!(!feature_version_is_affected("1.0.0", "bad", "2.0.0"));
+        assert!(!feature_version_is_affected("1.0.0", "1.0.0", "bad"));
+        assert_eq!(parse_version("1.2.3.4"), None);
+        #[cfg(target_os = "linux")]
+        assert!(default_user_data_folder()
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.starts_with("devcontainercli-")));
+        #[cfg(not(target_os = "linux"))]
+        assert!(default_user_data_folder().ends_with("devcontainercli"));
     }
 }

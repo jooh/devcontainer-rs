@@ -21,12 +21,14 @@ const EXPERIMENTAL_FROZEN_LOCKFILE_FLAG: &str = "--experimental-frozen-lockfile"
 
 pub(super) fn run_outdated(args: &[String]) -> ExitCode {
     let logger = outdated_logger(args);
-    match validate_outdated_options(args)
-        .and_then(|()| build_outdated_payload_with_logger(args, Some(&logger)))
-    {
+    let result = match validate_outdated_options(args) {
+        Ok(()) => build_outdated_payload_with_logger(args, Some(&logger)),
+        Err(error) => Err(error),
+    };
+    match result {
         Ok(payload) => {
-            let output_format = common::parse_option_value(args, "--output-format")
-                .unwrap_or_else(|| "json".to_string());
+            let output_format =
+                common::parse_option_value(args, "--output-format").unwrap_or("json".to_string());
             if output_format == "text" {
                 println!("{}", render_outdated_text(&payload));
             } else {
@@ -43,9 +45,11 @@ pub(super) fn run_outdated(args: &[String]) -> ExitCode {
 
 pub(super) fn run_upgrade(args: &[String]) -> ExitCode {
     let logger = upgrade_logger(args);
-    match validate_upgrade_command_options(args)
-        .and_then(|()| run_upgrade_lockfile_with_logger(args, Some(&logger)))
-    {
+    let result = match validate_upgrade_command_options(args) {
+        Ok(()) => run_upgrade_lockfile_with_logger(args, Some(&logger)),
+        Err(error) => Err(error),
+    };
+    match result {
         Ok(lockfile) => {
             if common::has_flag(args, "--dry-run") {
                 println!(
@@ -98,7 +102,7 @@ pub(super) fn ensure_native_lockfile(
         return Ok(());
     }
     let lockfile = serialized_lockfile(&generated)?;
-    fs::write(&path, lockfile).map_err(|error| error.to_string())?;
+    fs::write(&path, lockfile).map_err(error_to_string)?;
     Ok(())
 }
 
@@ -191,7 +195,7 @@ pub(super) fn lockfile_for_resolution(
 fn serialized_lockfile(lockfile: &Lockfile) -> Result<String, String> {
     serde_json::to_string_pretty(lockfile)
         .map(|json| format!("{json}\n"))
-        .map_err(|error| error.to_string())
+        .map_err(error_to_string)
 }
 
 #[cfg(test)]
@@ -242,15 +246,13 @@ fn build_outdated_payload_with_logger(
             continue;
         };
 
-        let Some(feature_info) = build_feature_version_info(
+        if let Some(feature_info) = build_feature_version_info(
             &reference,
             lockfile.as_ref(),
             Some(loaded.workspace_folder.as_path()),
-        )?
-        else {
-            continue;
-        };
-        payload_features.insert(feature_id.clone(), feature_info);
+        )? {
+            payload_features.insert(feature_id.clone(), feature_info);
+        }
     }
 
     if let Some(logger) = logger {
@@ -322,13 +324,12 @@ fn run_upgrade_lockfile_with_logger(
             "Generating lockfile for {feature_count} feature(s)"
         ));
     }
-    let generated = if let Some(resolved_features) =
-        super::features::resolve_feature_support_without_lockfile(
-            args,
-            &loaded.workspace_folder,
-            &loaded.config_file,
-            &loaded.configuration,
-        )? {
+    let resolve = super::resolve_feature_support_without_lockfile;
+    let workspace_folder = &loaded.workspace_folder;
+    let config_file = &loaded.config_file;
+    let configuration = &loaded.configuration;
+    let resolved_features = resolve(args, workspace_folder, config_file, configuration)?;
+    let generated = if let Some(resolved_features) = resolved_features {
         generate_lockfile_from_resolved(args, &loaded.configuration, &resolved_features)?
     } else {
         Lockfile {
@@ -340,8 +341,7 @@ fn run_upgrade_lockfile_with_logger(
         if let Some(logger) = logger {
             logger.info(format!("Writing lockfile: '{}'", lockfile_path.display()));
         }
-        fs::write(&lockfile_path, serialized_lockfile(&generated)?)
-            .map_err(|error| error.to_string())?;
+        fs::write(&lockfile_path, serialized_lockfile(&generated)?).map_err(error_to_string)?;
         if let Some(logger) = logger {
             logger.debug(format!(
                 "Lockfile write complete: '{}'",
@@ -356,43 +356,48 @@ fn run_upgrade_lockfile_with_logger(
 }
 
 fn validate_outdated_options(args: &[String]) -> Result<(), String> {
-    common::validate_option_values(
-        args,
-        &[
-            "--user-data-folder",
-            "--workspace-folder",
-            "--config",
-            "--output-format",
-            "--log-level",
-            "--log-format",
-            "--terminal-columns",
-            "--terminal-rows",
-        ],
-    )?;
-    common::validate_choice_option(args, "--output-format", &["text", "json"])?;
-    common::validate_choice_option(args, "--log-format", &["text", "json"])?;
-    common::validate_choice_option(args, "--log-level", &["info", "debug", "trace"])?;
-    common::validate_paired_options(args, "--terminal-columns", "--terminal-rows")?;
-    common::validate_number_option(args, "--terminal-columns")?;
-    common::validate_number_option(args, "--terminal-rows")?;
-    Ok(())
+    let options = [
+        "--user-data-folder",
+        "--workspace-folder",
+        "--config",
+        "--output-format",
+        "--log-level",
+        "--log-format",
+        "--terminal-columns",
+        "--terminal-rows",
+    ];
+    common::validate_option_values(args, &options)
+        .and_then(|()| common::validate_choice_option(args, "--output-format", &["text", "json"]))
+        .and_then(|()| common::validate_choice_option(args, "--log-format", &["text", "json"]))
+        .and_then(|()| {
+            common::validate_choice_option(args, "--log-level", &["info", "debug", "trace"])
+        })
+        .and_then(|()| {
+            common::validate_paired_options(args, "--terminal-columns", "--terminal-rows")
+        })
+        .and_then(|()| common::validate_number_option(args, "--terminal-columns"))
+        .and_then(|()| common::validate_number_option(args, "--terminal-rows"))
 }
 
 fn validate_upgrade_command_options(args: &[String]) -> Result<(), String> {
-    common::validate_option_values(
-        args,
-        &[
-            "--workspace-folder",
-            "--docker-path",
-            "--docker-compose-path",
-            "--config",
-            "--log-level",
-            "--feature",
-            "--target-version",
-        ],
-    )?;
-    common::validate_choice_option(args, "--log-level", &["error", "info", "debug", "trace"])?;
-    validate_upgrade_options(args)
+    let options = [
+        "--workspace-folder",
+        "--docker-path",
+        "--docker-compose-path",
+        "--config",
+        "--log-level",
+        "--feature",
+        "--target-version",
+    ];
+    common::validate_option_values(args, &options)
+        .and_then(|()| {
+            common::validate_choice_option(
+                args,
+                "--log-level",
+                &["error", "info", "debug", "trace"],
+            )
+        })
+        .and_then(|()| validate_upgrade_options(args))
 }
 
 fn validate_upgrade_options(args: &[String]) -> Result<(), String> {
@@ -457,15 +462,18 @@ fn additional_only_feature_ids(
     let Some(raw_additional) = common::parse_option_value(args, "--additional-features") else {
         return Ok(BTreeSet::new());
     };
-    let additional = crate::config::parse_jsonc_value(&raw_additional)?;
-    let additional = additional
-        .as_object()
-        .ok_or_else(|| "--additional-features must be a JSON object".to_string())?;
-    Ok(additional
-        .keys()
-        .filter(|key| !config_feature_keys.contains(*key))
-        .cloned()
-        .collect())
+    crate::config::parse_jsonc_value(&raw_additional).and_then(|additional| {
+        additional.as_object().map_or_else(
+            || Err("--additional-features must be a JSON object".to_string()),
+            |additional| {
+                Ok(additional
+                    .keys()
+                    .filter(|key| !config_feature_keys.contains(*key))
+                    .cloned()
+                    .collect())
+            },
+        )
+    })
 }
 
 pub(super) fn lockfile_path(config_file: &Path) -> PathBuf {
@@ -489,7 +497,7 @@ fn read_lockfile(path: PathBuf) -> Result<Option<Lockfile>, String> {
         Ok(contents) if contents.trim().is_empty() => Ok(None),
         Ok(contents) => serde_json::from_str(&contents)
             .map(Some)
-            .map_err(|error| error.to_string()),
+            .map_err(error_to_string),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.to_string()),
     }
@@ -532,7 +540,7 @@ fn update_feature_version_in_config(
         if let Some(logger) = logger {
             logger.info(format!("Updating config file: '{}'", config_path.display()));
         }
-        fs::write(config_path, updated).map_err(|error| error.to_string())?;
+        fs::write(config_path, updated).map_err(error_to_string)?;
     } else if let Some(logger) = logger {
         logger.trace(format!(
             "No changes to config file: {}",
@@ -542,7 +550,7 @@ fn update_feature_version_in_config(
     Ok(())
 }
 
-fn render_outdated_text(payload: &Value) -> String {
+pub(super) fn render_outdated_text(payload: &Value) -> String {
     let mut rows = vec![vec![
         "Feature".to_string(),
         "Current".to_string(),
@@ -579,6 +587,10 @@ fn render_outdated_text(payload: &Value) -> String {
 
 fn cell(value: Option<&Value>) -> String {
     value.and_then(Value::as_str).unwrap_or("-").to_string()
+}
+
+fn error_to_string(error: impl ToString) -> String {
+    error.to_string()
 }
 
 fn outdated_logger(args: &[String]) -> CommandLogger {
@@ -618,13 +630,13 @@ fn parse_upgrade_log_level(args: &[String]) -> CommandLogLevel {
 }
 
 fn parse_terminal_dimensions(args: &[String]) -> Option<TerminalDimensions> {
-    let columns = common::parse_option_value(args, "--terminal-columns")?
-        .parse::<usize>()
-        .ok()?;
-    let rows = common::parse_option_value(args, "--terminal-rows")?
-        .parse::<usize>()
-        .ok()?;
-    Some(TerminalDimensions { columns, rows })
+    common::parse_option_value(args, "--terminal-columns")
+        .and_then(|value| value.parse::<usize>().ok())
+        .zip(
+            common::parse_option_value(args, "--terminal-rows")
+                .and_then(|value| value.parse::<usize>().ok()),
+        )
+        .map(|(columns, rows)| TerminalDimensions { columns, rows })
 }
 
 pub(super) fn parse_feature_reference(feature_id: &str) -> Option<FeatureReference> {
@@ -636,30 +648,31 @@ pub(super) fn parse_feature_reference(feature_id: &str) -> Option<FeatureReferen
     }
 
     let base = feature_id_without_version(feature_id);
-    let suffix = feature_id.strip_prefix(&base)?;
-    if suffix.is_empty() {
-        return Some(FeatureReference {
+    feature_id.strip_prefix(&base).and_then(|suffix| {
+        if suffix.is_empty() {
+            return Some(FeatureReference {
+                original: feature_id.to_string(),
+                base,
+                tag: None,
+                digest: None,
+            });
+        }
+
+        if let Some(digest) = suffix.strip_prefix('@') {
+            return Some(FeatureReference {
+                original: feature_id.to_string(),
+                base,
+                tag: None,
+                digest: Some(digest.to_string()),
+            });
+        }
+
+        suffix.strip_prefix(':').map(|tag| FeatureReference {
             original: feature_id.to_string(),
             base,
-            tag: None,
+            tag: Some(tag.to_string()),
             digest: None,
-        });
-    }
-
-    if let Some(digest) = suffix.strip_prefix('@') {
-        return Some(FeatureReference {
-            original: feature_id.to_string(),
-            base,
-            tag: None,
-            digest: Some(digest.to_string()),
-        });
-    }
-
-    suffix.strip_prefix(':').map(|tag| FeatureReference {
-        original: feature_id.to_string(),
-        base,
-        tag: Some(tag.to_string()),
-        digest: None,
+        })
     })
 }
 
@@ -681,5 +694,23 @@ pub(super) fn feature_id_without_version(feature_id: &str) -> String {
     match delimiter.filter(|index| *index > last_slash) {
         Some(index) => feature_id[..index].to_string(),
         None => feature_id.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::additional_only_feature_ids;
+
+    #[test]
+    fn additional_only_feature_ids_rejects_non_object_payloads() {
+        let error = additional_only_feature_ids(
+            &["--additional-features".to_string(), "[]".to_string()],
+            &json!({}),
+        )
+        .expect_err("array payload should be rejected");
+
+        assert_eq!(error, "--additional-features must be a JSON object");
     }
 }

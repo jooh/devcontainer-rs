@@ -101,12 +101,15 @@ pub(crate) fn runtime_process_request(
 }
 
 pub(crate) fn parse_bool_option(args: &[String], option: &str, default: bool) -> bool {
+    const FALSE_VALUES: &[&str] = &["false", "0", "no", "off"];
+    const TRUE_VALUES: &[&str] = &["true", "1", "yes", "on"];
+
     let Some(index) = args.iter().position(|arg| arg == option) else {
         return default;
     };
     match args.get(index + 1).map(String::as_str) {
-        Some("false" | "0" | "no" | "off") => false,
-        Some("true" | "1" | "yes" | "on") => true,
+        Some(next) if FALSE_VALUES.contains(&next) => false,
+        Some(next) if TRUE_VALUES.contains(&next) => true,
         Some(next) if next.starts_with("--") => true,
         Some(_) => true,
         None => true,
@@ -132,32 +135,35 @@ pub(crate) fn validate_choice_option(
     option: &str,
     choices: &[&str],
 ) -> Result<(), String> {
-    validate_option_values(args, &[option])?;
+    validate_option_values(args, &[option])
+        .and_then(|()| validate_choice_values(args, option, choices))
+}
 
-    for value in parse_option_values(args, option) {
-        if !choices.contains(&value.as_str()) {
-            return Err(format!(
+fn validate_choice_values(args: &[String], option: &str, choices: &[&str]) -> Result<(), String> {
+    parse_option_values(args, option)
+        .into_iter()
+        .find(|value| !choices.contains(&value.as_str()))
+        .map_or(Ok(()), |value| {
+            Err(format!(
                 "Invalid value for option {option}: {value}. Expected one of: {}",
                 choices.join(", ")
-            ));
-        }
-    }
-
-    Ok(())
+            ))
+        })
 }
 
 pub(crate) fn validate_number_option(args: &[String], option: &str) -> Result<(), String> {
-    validate_option_values(args, &[option])?;
+    validate_option_values(args, &[option]).and_then(|()| validate_number_values(args, option))
+}
 
-    for value in parse_option_values(args, option) {
-        if value.parse::<f64>().is_err() {
-            return Err(format!(
+fn validate_number_values(args: &[String], option: &str) -> Result<(), String> {
+    parse_option_values(args, option)
+        .into_iter()
+        .find(|value| value.parse::<f64>().is_err())
+        .map_or(Ok(()), |value| {
+            Err(format!(
                 "Invalid value for option {option}: {value}. Expected a number."
-            ));
-        }
-    }
-
-    Ok(())
+            ))
+        })
 }
 
 pub(crate) fn validate_paired_options(
@@ -196,17 +202,17 @@ pub(crate) fn parse_json_string_array_option(
         return Ok(Vec::new());
     };
     let parsed = config::parse_jsonc_value(&value)?;
-    let values = parsed
-        .as_array()
-        .ok_or_else(|| format!("{option} must be a JSON array"))?
-        .iter()
-        .map(|value| {
-            value
-                .as_str()
-                .map(str::to_string)
-                .ok_or_else(|| format!("{option} entries must be strings"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let Some(array) = parsed.as_array() else {
+        return Err(format!("{option} must be a JSON array"));
+    };
+
+    let mut values = Vec::with_capacity(array.len());
+    for value in array {
+        let Some(value) = value.as_str() else {
+            return Err(format!("{option} entries must be strings"));
+        };
+        values.push(value.to_string());
+    }
     Ok(values)
 }
 
@@ -218,8 +224,9 @@ pub(crate) fn parse_remote_env(args: &[String]) -> Map<String, Value> {
     parse_option_values(args, "--remote-env")
         .into_iter()
         .filter_map(|entry| {
-            let (name, value) = entry.split_once('=')?;
-            Some((name.to_string(), Value::String(value.to_string())))
+            entry
+                .split_once('=')
+                .map(|(name, value)| (name.to_string(), Value::String(value.to_string())))
         })
         .collect()
 }
@@ -227,7 +234,7 @@ pub(crate) fn parse_remote_env(args: &[String]) -> Map<String, Value> {
 pub(crate) fn remote_env_overrides(args: &[String]) -> HashMap<String, String> {
     parse_remote_env(args)
         .into_iter()
-        .filter_map(|(key, value)| value.as_str().map(|text| (key, text.to_string())))
+        .map(|(key, value)| (key, value.as_str().unwrap_or_default().to_string()))
         .collect()
 }
 
@@ -235,11 +242,11 @@ pub(crate) fn secrets_env(args: &[String]) -> Result<HashMap<String, String>, St
     let Some(path) = parse_option_value(args, "--secrets-file") else {
         return Ok(HashMap::new());
     };
-    let raw = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    let raw = fs::read_to_string(&path).map_err(error_to_string)?;
     let parsed = config::parse_jsonc_value(&raw)?;
-    let entries = parsed
-        .as_object()
-        .ok_or_else(|| "--secrets-file must point to a JSON object".to_string())?;
+    let Some(entries) = parsed.as_object() else {
+        return Err("--secrets-file must point to a JSON object".to_string());
+    };
     Ok(entries
         .iter()
         .filter_map(|(key, value)| match value {
@@ -252,14 +259,26 @@ pub(crate) fn secrets_env(args: &[String]) -> Result<HashMap<String, String>, St
         .collect())
 }
 
+fn error_to_string(error: impl ToString) -> String {
+    error.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     //! Unit tests for shared command-line parsing.
 
+    use std::collections::HashMap;
+    use std::fs;
+
+    use serde_json::json;
+
     use crate::process_runner::ProcessLogLevel;
+    use crate::test_support::unique_temp_dir;
 
     use super::{
-        runtime_options, validate_choice_option, validate_number_option, validate_paired_options,
+        parse_bool_option, parse_json_string_array_option, parse_remote_env, remote_env_overrides,
+        runtime_options, runtime_process_request, secrets_env, validate_choice_option,
+        validate_number_option, validate_option_values, validate_paired_options,
     };
 
     #[test]
@@ -356,6 +375,75 @@ mod tests {
     }
 
     #[test]
+    fn runtime_process_request_applies_terminal_env_and_log_level() {
+        let request = runtime_process_request(
+            &[
+                "--terminal-columns".to_string(),
+                "100".to_string(),
+                "--terminal-rows".to_string(),
+                "32".to_string(),
+                "--log-level".to_string(),
+                "debug".to_string(),
+            ],
+            "docker".to_string(),
+            vec!["ps".to_string()],
+            Some("/tmp/workspace".into()),
+        );
+
+        assert_eq!(request.program, "docker");
+        assert_eq!(request.args, vec!["ps".to_string()]);
+        assert_eq!(
+            request.cwd.as_deref(),
+            Some(std::path::Path::new("/tmp/workspace"))
+        );
+        assert_eq!(
+            request.env,
+            HashMap::from([
+                ("COLUMNS".to_string(), "100".to_string()),
+                ("LINES".to_string(), "32".to_string()),
+            ])
+        );
+        assert_eq!(request.log_level, ProcessLogLevel::Debug);
+    }
+
+    #[test]
+    fn parse_bool_option_handles_defaults_and_present_values() {
+        assert!(parse_bool_option(&[], "--flag", true));
+        assert!(parse_bool_option(&["--flag".to_string()], "--flag", false));
+        assert!(parse_bool_option(
+            &["--flag".to_string(), "--next".to_string()],
+            "--flag",
+            false
+        ));
+        assert!(parse_bool_option(
+            &["--flag".to_string(), "maybe".to_string()],
+            "--flag",
+            false
+        ));
+        assert!(parse_bool_option(
+            &["--flag".to_string(), "on".to_string()],
+            "--flag",
+            false
+        ));
+    }
+
+    #[test]
+    fn option_value_validation_reports_missing_values_and_accepts_present_values() {
+        let error = validate_option_values(&["--config".to_string()], &["--config"])
+            .expect_err("missing value");
+        assert!(error.contains("--config"));
+
+        validate_option_values(
+            &[
+                "--config".to_string(),
+                ".devcontainer/devcontainer.json".to_string(),
+            ],
+            &["--config"],
+        )
+        .expect("value present");
+    }
+
+    #[test]
     fn choice_options_reject_unknown_values() {
         let error = validate_choice_option(
             &["--log-level".to_string(), "warning".to_string()],
@@ -366,6 +454,16 @@ mod tests {
 
         assert!(error.contains("--log-level"));
         assert!(error.contains("warning"));
+    }
+
+    #[test]
+    fn choice_options_accept_known_values() {
+        validate_choice_option(
+            &["--log-level".to_string(), "trace".to_string()],
+            "--log-level",
+            &["info", "debug", "trace"],
+        )
+        .expect("known choice");
     }
 
     #[test]
@@ -381,6 +479,15 @@ mod tests {
     }
 
     #[test]
+    fn number_options_accept_numeric_values() {
+        validate_number_option(
+            &["--terminal-columns".to_string(), "120".to_string()],
+            "--terminal-columns",
+        )
+        .expect("numeric value");
+    }
+
+    #[test]
     fn paired_options_require_both_flags() {
         let error = validate_paired_options(
             &["--terminal-columns".to_string(), "120".to_string()],
@@ -391,5 +498,136 @@ mod tests {
 
         assert!(error.contains("--terminal-columns"));
         assert!(error.contains("--terminal-rows"));
+    }
+
+    #[test]
+    fn paired_options_accept_both_or_neither_flag() {
+        validate_paired_options(&[], "--terminal-columns", "--terminal-rows")
+            .expect("neither flag is valid");
+        validate_paired_options(
+            &[
+                "--terminal-columns".to_string(),
+                "120".to_string(),
+                "--terminal-rows".to_string(),
+                "40".to_string(),
+            ],
+            "--terminal-columns",
+            "--terminal-rows",
+        )
+        .expect("both flags are valid");
+    }
+
+    #[test]
+    fn json_string_array_options_parse_values_and_errors() {
+        assert_eq!(
+            parse_json_string_array_option(&[], "--features").expect("missing option"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            parse_json_string_array_option(
+                &["--features".to_string(), "[\"a\", \"b\"]".to_string()],
+                "--features",
+            )
+            .expect("array option"),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert!(parse_json_string_array_option(
+            &["--features".to_string(), "{}".to_string()],
+            "--features",
+        )
+        .expect_err("non-array")
+        .contains("JSON array"));
+        assert!(parse_json_string_array_option(
+            &["--features".to_string(), "[1]".to_string()],
+            "--features",
+        )
+        .expect_err("non-string entry")
+        .contains("entries must be strings"));
+        assert!(parse_json_string_array_option(
+            &["--features".to_string(), "{".to_string()],
+            "--features",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn remote_env_helpers_parse_name_value_entries() {
+        let args = vec![
+            "--remote-env".to_string(),
+            "A=1".to_string(),
+            "--remote-env".to_string(),
+            "BROKEN".to_string(),
+            "--remote-env".to_string(),
+            "B=two".to_string(),
+        ];
+
+        assert_eq!(
+            parse_remote_env(&args),
+            json!({ "A": "1", "B": "two" }).as_object().unwrap().clone()
+        );
+        assert_eq!(
+            remote_env_overrides(&args),
+            HashMap::from([
+                ("A".to_string(), "1".to_string()),
+                ("B".to_string(), "two".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn secrets_env_reads_json_objects_and_converts_values() {
+        let root = unique_temp_dir("secrets-env");
+        fs::create_dir_all(&root).expect("secrets root");
+        let secrets_file = root.join("secrets.json");
+        fs::write(
+            &secrets_file,
+            r#"{
+                "NULL_VALUE": null,
+                "BOOL_VALUE": true,
+                "NUMBER_VALUE": 42,
+                "STRING_VALUE": "secret",
+                "OBJECT_VALUE": { "nested": true }
+            }"#,
+        )
+        .expect("secrets file");
+
+        let secrets = secrets_env(&[
+            "--secrets-file".to_string(),
+            secrets_file.display().to_string(),
+        ])
+        .expect("secrets");
+
+        assert!(!secrets.contains_key("NULL_VALUE"));
+        assert_eq!(secrets["BOOL_VALUE"], "true");
+        assert_eq!(secrets["NUMBER_VALUE"], "42");
+        assert_eq!(secrets["STRING_VALUE"], "secret");
+        assert_eq!(secrets["OBJECT_VALUE"], "{\"nested\":true}");
+        assert_eq!(
+            secrets_env(&[]).expect("missing secrets flag"),
+            HashMap::new()
+        );
+
+        fs::write(&secrets_file, "[]").expect("array secrets file");
+        assert!(secrets_env(&[
+            "--secrets-file".to_string(),
+            secrets_file.display().to_string(),
+        ])
+        .expect_err("non-object secrets")
+        .contains("JSON object"));
+
+        fs::write(&secrets_file, "{").expect("invalid secrets file");
+        assert!(secrets_env(&[
+            "--secrets-file".to_string(),
+            secrets_file.display().to_string(),
+        ])
+        .is_err());
+
+        assert!(secrets_env(&[
+            "--secrets-file".to_string(),
+            root.join("missing.json").display().to_string(),
+        ])
+        .is_err());
+
+        let _ = fs::remove_dir_all(root);
     }
 }
