@@ -148,7 +148,8 @@ pub(super) struct PreparedFeatureTestCase {
 pub(super) fn run_features_test(args: &[String]) -> std::process::ExitCode {
     match execute_feature_tests(args) {
         Ok(results) => {
-            if !common::has_flag(args, "--quiet") && !common::has_flag(args, "-q") {
+            let quiet = common::has_flag(args, "--quiet") || common::has_flag(args, "-q");
+            if !quiet {
                 println!("  ================== TEST REPORT ==================");
                 for result in &results {
                     let status = if result.passed {
@@ -162,7 +163,7 @@ pub(super) fn run_features_test(args: &[String]) -> std::process::ExitCode {
                     println!("Cleaning up {} test containers", results.len());
                 }
             }
-            if results.iter().all(|result| result.passed) {
+            if all_feature_tests_passed(&results) {
                 std::process::ExitCode::SUCCESS
             } else {
                 std::process::ExitCode::from(1)
@@ -177,10 +178,12 @@ pub(super) fn run_features_test(args: &[String]) -> std::process::ExitCode {
 
 #[cfg(test)]
 pub(super) fn discover_feature_test_scenarios(args: &[String]) -> Result<Vec<String>, String> {
-    Ok(discovery::discover_feature_test_cases(args)?
-        .into_iter()
-        .map(|case| case.name)
-        .collect())
+    let cases = discovery::discover_feature_test_cases(args)?;
+    let mut names = Vec::with_capacity(cases.len());
+    for case in cases {
+        names.push(case.name);
+    }
+    Ok(names)
 }
 
 fn execute_feature_tests(args: &[String]) -> Result<Vec<FeatureTestResult>, String> {
@@ -198,13 +201,12 @@ pub(super) fn execute_feature_tests_with_runtime<R: FeatureTestRuntime>(
 }
 
 fn parse_feature_test_options(args: &[String]) -> Result<FeatureTestOptions, String> {
-    let project_folder = common::parse_option_value(args, "--project-folder")
-        .or_else(|| common::parse_option_value(args, "--projectFolder"))
-        .or_else(|| args.iter().rev().find(|arg| !arg.starts_with('-')).cloned())
-        .map(PathBuf::from)
-        .ok_or_else(|| "features test requires a project folder".to_string())?;
+    let project_folder = match feature_test_project_folder_arg(args) {
+        Some(project_folder) => PathBuf::from(project_folder),
+        None => return Err("features test requires a project folder".to_string()),
+    };
     let base_image = common::parse_option_value(args, "--base-image")
-        .unwrap_or_else(|| DEFAULT_FEATURE_TEST_BASE_IMAGE.to_string());
+        .unwrap_or(DEFAULT_FEATURE_TEST_BASE_IMAGE.to_string());
     let remote_user = common::parse_option_value(args, "--remote-user");
     let preserve_test_containers = common::has_flag(args, "--preserve-test-containers");
     let permit_randomization = common::has_flag(args, "--permit-randomization");
@@ -217,4 +219,82 @@ fn parse_feature_test_options(args: &[String]) -> Result<FeatureTestOptions, Str
         permit_randomization,
         quiet,
     })
+}
+
+fn all_feature_tests_passed(results: &[FeatureTestResult]) -> bool {
+    for result in results {
+        if !result.passed {
+            return false;
+        }
+    }
+    true
+}
+
+fn feature_test_project_folder_arg(args: &[String]) -> Option<String> {
+    if let Some(project_folder) = common::parse_option_value(args, "--project-folder") {
+        return Some(project_folder);
+    }
+    if let Some(project_folder) = common::parse_option_value(args, "--projectFolder") {
+        return Some(project_folder);
+    }
+    for arg in args.iter().rev() {
+        if !arg.starts_with('-') {
+            return Some(arg.clone());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{all_feature_tests_passed, feature_test_project_folder_arg, FeatureTestResult};
+
+    #[test]
+    fn feature_test_project_folder_arg_uses_trailing_positionals() {
+        let dashed = vec![
+            "--project-folder".to_string(),
+            "/workspace/dashed".to_string(),
+        ];
+        let camel = vec![
+            "--projectFolder".to_string(),
+            "/workspace/camel".to_string(),
+        ];
+        let positional = vec!["--quiet".to_string(), "/workspace/project".to_string()];
+
+        assert_eq!(
+            feature_test_project_folder_arg(&dashed).as_deref(),
+            Some("/workspace/dashed")
+        );
+        assert_eq!(
+            feature_test_project_folder_arg(&camel).as_deref(),
+            Some("/workspace/camel")
+        );
+        assert_eq!(
+            feature_test_project_folder_arg(&positional).as_deref(),
+            Some("/workspace/project")
+        );
+        assert_eq!(
+            feature_test_project_folder_arg(&["--quiet".to_string()]),
+            None
+        );
+    }
+
+    #[test]
+    fn all_feature_tests_passed_requires_every_result_to_pass() {
+        assert!(all_feature_tests_passed(&[]));
+        assert!(all_feature_tests_passed(&[FeatureTestResult {
+            name: "passing".to_string(),
+            passed: true,
+        }]));
+        assert!(!all_feature_tests_passed(&[
+            FeatureTestResult {
+                name: "passing".to_string(),
+                passed: true,
+            },
+            FeatureTestResult {
+                name: "failing".to_string(),
+                passed: false,
+            },
+        ]));
+    }
 }

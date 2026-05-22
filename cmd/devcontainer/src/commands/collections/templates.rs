@@ -6,14 +6,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use flate2::read::GzDecoder;
 use serde_json::{json, Map, Value};
+use tar::Archive;
 
 use super::registry::{
     embedded_template_source_dir, local_oci_artifact, normalize_collection_reference,
     published_template_manifest_with_workspace,
 };
 use crate::commands::common;
-use crate::process_runner::{self, ProcessLogLevel, ProcessRequest};
 
 const DEFAULT_PUBLISHED_TEMPLATE_BASE_IMAGE: &str = "docker.io/library/debian:bookworm-slim";
 static NEXT_TEMPLATE_TMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -37,7 +38,7 @@ fn apply_template_target_with_options(
     copy_embedded_template_contents(&source_root, workspace_root, &Map::new(), omit_paths)?;
     Ok(json!({
         "outcome": "success",
-        "id": manifest.get("id").cloned().unwrap_or_else(|| Value::String("unknown".to_string())),
+        "id": manifest_value_or_string(&manifest, "id", "unknown"),
         "appliedTo": workspace_root,
     }))
 }
@@ -47,15 +48,17 @@ pub(super) fn build_template_metadata_payload(
     workspace_folder: Option<&Path>,
 ) -> Result<Value, String> {
     let manifest = if template_path.starts_with("ghcr.io/") {
-        published_template_manifest_with_workspace(template_path, workspace_folder)
-            .ok_or_else(|| format!("Unknown published template: {template_path}"))?
+        match published_template_manifest_with_workspace(template_path, workspace_folder) {
+            Some(manifest) => manifest,
+            None => return Err(format!("Unknown published template: {template_path}")),
+        }
     } else {
         common::parse_manifest(Path::new(template_path), "devcontainer-template.json")?
     };
     Ok(json!({
-        "id": manifest.get("id").cloned().unwrap_or_else(|| Value::String("unknown".to_string())),
-        "name": manifest.get("name").cloned().unwrap_or_else(|| Value::String("unknown".to_string())),
-        "description": manifest.get("description").cloned().unwrap_or_else(|| Value::String(String::new())),
+        "id": manifest_value_or_string(&manifest, "id", "unknown"),
+        "name": manifest_value_or_string(&manifest, "name", "unknown"),
+        "description": manifest_value_or_string(&manifest, "description", ""),
     }))
 }
 
@@ -64,10 +67,7 @@ pub(super) fn run_template_apply(args: &[String]) -> Result<Value, String> {
     let tmp_dir = common::parse_option_value(args, "--tmp-dir").map(PathBuf::from);
     let template_id = common::parse_option_value(args, "--template-id");
     if let Some(template_id) = template_id {
-        let workspace = common::parse_option_value(args, "--workspace-folder")
-            .map(PathBuf::from)
-            .or_else(|| env::current_dir().ok())
-            .ok_or_else(|| "Unable to determine workspace folder".to_string())?;
+        let workspace = template_workspace_folder(args)?;
         return apply_catalog_template_with_options(
             &template_id,
             &workspace,
@@ -77,13 +77,11 @@ pub(super) fn run_template_apply(args: &[String]) -> Result<Value, String> {
         );
     }
 
-    let target = args
-        .first()
-        .ok_or_else(|| "templates apply requires <target>".to_string())?;
-    let workspace = common::parse_option_value(args, "--workspace-folder")
-        .map(PathBuf::from)
-        .or_else(|| env::current_dir().ok())
-        .ok_or_else(|| "Unable to determine workspace folder".to_string())?;
+    let target = match args.first() {
+        Some(target) => target,
+        None => return Err("templates apply requires <target>".to_string()),
+    };
+    let workspace = template_workspace_folder(args)?;
     apply_template_target_with_options(
         Path::new(target),
         &workspace,
@@ -108,16 +106,13 @@ fn apply_catalog_template_with_options(
     omit_paths: &[String],
     tmp_dir: Option<&Path>,
 ) -> Result<Value, String> {
-    let manifest = published_template_manifest_with_workspace(template_id, Some(workspace_root))
-        .ok_or_else(|| format!("Unknown published template: {template_id}"))?;
-    let template_args = common::parse_option_value(args, "--template-args")
-        .map(|value| crate::config::parse_jsonc_value(&value))
-        .transpose()?
-        .unwrap_or_else(|| json!({}));
-    let extra_features = common::parse_option_value(args, "--features")
-        .map(|value| crate::config::parse_jsonc_value(&value))
-        .transpose()?
-        .unwrap_or_else(|| json!([]));
+    let manifest =
+        match published_template_manifest_with_workspace(template_id, Some(workspace_root)) {
+            Some(manifest) => manifest,
+            None => return Err(format!("Unknown published template: {template_id}")),
+        };
+    let template_args = parse_json_option_or_default(args, "--template-args", json!({}))?;
+    let extra_features = parse_json_option_or_default(args, "--features", json!([]))?;
 
     if let Some(source_root) =
         extract_local_published_template_source_root(template_id, workspace_root, tmp_dir)?
@@ -153,16 +148,16 @@ fn apply_catalog_template_with_options(
     features.insert(
         "ghcr.io/devcontainers/features/common-utils:1".to_string(),
         json!({
-            "installZsh": template_args.get("installZsh").cloned().unwrap_or_else(|| Value::String("true".to_string())),
-            "upgradePackages": template_args.get("upgradePackages").cloned().unwrap_or_else(|| Value::String("false".to_string())),
+            "installZsh": template_value_or_string(&template_args, "installZsh", "true"),
+            "upgradePackages": template_value_or_string(&template_args, "upgradePackages", "false"),
         }),
     );
     features.insert(
         "ghcr.io/devcontainers/features/docker-from-docker:1".to_string(),
         json!({
-            "version": template_args.get("dockerVersion").cloned().unwrap_or_else(|| Value::String("latest".to_string())),
-            "moby": template_args.get("moby").cloned().unwrap_or_else(|| Value::String("true".to_string())),
-            "enableNonRootDocker": template_args.get("enableNonRootDocker").cloned().unwrap_or_else(|| Value::String("true".to_string())),
+            "version": template_value_or_string(&template_args, "dockerVersion", "latest"),
+            "moby": template_value_or_string(&template_args, "moby", "true"),
+            "enableNonRootDocker": template_value_or_string(&template_args, "enableNonRootDocker", "true"),
         }),
     );
     if let Some(extra_features) = extra_features.as_array() {
@@ -172,13 +167,13 @@ fn apply_catalog_template_with_options(
             };
             features.insert(
                 id.to_string(),
-                feature.get("options").cloned().unwrap_or_else(|| json!({})),
+                template_value_or_empty_object(feature, "options"),
             );
         }
     }
 
     let devcontainer = json!({
-        "name": manifest.get("name").cloned().unwrap_or_else(|| Value::String("Docker from Docker".to_string())),
+        "name": manifest_value_or_string(&manifest, "name", "Docker from Docker"),
         "image": DEFAULT_PUBLISHED_TEMPLATE_BASE_IMAGE,
         "features": features,
     });
@@ -195,6 +190,24 @@ fn apply_catalog_template_with_options(
     }))
 }
 
+fn template_workspace_folder(args: &[String]) -> Result<PathBuf, String> {
+    if let Some(workspace) = common::parse_option_value(args, "--workspace-folder") {
+        return Ok(PathBuf::from(workspace));
+    }
+    env::current_dir().map_err(|_| "Unable to determine workspace folder".to_string())
+}
+
+fn parse_json_option_or_default(
+    args: &[String],
+    name: &str,
+    default: Value,
+) -> Result<Value, String> {
+    match common::parse_option_value(args, name) {
+        Some(value) => crate::config::parse_jsonc_value(&value),
+        None => Ok(default),
+    }
+}
+
 fn extract_local_published_template_source_root(
     template_id: &str,
     workspace_root: &Path,
@@ -209,27 +222,13 @@ fn extract_local_published_template_source_root(
         ));
     };
 
-    let extraction_root = tmp_dir
-        .map(Path::to_path_buf)
-        .unwrap_or_else(std::env::temp_dir)
-        .join(unique_template_tmp_name());
+    let extraction_parent = match tmp_dir {
+        Some(tmp_dir) => tmp_dir.to_path_buf(),
+        None => std::env::temp_dir(),
+    };
+    let extraction_root = extraction_parent.join(unique_template_tmp_name());
     fs::create_dir_all(&extraction_root).map_err(|error| error.to_string())?;
-    let result = process_runner::run_process(&ProcessRequest {
-        program: "tar".to_string(),
-        args: vec![
-            "-xzf".to_string(),
-            layer_path.display().to_string(),
-            "-C".to_string(),
-            extraction_root.display().to_string(),
-        ],
-        cwd: None,
-        env: std::collections::HashMap::new(),
-        log_level: ProcessLogLevel::Info,
-    })
-    .map_err(|error| error.to_string())?;
-    if result.status_code != 0 {
-        return Err(result.stderr);
-    }
+    extract_template_layer(&layer_path, &extraction_root)?;
 
     let source_root = if extraction_root.join("src").is_dir() {
         extraction_root.join("src")
@@ -237,6 +236,15 @@ fn extract_local_published_template_source_root(
         extraction_root
     };
     Ok(Some(source_root))
+}
+
+fn extract_template_layer(layer_path: &Path, extraction_root: &Path) -> Result<(), String> {
+    let layer = fs::File::open(layer_path).map_err(|error| error.to_string())?;
+    let decoder = GzDecoder::new(layer);
+    let mut archive = Archive::new(decoder);
+    archive
+        .unpack(extraction_root)
+        .map_err(|error| error.to_string())
 }
 
 fn apply_embedded_published_template(
@@ -254,7 +262,7 @@ fn apply_embedded_published_template(
     merge_extra_features_into_template(workspace_root, extra_features)?;
     Ok(json!({
         "outcome": "success",
-        "id": manifest.get("id").cloned().unwrap_or_else(|| Value::String("unknown".to_string())),
+        "id": manifest_value_or_string(manifest, "id", "unknown"),
         "appliedTo": workspace_root,
     }))
 }
@@ -267,10 +275,7 @@ fn apply_generic_published_template(
     let mut devcontainer = Map::new();
     devcontainer.insert(
         "name".to_string(),
-        manifest
-            .get("name")
-            .cloned()
-            .unwrap_or_else(|| Value::String("Published Template".to_string())),
+        manifest_value_or_string(manifest, "name", "Published Template"),
     );
     devcontainer.insert(
         "image".to_string(),
@@ -285,7 +290,7 @@ fn apply_generic_published_template(
             };
             features.insert(
                 id.to_string(),
-                feature.get("options").cloned().unwrap_or_else(|| json!({})),
+                template_value_or_empty_object(feature, "options"),
             );
         }
     }
@@ -308,21 +313,14 @@ fn apply_generic_published_template(
 }
 
 fn template_option_values(manifest: &Value, template_args: &Value) -> Map<String, Value> {
-    let mut options = manifest
-        .get("options")
-        .and_then(Value::as_object)
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|(name, definition)| {
-                    definition
-                        .get("default")
-                        .cloned()
-                        .map(|value| (name.clone(), value))
-                })
-                .collect::<Map<String, Value>>()
-        })
-        .unwrap_or_default();
+    let mut options = Map::new();
+    if let Some(entries) = manifest.get("options").and_then(Value::as_object) {
+        for (name, definition) in entries {
+            if let Some(value) = definition.get("default") {
+                options.insert(name.clone(), value.clone());
+            }
+        }
+    }
     if let Some(template_args) = template_args.as_object() {
         for (name, value) in template_args {
             options.insert(name.clone(), value.clone());
@@ -406,13 +404,18 @@ fn prepare_template_source_root(
 
 fn template_path_is_omitted(relative_path: &Path, omit_paths: &[String]) -> bool {
     let relative = relative_path.to_string_lossy().replace('\\', "/");
-    omit_paths.iter().any(|pattern| {
+    for pattern in omit_paths {
         if let Some(prefix) = pattern.strip_suffix("/*") {
-            relative == prefix || relative.starts_with(&format!("{prefix}/"))
+            if relative == prefix || relative.starts_with(&format!("{prefix}/")) {
+                return true;
+            }
         } else {
-            relative == *pattern
+            if relative == *pattern {
+                return true;
+            }
         }
-    })
+    }
+    false
 }
 
 fn unique_template_tmp_name() -> String {
@@ -450,10 +453,10 @@ fn substitute_template_options(contents: &str, template_options: &Map<String, Va
 }
 
 fn template_option_string(value: &Value) -> String {
-    value
-        .as_str()
-        .map(str::to_string)
-        .unwrap_or_else(|| value.to_string())
+    match value.as_str() {
+        Some(text) => text.to_string(),
+        None => value.to_string(),
+    }
 }
 
 fn merge_extra_features_into_template(
@@ -466,25 +469,30 @@ fn merge_extra_features_into_template(
     else {
         return Ok(());
     };
-    let config_path = applied_template_config_path(workspace_root)
-        .ok_or_else(|| "Applied template is missing a dev container config".to_string())?;
+    let config_path = match applied_template_config_path(workspace_root) {
+        Some(config_path) => config_path,
+        None => return Err("Applied template is missing a dev container config".to_string()),
+    };
     let raw = fs::read_to_string(&config_path).map_err(|error| error.to_string())?;
     let mut config = crate::config::parse_jsonc_value(&raw)?;
-    let config_object = config
-        .as_object_mut()
-        .ok_or_else(|| "Applied template config must be a JSON object".to_string())?;
-    let features = config_object
+    let config_object = match config.as_object_mut() {
+        Some(config_object) => config_object,
+        None => return Err("Applied template config must be a JSON object".to_string()),
+    };
+    let features_value = config_object
         .entry("features".to_string())
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-        .ok_or_else(|| "Applied template features must be a JSON object".to_string())?;
+        .or_insert(json!({}));
+    let features = match features_value.as_object_mut() {
+        Some(features) => features,
+        None => return Err("Applied template features must be a JSON object".to_string()),
+    };
     for feature in extra_features {
         let Some(id) = feature.get("id").and_then(Value::as_str) else {
             continue;
         };
         features.insert(
             id.to_string(),
-            feature.get("options").cloned().unwrap_or_else(|| json!({})),
+            template_value_or_empty_object(feature, "options"),
         );
     }
     fs::write(
@@ -506,17 +514,39 @@ fn applied_template_config_path(workspace_root: &Path) -> Option<PathBuf> {
     .find(|path| path.is_file())
 }
 
+fn manifest_value_or_string(manifest: &Value, key: &str, default: &str) -> Value {
+    match manifest.get(key) {
+        Some(value) => value.clone(),
+        None => Value::String(default.to_string()),
+    }
+}
+
+fn template_value_or_string(value: &Value, key: &str, default: &str) -> Value {
+    match value.get(key) {
+        Some(value) => value.clone(),
+        None => Value::String(default.to_string()),
+    }
+}
+
+fn template_value_or_empty_object(value: &Value, key: &str) -> Value {
+    match value.get(key) {
+        Some(value) => value.clone(),
+        None => json!({}),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
 
-    use serde_json::json;
+    use serde_json::{json, Map};
 
     use super::{
         applied_template_config_path, apply_catalog_template_with_options,
         apply_embedded_published_template, apply_generic_published_template,
-        merge_extra_features_into_template, run_template_apply, substitute_template_options,
-        template_option_string, template_option_values, template_path_is_omitted,
+        copy_embedded_template_contents, merge_extra_features_into_template, run_template_apply,
+        substitute_template_options, template_option_string, template_option_values,
+        template_path_is_omitted, template_workspace_folder,
     };
 
     #[test]
@@ -540,6 +570,21 @@ mod tests {
         assert_eq!(options["enabled"], true);
         assert_eq!(options["count"], 3);
         assert!(!options.contains_key("missingDefault"));
+    }
+
+    #[test]
+    fn template_option_values_handles_missing_options_and_non_object_args() {
+        let options = template_option_values(&json!({}), &json!("not an object"));
+
+        assert!(options.is_empty());
+    }
+
+    #[test]
+    fn template_workspace_folder_defaults_to_current_directory() {
+        let current = std::env::current_dir().expect("current directory");
+        let workspace = template_workspace_folder(&[]).expect("workspace folder");
+
+        assert_eq!(workspace, current);
     }
 
     #[test]
@@ -626,6 +671,26 @@ mod tests {
     }
 
     #[test]
+    fn generic_published_template_omits_features_for_non_array_extra_features() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-template-test");
+        let payload = apply_generic_published_template(&json!({}), &workspace, json!({}))
+            .expect("apply generic template");
+
+        assert_eq!(
+            payload["files"],
+            json!(["./.devcontainer/devcontainer.json"])
+        );
+        let config: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(workspace.join(".devcontainer").join("devcontainer.json"))
+                .expect("config"),
+        )
+        .expect("config json");
+        assert_eq!(config["name"], "Published Template");
+        assert!(config.get("features").is_none());
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
     fn docker_from_docker_catalog_template_merges_args_and_extra_features() {
         let workspace = crate::test_support::unique_temp_dir("devcontainer-template-test");
         let payload = apply_catalog_template_with_options(
@@ -669,6 +734,33 @@ mod tests {
             true
         );
         assert!(config["features"].get("missing-id").is_none());
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn docker_from_docker_catalog_template_ignores_non_array_extra_features() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-template-test");
+        apply_catalog_template_with_options(
+            "ghcr.io/devcontainers/templates/docker-from-docker",
+            &workspace,
+            &["--features".to_string(), "{}".to_string()],
+            &[],
+            None,
+        )
+        .expect("apply docker-from-docker template");
+
+        let config: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(workspace.join(".devcontainer").join("devcontainer.json"))
+                .expect("config"),
+        )
+        .expect("config json");
+        assert_eq!(
+            config["features"]
+                .as_object()
+                .expect("features object")
+                .len(),
+            2
+        );
         let _ = fs::remove_dir_all(workspace);
     }
 
@@ -741,6 +833,26 @@ mod tests {
         let _ = fs::remove_dir_all(source);
         let _ = fs::remove_dir_all(workspace);
         let _ = fs::remove_dir_all(tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn embedded_template_copy_reports_nested_copy_errors() {
+        let source = crate::test_support::unique_temp_dir("devcontainer-template-source");
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-template-workspace");
+        fs::create_dir_all(source.join("nested")).expect("nested dir");
+        std::os::unix::fs::symlink(
+            source.join("missing-target"),
+            source.join("nested").join("broken-link"),
+        )
+        .expect("broken symlink");
+
+        let error =
+            copy_embedded_template_contents(&source, &workspace, &Map::new(), &[]).unwrap_err();
+
+        assert!(!error.is_empty());
+        let _ = fs::remove_dir_all(source);
+        let _ = fs::remove_dir_all(workspace);
     }
 
     #[test]
