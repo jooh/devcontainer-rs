@@ -4,16 +4,27 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::thread;
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::support::unique_temp_dir;
-use crate::commands::configuration::upgrade::{
-    build_outdated_payload, feature_id_without_version, lockfile_path, run_upgrade_lockfile,
+use crate::commands::configuration::inspect::merged_configuration_payload;
+use crate::commands::configuration::read::{
+    build_read_configuration_payload, should_use_native_read_configuration,
 };
-use crate::commands::configuration::{ensure_native_lockfile, resolve_feature_support};
+use crate::commands::configuration::upgrade::{
+    build_outdated_payload, feature_id_without_version, lockfile_for_resolution, lockfile_path,
+    parse_feature_reference, render_outdated_text, run_upgrade_lockfile,
+};
+use crate::commands::configuration::{
+    ensure_native_lockfile, feature_installation_name, materialize_feature_installation,
+    resolve_feature_support, resolve_feature_support_without_lockfile, run_outdated, run_upgrade,
+    validate_lockfile_options, validate_native_lockfile, warn_deprecated_lockfile_flags,
+};
+use crate::output::{render_log, CommandLogLevel, LogFormat};
 
 #[test]
 fn outdated_payload_reports_remote_feature_versions() {
@@ -74,6 +85,7 @@ fn upgrade_lockfile_uses_root_relative_lockfile_for_dotfile_configs() {
 
 #[test]
 fn upgrade_lockfile_records_direct_tarball_archive_digest() {
+    let _env_guard = crate::test_support::process_env_lock();
     let root = unique_temp_dir();
     fs::create_dir_all(&root).expect("failed to create root");
     let tarball_bytes = b"feature archive bytes used for lockfile integrity";
@@ -102,6 +114,7 @@ fn upgrade_lockfile_records_direct_tarball_archive_digest() {
 
 #[test]
 fn ensure_native_lockfile_rejects_changed_direct_tarball_archive() {
+    let _env_guard = crate::test_support::process_env_lock();
     let root = unique_temp_dir();
     fs::create_dir_all(&root).expect("failed to create root");
     let old_tarball_bytes = b"original direct tarball archive bytes";
@@ -151,6 +164,28 @@ fn feature_id_without_version_handles_tags_and_digests() {
         ),
         "ghcr.io/devcontainers/features/git-lfs"
     );
+    assert_eq!(
+        feature_id_without_version("ghcr.io/devcontainers/features/git@1"),
+        "ghcr.io/devcontainers/features/git"
+    );
+    assert_eq!(
+        feature_id_without_version("ghcr.io/devcontainers/features/git:1@beta"),
+        "ghcr.io/devcontainers/features/git:1"
+    );
+}
+
+#[test]
+fn parse_feature_reference_handles_plain_and_digest_features() {
+    let plain = parse_feature_reference("ghcr.io/devcontainers/features/git").expect("plain");
+    assert_eq!(plain.base, "ghcr.io/devcontainers/features/git");
+    assert!(plain.tag.is_none());
+    assert!(plain.digest.is_none());
+
+    let digest = parse_feature_reference("ghcr.io/devcontainers/features/git@sha256:abc123")
+        .expect("digest");
+    assert_eq!(digest.base, "ghcr.io/devcontainers/features/git");
+    assert!(digest.tag.is_none());
+    assert_eq!(digest.digest.as_deref(), Some("sha256:abc123"));
 }
 
 #[test]
@@ -382,6 +417,38 @@ fn ensure_native_lockfile_reports_missing_frozen_lockfile() {
 }
 
 #[test]
+fn ensure_native_lockfile_reports_outdated_frozen_lockfile() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    let config_file = root.join(".devcontainer.json");
+    let configuration = json!({
+        "image": "debian:bookworm",
+        "features": {
+            "ghcr.io/devcontainers/features/github-cli": {}
+        }
+    });
+    fs::write(
+        root.join(".devcontainer-lock.json"),
+        "{\n  \"features\": {}\n}\n",
+    )
+    .expect("lockfile");
+
+    let error = ensure_native_lockfile_for_config(
+        &[
+            "--workspace-folder".to_string(),
+            root.display().to_string(),
+            "--frozen-lockfile".to_string(),
+        ],
+        &config_file,
+        &configuration,
+    )
+    .expect_err("outdated frozen lockfile error");
+
+    assert!(error.contains("out of date"), "{error}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn ensure_native_lockfile_accepts_semantically_identical_existing_json() {
     let root = unique_temp_dir();
     fs::create_dir_all(&root).expect("failed to create root");
@@ -418,6 +485,534 @@ fn ensure_native_lockfile_accepts_semantically_identical_existing_json() {
     )
     .expect("lockfile match");
 
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn validate_native_lockfile_accepts_matching_frozen_lockfile() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    let config_file = root.join(".devcontainer.json");
+    let configuration = json!({
+        "image": "debian:bookworm",
+        "features": {
+            "ghcr.io/devcontainers/features/github-cli": {}
+        }
+    });
+    ensure_native_lockfile_for_config(
+        &["--workspace-folder".to_string(), root.display().to_string()],
+        &config_file,
+        &configuration,
+    )
+    .expect("lockfile seed");
+    let frozen_args = vec![
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--frozen-lockfile".to_string(),
+    ];
+    let resolved_features =
+        resolve_feature_support(&frozen_args, &root, &config_file, &configuration)
+            .expect("feature support")
+            .expect("resolved features");
+
+    validate_native_lockfile(
+        &frozen_args,
+        &config_file,
+        &configuration,
+        &resolved_features,
+    )
+    .expect("matching frozen lockfile");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn validate_native_lockfile_reports_disabled_missing_and_outdated_states() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    let config_file = root.join(".devcontainer.json");
+    let configuration = json!({
+        "image": "debian:bookworm",
+        "features": {
+            "ghcr.io/devcontainers/features/github-cli": {}
+        }
+    });
+    let resolved_features = resolve_feature_support(&[], &root, &config_file, &configuration)
+        .expect("feature support")
+        .expect("resolved features");
+
+    validate_native_lockfile(
+        &["--no-lockfile".to_string()],
+        &config_file,
+        &configuration,
+        &resolved_features,
+    )
+    .expect("disabled validation");
+    validate_native_lockfile(&[], &config_file, &configuration, &resolved_features)
+        .expect("unfrozen validation");
+
+    let frozen_args = vec!["--frozen-lockfile".to_string()];
+    let missing_error = validate_native_lockfile(
+        &frozen_args,
+        &config_file,
+        &configuration,
+        &resolved_features,
+    )
+    .expect_err("missing lockfile");
+    assert!(missing_error.contains("does not exist"), "{missing_error}");
+
+    fs::write(
+        root.join(".devcontainer-lock.json"),
+        "{\n  \"features\": {}\n}\n",
+    )
+    .expect("stale lockfile");
+    let outdated_error = validate_native_lockfile(
+        &frozen_args,
+        &config_file,
+        &configuration,
+        &resolved_features,
+    )
+    .expect_err("outdated lockfile");
+    assert!(outdated_error.contains("out of date"), "{outdated_error}");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn deprecated_experimental_frozen_lockfile_flag_is_still_reported() {
+    warn_deprecated_lockfile_flags(&["--experimental-frozen-lockfile".to_string()]);
+    warn_deprecated_lockfile_flags(&["--experimental-lockfile".to_string()]);
+}
+
+#[test]
+fn validate_lockfile_options_rejects_mutually_exclusive_flags() {
+    let error =
+        validate_lockfile_options(&["--no-lockfile".to_string(), "--frozen-lockfile".to_string()])
+            .expect_err("mutually exclusive lockfile flags");
+
+    assert!(error.contains("mutually exclusive"), "{error}");
+}
+
+#[test]
+fn lockfile_for_resolution_reports_non_file_lockfile_errors() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    fs::create_dir_all(&config_dir).expect("failed to create config dir");
+    let config_file = config_dir.join("devcontainer.json");
+    fs::write(&config_file, "{\n  \"image\": \"debian:bookworm\"\n}\n").expect("config");
+    fs::create_dir(config_dir.join("devcontainer-lock.json")).expect("lockfile dir");
+
+    let error = lockfile_for_resolution(&[], &config_file).expect_err("directory lockfile error");
+
+    assert!(error.to_ascii_lowercase().contains("directory"), "{error}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn outdated_command_logs_absent_lockfile_at_debug_level() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    fs::write(
+        root.join(".devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/devcontainers/features/git:1.0\": {}\n  }\n}\n",
+    )
+    .expect("failed to write config");
+
+    let status = run_outdated(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--log-level".to_string(),
+        "debug".to_string(),
+    ]);
+
+    assert_eq!(status, ExitCode::SUCCESS);
+    assert!(!root.join(".devcontainer-lock.json").exists());
+
+    let payload =
+        build_outdated_payload(&["--workspace-folder".to_string(), root.display().to_string()])
+            .expect("outdated payload");
+    assert_eq!(
+        payload["features"]["ghcr.io/devcontainers/features/git:1.0"]["wanted"],
+        "1.0.5"
+    );
+
+    let log = render_log(
+        LogFormat::Text,
+        CommandLogLevel::Debug,
+        &format!(
+            "No lockfile found at {}",
+            root.join(".devcontainer-lock.json").display()
+        ),
+    );
+    assert!(log.contains("No lockfile found"), "{log}");
+    assert!(log.contains(".devcontainer-lock.json"), "{log}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn outdated_command_supports_text_output_json_logs_and_terminal_dimensions() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    fs::write(
+        root.join(".devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/devcontainers/features/git:1.0\": {}\n  }\n}\n",
+    )
+    .expect("failed to write config");
+    fs::write(
+        root.join(".devcontainer-lock.json"),
+        "{\n  \"features\": {\n    \"ghcr.io/devcontainers/features/git:1.0\": {\n      \"version\": \"1.0.4\",\n      \"resolved\": \"ghcr.io/devcontainers/features/git@sha256:0bb490abcc0a3fb23937d29e2c18a225b51c5584edc0d9eb4131569a980f60b6\",\n      \"integrity\": \"sha256:0bb490abcc0a3fb23937d29e2c18a225b51c5584edc0d9eb4131569a980f60b6\"\n    }\n  }\n}\n",
+    )
+    .expect("failed to write lockfile");
+
+    let status = run_outdated(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--output-format".to_string(),
+        "text".to_string(),
+        "--log-format".to_string(),
+        "json".to_string(),
+        "--log-level".to_string(),
+        "trace".to_string(),
+        "--terminal-columns".to_string(),
+        "120".to_string(),
+        "--terminal-rows".to_string(),
+        "40".to_string(),
+    ]);
+
+    assert_eq!(status, ExitCode::SUCCESS);
+
+    let payload =
+        build_outdated_payload(&["--workspace-folder".to_string(), root.display().to_string()])
+            .expect("outdated payload");
+    let text = render_outdated_text(&payload);
+    assert!(text.contains("Feature"), "{text}");
+    assert!(
+        text.contains("ghcr.io/devcontainers/features/git"),
+        "{text}"
+    );
+    assert!(text.contains("1.0.4"), "{text}");
+    assert!(text.contains("1.0.5"), "{text}");
+    assert!(text.contains("1.2.0"), "{text}");
+
+    let json_output: serde_json::Value =
+        serde_json::from_str(&payload.to_string()).expect("json output");
+    assert_eq!(
+        json_output["features"]["ghcr.io/devcontainers/features/git:1.0"]["latest"],
+        "1.2.0"
+    );
+
+    let lockfile_log: serde_json::Value = serde_json::from_str(&render_log(
+        LogFormat::Json,
+        CommandLogLevel::Debug,
+        &format!(
+            "Loaded lockfile from {}",
+            root.join(".devcontainer-lock.json").display()
+        ),
+    ))
+    .expect("json lockfile log");
+    assert_eq!(lockfile_log["type"], "text");
+    assert_eq!(lockfile_log["level"], 2);
+    assert!(lockfile_log["text"]
+        .as_str()
+        .is_some_and(|text| text.contains("Loaded lockfile from")));
+
+    let terminal_log: serde_json::Value = serde_json::from_str(&render_log(
+        LogFormat::Json,
+        CommandLogLevel::Trace,
+        "Using terminal dimensions: columns=120 rows=40",
+    ))
+    .expect("json terminal log");
+    assert_eq!(terminal_log["level"], 1);
+    assert_eq!(
+        terminal_log["text"],
+        "Using terminal dimensions: columns=120 rows=40"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn upgrade_and_outdated_commands_reject_invalid_option_shapes() {
+    assert_eq!(
+        run_outdated(&["--definitely-unsupported".to_string()]),
+        ExitCode::from(1)
+    );
+    assert_eq!(
+        run_upgrade(&["--definitely-unsupported".to_string()]),
+        ExitCode::from(1)
+    );
+    assert_eq!(
+        run_upgrade(&[
+            "--feature".to_string(),
+            "ghcr.io/devcontainers/features/git".to_string(),
+        ]),
+        ExitCode::from(1)
+    );
+    assert_eq!(
+        run_upgrade(&[
+            "--feature".to_string(),
+            "ghcr.io/devcontainers/features/git".to_string(),
+            "--target-version".to_string(),
+            "latest".to_string(),
+        ]),
+        ExitCode::from(1)
+    );
+}
+
+#[test]
+fn upgrade_lockfile_returns_empty_lockfile_without_configured_features() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    fs::write(
+        root.join(".devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\"\n}\n",
+    )
+    .expect("failed to write config");
+
+    let lockfile =
+        run_upgrade_lockfile(&["--workspace-folder".to_string(), root.display().to_string()])
+            .expect("lockfile payload");
+
+    assert!(lockfile.features.is_empty());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn upgrade_command_writes_lockfile_when_not_dry_run() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    fs::write(
+        root.join(".devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\"\n}\n",
+    )
+    .expect("failed to write config");
+
+    let status = run_upgrade(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--log-level".to_string(),
+        "debug".to_string(),
+    ]);
+
+    assert_eq!(status, ExitCode::SUCCESS);
+    let lockfile = fs::read_to_string(root.join(".devcontainer-lock.json")).expect("lockfile");
+    assert!(lockfile.contains("\"features\": {}"), "{lockfile}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn upgrade_lockfile_excludes_additional_only_features() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    fs::write(
+        root.join(".devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/devcontainers/features/github-cli\": {}\n  }\n}\n",
+    )
+    .expect("failed to write config");
+
+    let lockfile = run_upgrade_lockfile(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--additional-features".to_string(),
+        "{\"ghcr.io/devcontainers/features/git\":{}}".to_string(),
+    ])
+    .expect("lockfile payload");
+
+    assert!(lockfile
+        .features
+        .contains_key("ghcr.io/devcontainers/features/github-cli"));
+    assert!(!lockfile
+        .features
+        .contains_key("ghcr.io/devcontainers/features/git"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn upgrade_missing_feature_target_leaves_config_unchanged() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    let config_file = root.join(".devcontainer.json");
+    let config = "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/devcontainers/features/github-cli\": {}\n  }\n}\n";
+    fs::write(&config_file, config).expect("failed to write config");
+
+    let status = run_upgrade(&[
+        "--dry-run".to_string(),
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--feature".to_string(),
+        "ghcr.io/devcontainers/features/git".to_string(),
+        "--target-version".to_string(),
+        "1".to_string(),
+        "--log-level".to_string(),
+        "trace".to_string(),
+    ]);
+
+    assert_eq!(status, ExitCode::SUCCESS);
+    assert_eq!(fs::read_to_string(config_file).expect("config"), config);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn upgrade_feature_target_with_escaped_key_is_a_noop_update() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    let config_file = root.join(".devcontainer.json");
+    let config = "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/devcontainers/features/git\\u003a1\": {}\n  }\n}\n";
+    fs::write(&config_file, config).expect("failed to write config");
+
+    let status = run_upgrade(&[
+        "--dry-run".to_string(),
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--feature".to_string(),
+        "ghcr.io/devcontainers/features/git".to_string(),
+        "--target-version".to_string(),
+        "2".to_string(),
+        "--log-level".to_string(),
+        "trace".to_string(),
+    ]);
+
+    assert_eq!(status, ExitCode::SUCCESS);
+    assert_eq!(fs::read_to_string(config_file).expect("config"), config);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn upgrade_feature_update_reports_config_write_errors() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    let config_file = root.join(".devcontainer.json");
+    fs::write(
+        &config_file,
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"ghcr.io/devcontainers/features/git:1\": {}\n  }\n}\n",
+    )
+    .expect("failed to write config");
+    let mut permissions = fs::metadata(&config_file)
+        .expect("config metadata")
+        .permissions();
+    permissions.set_mode(0o444);
+    fs::set_permissions(&config_file, permissions).expect("readonly config");
+
+    let status = run_upgrade(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+        "--feature".to_string(),
+        "ghcr.io/devcontainers/features/git".to_string(),
+        "--target-version".to_string(),
+        "2".to_string(),
+    ]);
+
+    let mut permissions = fs::metadata(&config_file)
+        .expect("config metadata")
+        .permissions();
+    permissions.set_mode(0o644);
+    fs::set_permissions(&config_file, permissions).expect("writable config");
+    assert_eq!(status, ExitCode::from(1));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn render_outdated_text_handles_payload_without_features() {
+    assert_eq!(
+        render_outdated_text(&json!({})),
+        "Feature  Current  Wanted  Latest"
+    );
+}
+
+#[test]
+fn render_outdated_text_formats_feature_rows_and_missing_cells() {
+    let text = render_outdated_text(&json!({
+        "features": {
+            "ghcr.io/devcontainers/features/git:1.0": {
+                "current": "1.0.4",
+                "wanted": null
+            }
+        }
+    }));
+
+    assert!(
+        text.contains("ghcr.io/devcontainers/features/git"),
+        "{text}"
+    );
+    assert!(text.contains("1.0.4"), "{text}");
+    assert!(text.contains("-"), "{text}");
+}
+
+#[test]
+fn read_configuration_native_support_rejects_positional_and_unknown_options() {
+    assert!(!should_use_native_read_configuration(&[
+        "positional".to_string()
+    ]));
+    assert!(!should_use_native_read_configuration(&[
+        "--workspace-folder".to_string(),
+        "/workspace".to_string(),
+        "--unsupported".to_string(),
+    ]));
+}
+
+#[test]
+fn read_configuration_payload_returns_load_errors_without_container_fallback() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+
+    let error = build_read_configuration_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+    ])
+    .expect_err("missing config should be reported");
+
+    assert!(
+        error.contains("Unable to locate a dev container config"),
+        "{error}"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn merged_configuration_payload_accepts_non_object_configuration() {
+    assert_eq!(
+        merged_configuration_payload(&json!("not an object"), None, &[]),
+        json!({})
+    );
+}
+
+#[test]
+fn configuration_facade_materializes_local_feature_installations() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    let feature_dir = config_dir.join("features").join("demo");
+    fs::create_dir_all(&feature_dir).expect("feature dir");
+    fs::write(
+        feature_dir.join("devcontainer-feature.json"),
+        "{\n  \"id\": \"demo\",\n  \"version\": \"1.0.0\",\n  \"name\": \"Demo\"\n}\n",
+    )
+    .expect("feature manifest");
+    let config_file = config_dir.join("devcontainer.json");
+    fs::write(
+        &config_file,
+        "{\n  \"image\": \"debian:bookworm\",\n  \"features\": {\n    \"./features/demo\": {}\n  }\n}\n",
+    )
+    .expect("config");
+    let configuration = json!({
+        "image": "debian:bookworm",
+        "features": {
+            "./features/demo": {}
+        }
+    });
+
+    let resolved =
+        resolve_feature_support_without_lockfile(&[], &root, &config_file, &configuration)
+            .expect("resolve")
+            .expect("resolved features");
+    let installation = resolved.installations.first().expect("installation");
+    assert_eq!(feature_installation_name(installation), "demo");
+
+    let destination = root.join("materialized");
+    materialize_feature_installation(installation, &destination).expect("materialize");
+    assert!(destination.join("devcontainer-feature.json").is_file());
+    assert!(destination.join("install.sh").is_file());
     let _ = fs::remove_dir_all(root);
 }
 
