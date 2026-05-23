@@ -23,6 +23,7 @@ pub struct ProcessRequest {
     pub log_level: ProcessLogLevel,
 }
 
+#[derive(Debug)]
 pub struct ProcessResult {
     pub status_code: i32,
     pub stdout: String,

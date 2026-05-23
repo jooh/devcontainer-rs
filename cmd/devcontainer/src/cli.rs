@@ -66,9 +66,10 @@ struct CommandOption {
 
 impl CommandOption {
     fn takes_value(&self) -> bool {
-        self.description
-            .as_deref()
-            .is_some_and(|description| !description.contains("[boolean]"))
+        match self.description.as_deref() {
+            Some(description) => !description.contains("[boolean]"),
+            None => false,
+        }
     }
 }
 
@@ -93,14 +94,18 @@ fn command_help(path: &str) -> Option<&'static CommandHelp> {
 
 fn child_command(parent_path: &str, child_token: &str) -> Option<&'static CommandHelp> {
     let expected_length = parent_path.split(' ').count() + 1;
-    cli_metadata().commands.iter().find(|command| {
-        command.path.starts_with(parent_path)
-            && command.token_path.len() == expected_length
-            && command
-                .token_path
-                .last()
-                .is_some_and(|token| token == child_token)
-    })
+    for command in &cli_metadata().commands {
+        if !command.path.starts_with(parent_path) {
+            continue;
+        }
+        if command.token_path.len() != expected_length {
+            continue;
+        }
+        if command.token_path.last().map(String::as_str) == Some(child_token) {
+            return Some(command);
+        }
+    }
+    None
 }
 
 pub fn print_help() {
@@ -138,25 +143,33 @@ fn rendered_lines(
     unsupported_options: &[String],
     unsupported_positionals: &[String],
 ) -> String {
-    lines
-        .iter()
-        .map(|line| {
-            if line
-                .option_names
-                .iter()
-                .any(|name| unsupported_options.contains(name))
-                || line
-                    .positional_names
-                    .iter()
-                    .any(|name| unsupported_positionals.contains(name))
-            {
-                format!("{}{}", line.text, UNSUPPORTED_MARKER)
-            } else {
-                line.text.clone()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut rendered = Vec::with_capacity(lines.len());
+    for line in lines {
+        if line_has_unsupported_entry(line, unsupported_options, unsupported_positionals) {
+            rendered.push(format!("{}{}", line.text, UNSUPPORTED_MARKER));
+        } else {
+            rendered.push(line.text.clone());
+        }
+    }
+    rendered.join("\n")
+}
+
+fn line_has_unsupported_entry(
+    line: &HelpLine,
+    unsupported_options: &[String],
+    unsupported_positionals: &[String],
+) -> bool {
+    for name in &line.option_names {
+        if unsupported_options.contains(name) {
+            return true;
+        }
+    }
+    for name in &line.positional_names {
+        if unsupported_positionals.contains(name) {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn parse_log_format(args: &[String]) -> (&str, usize) {
@@ -222,20 +235,22 @@ pub(crate) fn normalize_option_aliases(command_path: &str, args: &[String]) -> V
             normalized.extend_from_slice(&args[index..]);
             break;
         }
-        let flag = arg.split_once('=').map_or(arg.as_str(), |(name, _)| name);
-        let short_alias = arg
-            .strip_prefix('-')
-            .filter(|value| !value.starts_with('-'));
-        let option = command.options.iter().find(|option| {
-            flag.strip_prefix("--")
-                .is_some_and(|name| name == option.name)
-                || short_alias
-                    .is_some_and(|alias| option.aliases.iter().any(|candidate| candidate == alias))
-        });
-        if let Some(option) = option.filter(|_| !arg.contains('=')) {
-            if short_alias
-                .is_some_and(|alias| option.aliases.iter().any(|candidate| candidate == alias))
-            {
+        let flag = match arg.split_once('=') {
+            Some((name, _)) => name,
+            None => arg.as_str(),
+        };
+        let short_alias = match arg.strip_prefix('-') {
+            Some(value) if !value.starts_with('-') => Some(value),
+            _ => None,
+        };
+        let option = find_command_option(command, flag, short_alias);
+        if let Some(option) = option {
+            if arg.contains('=') {
+                normalized.push(arg.clone());
+            } else if match short_alias {
+                Some(alias) => option_has_alias(option, alias),
+                None => false,
+            } {
                 normalized.push(format!("--{}", option.name));
             } else {
                 normalized.push(arg.clone());
@@ -243,16 +258,51 @@ pub(crate) fn normalize_option_aliases(command_path: &str, args: &[String]) -> V
         } else {
             normalized.push(arg.clone());
         }
-        if option.is_some_and(CommandOption::takes_value)
-            && !arg.contains('=')
-            && args.get(index + 1).is_some_and(|value| value != "--")
-        {
+        let next_arg_is_value = match args.get(index + 1) {
+            Some(value) => value != "--",
+            None => false,
+        };
+        let option_takes_value = match option {
+            Some(option) => option.takes_value(),
+            None => false,
+        };
+        if option_takes_value && !arg.contains('=') && next_arg_is_value {
             index += 1;
             normalized.push(args[index].clone());
         }
         index += 1;
     }
     normalized
+}
+
+fn find_command_option<'a>(
+    command: &'a CommandHelp,
+    flag: &str,
+    short_alias: Option<&str>,
+) -> Option<&'a CommandOption> {
+    command
+        .options
+        .iter()
+        .find(|option| option_matches_arg(option, flag, short_alias))
+}
+
+fn option_matches_arg(option: &CommandOption, flag: &str, short_alias: Option<&str>) -> bool {
+    if flag.strip_prefix("--") == Some(option.name.as_str()) {
+        return true;
+    }
+    match short_alias {
+        Some(alias) => option_has_alias(option, alias),
+        None => false,
+    }
+}
+
+fn option_has_alias(option: &CommandOption, alias: &str) -> bool {
+    for candidate in &option.aliases {
+        if candidate == alias {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn unsupported_argument_error(command_path: &str, args: &[String]) -> Option<String> {
@@ -286,14 +336,16 @@ fn unsupported_argument_error_for(
             break;
         }
 
-        let flag = arg.split_once('=').map_or(arg.as_str(), |(name, _)| name);
-        if let Some((matched_flag, _)) = unsupported_flags
-            .iter()
-            .find(|(candidate, _)| candidate == flag)
-        {
-            return Some(format!(
-                "Option {matched_flag} {UNSUPPORTED_ARGUMENT_MESSAGE}: devcontainer {command_path}"
-            ));
+        let flag = match arg.split_once('=') {
+            Some((name, _)) => name,
+            None => arg.as_str(),
+        };
+        for (candidate, _) in &unsupported_flags {
+            if candidate == flag {
+                return Some(format!(
+                    "Option {candidate} {UNSUPPORTED_ARGUMENT_MESSAGE}: devcontainer {command_path}"
+                ));
+            }
         }
     }
 
@@ -360,6 +412,27 @@ mod tests {
                 "{}".to_string(),
                 "--features".to_string(),
                 "[]".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn preserves_long_options_with_inline_values() {
+        let normalized = normalize_option_aliases(
+            "templates apply",
+            &[
+                "--workspace-folder=/tmp/workspace".to_string(),
+                "--template-id=ghcr.io/devcontainers/templates/docker-from-docker:latest"
+                    .to_string(),
+            ],
+        );
+
+        assert_eq!(
+            normalized,
+            vec![
+                "--workspace-folder=/tmp/workspace".to_string(),
+                "--template-id=ghcr.io/devcontainers/templates/docker-from-docker:latest"
+                    .to_string(),
             ]
         );
     }
@@ -511,6 +584,11 @@ mod tests {
         assert!(error.contains("Option -l"), "{error}");
         assert!(error.contains("devcontainer sample"), "{error}");
 
+        let error =
+            unsupported_argument_error_for(&command, "sample", &["--legacy=value".to_string()])
+                .expect("unsupported option with value");
+        assert!(error.contains("Option --legacy"), "{error}");
+
         let after_separator = unsupported_argument_error_for(
             &command,
             "sample",
@@ -545,18 +623,25 @@ mod tests {
     #[test]
     fn render_lines_marks_unsupported_entries() {
         let rendered = rendered_lines(
-            &[HelpLine {
-                text: "  --legacy  Old option".to_string(),
-                option_names: vec!["legacy".to_string()],
-                positional_names: Vec::new(),
-            }],
+            &[
+                HelpLine {
+                    text: "  --legacy  Old option".to_string(),
+                    option_names: vec!["legacy".to_string()],
+                    positional_names: Vec::new(),
+                },
+                HelpLine {
+                    text: "  target  Old positional".to_string(),
+                    option_names: Vec::new(),
+                    positional_names: vec!["target".to_string()],
+                },
+            ],
             &["legacy".to_string()],
-            &[],
+            &["target".to_string()],
         );
 
         assert_eq!(
             rendered,
-            "  --legacy  Old option  [not yet implemented in native Rust CLI]"
+            "  --legacy  Old option  [not yet implemented in native Rust CLI]\n  target  Old positional  [not yet implemented in native Rust CLI]"
         );
     }
 

@@ -735,8 +735,7 @@
 					"sourceReferenced": true,
 					"evidence": [
 						"cmd/devcontainer/src/runtime/build.rs",
-						"cmd/devcontainer/src/runtime/compose/args.rs",
-						"cmd/devcontainer/src/runtime/compose/mod.rs"
+						"cmd/devcontainer/src/runtime/compose/args.rs"
 					]
 				},
 				{

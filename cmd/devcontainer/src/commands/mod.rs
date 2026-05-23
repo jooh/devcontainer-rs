@@ -74,12 +74,11 @@ mod tests {
     }
 
     fn assert_complete_exit(command: &str, args: &[String], expected: ExitCode) {
-        match dispatch(command, args) {
-            DispatchResult::Complete(code) => assert_eq!(code, expected, "{command} exit code"),
-            DispatchResult::UnsupportedNativePath => {
-                panic!("{command} should dispatch through native Rust handling")
-            }
-        }
+        assert_eq!(
+            complete_exit_code(dispatch(command, args)),
+            Some(expected),
+            "{command} exit code"
+        );
     }
 
     #[test]

@@ -14,9 +14,14 @@ use serde_json::Value;
 use crate::commands::common;
 
 pub(crate) fn run_features(args: &[String]) -> ExitCode {
-    let subcommand = args.first().map(String::as_str).unwrap_or("");
+    let (subcommand, subcommand_args) = match args.split_first() {
+        Some((subcommand, subcommand_args)) => (subcommand.as_str(), subcommand_args),
+        None => ("", &[][..]),
+    };
     let result = match subcommand {
-        "resolve-dependencies" => features::build_features_resolve_dependencies_payload(&args[1..]),
+        "resolve-dependencies" => {
+            features::build_features_resolve_dependencies_payload(subcommand_args)
+        }
         "info" => {
             if args.len() < 3 {
                 Err("features info requires manifest <feature>".to_string())
@@ -40,23 +45,23 @@ pub(crate) fn run_features(args: &[String]) -> ExitCode {
                 }
             }
         }
-        "test" => return feature_tests::run_features_test(&args[1..]),
+        "test" => return feature_tests::run_features_test(subcommand_args),
         "package" => {
             if args.len() < 2 {
                 Err("features package requires <target>".to_string())
             } else {
-                crate::commands::common::package_collection_target(
+                match publish::package_collection_target(
                     std::path::Path::new(&args[1]),
                     "devcontainer-feature.json",
                     "feature",
-                )
-                .map(|archive| {
-                    serde_json::json!({
+                ) {
+                    Ok(archive) => Ok(serde_json::json!({
                         "outcome": "success",
                         "command": "features package",
                         "archive": archive,
-                    })
-                })
+                    })),
+                    Err(error) => Err(error),
+                }
             }
         }
         "publish" => {
@@ -77,25 +82,27 @@ pub(crate) fn run_features(args: &[String]) -> ExitCode {
                 Err("features generate-docs requires <target>".to_string())
             } else {
                 let options = common::ManifestDocOptions {
-                    registry: common::parse_option_value(&args[2..], "--registry")
-                        .or_else(|| Some("ghcr.io".to_string())),
+                    registry: Some(
+                        common::parse_option_value(&args[2..], "--registry")
+                            .unwrap_or("ghcr.io".to_string()),
+                    ),
                     namespace: common::parse_option_value(&args[2..], "--namespace"),
                     github_owner: common::parse_option_value(&args[2..], "--github-owner"),
                     github_repo: common::parse_option_value(&args[2..], "--github-repo"),
                 };
-                crate::commands::common::generate_manifest_docs(
+                match crate::commands::common::generate_manifest_docs(
                     std::path::Path::new(&args[1]),
                     "devcontainer-feature.json",
                     "Feature",
                     &options,
-                )
-                .map(|readme| {
-                    serde_json::json!({
+                ) {
+                    Ok(readme) => Ok(serde_json::json!({
                         "outcome": "success",
                         "command": "features generate-docs",
                         "readme": readme,
-                    })
-                })
+                    })),
+                    Err(error) => Err(error),
+                }
             }
         }
         "" => Err("features requires a subcommand".to_string()),
@@ -106,7 +113,7 @@ pub(crate) fn run_features(args: &[String]) -> ExitCode {
 }
 
 fn render_collection_info_text(payload: &Value) -> String {
-    serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string())
+    serde_json::to_string_pretty(payload).expect("serializing JSON value cannot fail")
 }
 
 pub(crate) fn run_templates(args: &[String]) -> ExitCode {
@@ -144,19 +151,19 @@ pub(crate) fn run_templates(args: &[String]) -> ExitCode {
                     github_repo: common::parse_option_value(&args[2..], "--github-repo"),
                     ..Default::default()
                 };
-                crate::commands::common::generate_manifest_docs(
+                match crate::commands::common::generate_manifest_docs(
                     std::path::Path::new(&args[1]),
                     "devcontainer-template.json",
                     "Template",
                     &options,
-                )
-                .map(|readme| {
-                    serde_json::json!({
+                ) {
+                    Ok(readme) => Ok(serde_json::json!({
                         "outcome": "success",
                         "command": "templates generate-docs",
                         "readme": readme,
-                    })
-                })
+                    })),
+                    Err(error) => Err(error),
+                }
             }
         }
         "" => Err("templates requires a subcommand".to_string()),
@@ -181,3 +188,32 @@ fn print_result(result: Result<Value, String>) -> ExitCode {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod zero_line_tests {
+    use std::fs;
+    use std::process::ExitCode;
+
+    #[test]
+    fn zero_hit_features_resolve_dependencies_entrypoint_passes_subcommand_args() {
+        let root = crate::test_support::unique_temp_dir("devcontainer-collections-entrypoint");
+        let config_dir = root.join(".devcontainer");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        fs::write(
+            config_dir.join("devcontainer.json"),
+            "{\n  \"image\": \"debian:bookworm\"\n}\n",
+        )
+        .expect("config");
+
+        assert_eq!(
+            super::run_features(&[
+                "resolve-dependencies".to_string(),
+                "--workspace-folder".to_string(),
+                root.display().to_string(),
+            ]),
+            ExitCode::SUCCESS
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+}

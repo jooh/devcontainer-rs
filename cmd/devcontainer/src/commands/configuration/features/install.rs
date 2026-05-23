@@ -25,19 +25,16 @@ pub(crate) fn materialize_feature_installation(
             ensure_feature_install_script(destination)
         }
         FeatureInstallationSource::DirectTarball(uri) => {
-            let manifest = direct_tarball_feature_manifest(uri)
-                .ok_or_else(|| format!("Unknown direct tarball feature: {uri}"))?;
+            let Some(manifest) = direct_tarball_feature_manifest(uri) else {
+                return Err(format!("Unknown direct tarball feature: {uri}"));
+            };
             materialize_manifest_and_script(&manifest, "#!/bin/sh\nset -eu\n", destination)
         }
         FeatureInstallationSource::GithubRepo(feature_id) => {
-            let manifest = published_feature_manifest(feature_id).unwrap_or_else(|| {
-                serde_json::json!({
-                    "id": collection_slug(feature_id).unwrap_or_else(|| "github-feature".to_string()),
-                    "name": collection_slug(feature_id).unwrap_or_else(|| "GitHub Feature".to_string()),
-                    "version": "latest",
-                    "options": {}
-                })
-            });
+            let manifest = match published_feature_manifest(feature_id) {
+                Some(manifest) => manifest,
+                None => github_feature_manifest(feature_id),
+            };
             materialize_manifest_and_script(&manifest, "#!/bin/sh\nset -eu\n", destination)
         }
     }
@@ -51,16 +48,16 @@ pub(crate) fn feature_installation_name(installation: &FeatureInstallation) -> S
                 .map(str::to_string),
             "feature",
         ),
-        FeatureInstallationSource::Published(artifact) => safe_feature_installation_name(
-            collection_slug(&artifact.resource).or_else(|| {
+        FeatureInstallationSource::Published(artifact) => collection_slug(&artifact.resource)
+            .and_then(|slug| safe_path_segment(&slug))
+            .or_else(|| {
                 artifact
                     .metadata
                     .get("id")
                     .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            }),
-            "published-feature",
-        ),
+                    .and_then(safe_path_segment)
+            })
+            .unwrap_or("published-feature".to_string()),
         FeatureInstallationSource::DirectTarball(uri) => {
             safe_feature_installation_name(collection_slug(uri), "tarball-feature")
         }
@@ -73,7 +70,19 @@ pub(crate) fn feature_installation_name(installation: &FeatureInstallation) -> S
 fn safe_feature_installation_name(candidate: Option<String>, fallback: &str) -> String {
     candidate
         .and_then(|value| safe_path_segment(&value))
-        .unwrap_or_else(|| fallback.to_string())
+        .unwrap_or(fallback.to_string())
+}
+
+fn github_feature_manifest(feature_id: &str) -> serde_json::Value {
+    let slug = collection_slug(feature_id);
+    let id = slug.clone().unwrap_or("github-feature".to_string());
+    let name = slug.unwrap_or("GitHub Feature".to_string());
+    serde_json::json!({
+        "id": id,
+        "name": name,
+        "version": "latest",
+        "options": {}
+    })
 }
 
 fn safe_path_segment(value: &str) -> Option<String> {
@@ -89,7 +98,11 @@ fn safe_path_segment(value: &str) -> Option<String> {
         }
     }
     let sanitized = sanitized.trim_matches('-').to_string();
-    (!sanitized.is_empty()).then_some(sanitized)
+    if sanitized.is_empty() {
+        None
+    } else {
+        Some(sanitized)
+    }
 }
 
 fn materialize_manifest_and_script(
@@ -121,7 +134,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use serde_json::Value;
+    use serde_json::{json, Value};
 
     use super::*;
     use crate::commands::configuration::features::types::{
@@ -152,6 +165,45 @@ mod tests {
         };
 
         assert_eq!(feature_installation_name(&installation), "common-utils");
+    }
+
+    #[test]
+    fn published_feature_installation_name_uses_metadata_id_when_resource_is_unsafe() {
+        let mut artifact =
+            oci::resolve_feature_artifact("ghcr.io/devcontainers/features/common-utils", None)
+                .expect("artifact");
+        artifact.resource = "!!!".to_string();
+        artifact.metadata = json!({
+            "id": "metadata id",
+            "version": "1.0.0"
+        });
+        let installation = FeatureInstallation {
+            source: FeatureInstallationSource::Published(Box::new(artifact)),
+            env: Vec::new(),
+        };
+
+        assert_eq!(feature_installation_name(&installation), "metadata-id");
+    }
+
+    #[test]
+    fn published_feature_materialization_writes_generated_manifest_and_script() {
+        let workspace = unique_test_dir("devcontainer-install-published");
+        let destination = workspace.join("published");
+        let artifact =
+            oci::resolve_feature_artifact("ghcr.io/devcontainers/features/git:1.0.4", None)
+                .expect("artifact");
+        let installation = FeatureInstallation {
+            source: FeatureInstallationSource::Published(Box::new(artifact)),
+            env: Vec::new(),
+        };
+
+        materialize_feature_installation(&installation, &destination).expect("materialized");
+
+        let manifest =
+            fs::read_to_string(destination.join("devcontainer-feature.json")).expect("manifest");
+        assert!(manifest.contains(r#""id": "git""#));
+        assert!(destination.join("install.sh").is_file());
+        let _ = fs::remove_dir_all(workspace);
     }
 
     #[test]
@@ -189,6 +241,7 @@ mod tests {
         let workspace = unique_test_dir("devcontainer-install-synthetic");
         let tarball_destination = workspace.join("tarball");
         let github_destination = workspace.join("github");
+        let generic_github_destination = workspace.join("generic-github");
         let tarball_uri = "https://github.com/codspace/features/releases/download/tarball02/devcontainer-feature-docker-in-docker.tgz";
         let tarball = FeatureInstallation {
             source: FeatureInstallationSource::DirectTarball(tarball_uri.to_string()),
@@ -200,11 +253,17 @@ mod tests {
             ),
             env: Vec::new(),
         };
+        let generic_github = FeatureInstallation {
+            source: FeatureInstallationSource::GithubRepo("owner/unknown-feature".to_string()),
+            env: Vec::new(),
+        };
 
         materialize_feature_installation(&tarball, &tarball_destination)
             .expect("tarball materialized");
         materialize_feature_installation(&github, &github_destination)
             .expect("github materialized");
+        materialize_feature_installation(&generic_github, &generic_github_destination)
+            .expect("generic github materialized");
 
         let tarball_manifest =
             fs::read_to_string(tarball_destination.join("devcontainer-feature.json"))
@@ -216,6 +275,11 @@ mod tests {
                 .expect("github manifest");
         assert!(github_manifest.contains(r#""id": "demo-feature""#));
         assert!(github_destination.join("install.sh").is_file());
+        let generic_github_manifest =
+            fs::read_to_string(generic_github_destination.join("devcontainer-feature.json"))
+                .expect("generic github manifest");
+        assert!(generic_github_manifest.contains(r#""id": "unknown-feature""#));
+        assert!(generic_github_destination.join("install.sh").is_file());
         let _ = fs::remove_dir_all(workspace);
     }
 

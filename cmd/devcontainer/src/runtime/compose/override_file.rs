@@ -60,18 +60,17 @@ pub(super) fn compose_metadata_override_file(
         .get("service")
         .and_then(Value::as_str)
         .ok_or_else(|| "Compose configuration must define service".to_string())?;
+    let omit_remote_env = common::runtime_options(args).omit_config_remote_env_from_metadata;
     let metadata = serialized_container_metadata(
         &resolved.configuration,
         remote_workspace_folder,
-        common::runtime_options(args).omit_config_remote_env_from_metadata,
-    )?;
+        omit_remote_env,
+    )
+    .expect("serializing serde_json::Value metadata should not fail");
     let mut labels =
         common::default_devcontainer_id_labels(&resolved.workspace_folder, &resolved.config_file);
     labels.push(format!("devcontainer.metadata={metadata}"));
     labels.extend(common::parse_option_values(args, "--id-label"));
-    if labels.is_empty() {
-        return Ok(None);
-    }
 
     let (version_prefix, service_definition) = compose_override_context(resolved, service_name);
     let mut content = version_prefix;

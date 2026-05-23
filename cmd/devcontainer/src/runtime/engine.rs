@@ -171,10 +171,13 @@ fn is_build_request(request_args: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::process_runner::ProcessLogLevel;
+    use std::io;
+
+    use crate::process_runner::{ProcessLogLevel, ProcessRequest, ProcessResult};
 
     use super::{
         compose_request, default_compose_subcommand_available, engine_request, is_build_request,
+        normalize_process_error, run_engine, run_engine_streaming, stderr_or_stdout,
     };
 
     #[test]
@@ -197,8 +200,25 @@ mod tests {
     }
 
     #[test]
+    fn stderr_or_stdout_falls_back_to_stdout_when_stderr_is_empty() {
+        let result = ProcessResult {
+            status_code: 1,
+            stdout: " useful stdout \n".to_string(),
+            stderr: " \n".to_string(),
+        };
+
+        assert_eq!(stderr_or_stdout(&result), "useful stdout");
+    }
+
+    #[test]
     fn detects_build_requests_for_compose_invocations() {
+        assert!(!is_build_request(&[]));
         assert!(is_build_request(&["build".to_string()]));
+        assert!(is_build_request(&[
+            "--pull".to_string(),
+            "build".to_string(),
+        ]));
+        assert!(!is_build_request(&["--pull".to_string()]));
         assert!(is_build_request(&[
             "compose".to_string(),
             "build".to_string(),
@@ -228,11 +248,36 @@ mod tests {
             "compose".to_string(),
             "up".to_string(),
         ]));
+        assert!(!is_build_request(&[
+            "compose".to_string(),
+            "--ansi".to_string(),
+            "never".to_string(),
+        ]));
     }
 
     #[test]
     fn compose_request_applies_buildkit_env_for_default_docker_compose_builds() {
         let request = compose_request(
+            &[
+                "--docker-path".to_string(),
+                "/path/that/does/not/exist".to_string(),
+                "--buildkit".to_string(),
+                "never".to_string(),
+            ],
+            vec!["build".to_string(), "app".to_string()],
+        );
+
+        assert_eq!(request.program, "docker-compose");
+        assert_eq!(request.args, vec!["build".to_string(), "app".to_string()]);
+        assert_eq!(
+            request.env.get("DOCKER_BUILDKIT").map(String::as_str),
+            Some("0")
+        );
+    }
+
+    #[test]
+    fn engine_request_applies_buildkit_never_for_builds() {
+        let request = engine_request(
             &["--buildkit".to_string(), "never".to_string()],
             vec!["build".to_string(), "app".to_string()],
         );
@@ -244,10 +289,130 @@ mod tests {
     }
 
     #[test]
+    fn compose_request_honors_explicit_compose_path_and_buildkit_auto() {
+        let request = compose_request(
+            &[
+                "--docker-compose-path".to_string(),
+                "/opt/bin/docker-compose".to_string(),
+                "--buildkit".to_string(),
+                "auto".to_string(),
+            ],
+            vec!["build".to_string(), "app".to_string()],
+        );
+
+        assert_eq!(request.program, "/opt/bin/docker-compose");
+        assert_eq!(request.args, vec!["build".to_string(), "app".to_string()]);
+        assert_eq!(
+            request.env.get("DOCKER_BUILDKIT").map(String::as_str),
+            Some("1")
+        );
+    }
+
+    #[test]
     fn default_compose_subcommand_probe_fails_without_engine() {
         assert!(!default_compose_subcommand_available(&[
             "--docker-path".to_string(),
             "/path/that/does/not/exist".to_string(),
         ]));
+    }
+
+    #[test]
+    fn run_engine_reports_missing_requested_engine() {
+        let error = run_engine(
+            &[
+                "--docker-path".to_string(),
+                "/path/that/does/not/exist".to_string(),
+            ],
+            vec!["ps".to_string()],
+        )
+        .expect_err("missing requested engine should fail");
+
+        assert_eq!(
+            error,
+            "Container engine executable not found: /path/that/does/not/exist. Verify --docker-path or install the requested container engine."
+        );
+    }
+
+    #[test]
+    fn run_engine_streaming_reports_missing_requested_engine() {
+        let error = run_engine_streaming(
+            &[
+                "--docker-path".to_string(),
+                "/path/that/does/not/exist".to_string(),
+            ],
+            vec!["ps".to_string()],
+        )
+        .expect_err("missing requested engine should fail");
+
+        assert_eq!(
+            error,
+            "Container engine executable not found: /path/that/does/not/exist. Verify --docker-path or install the requested container engine."
+        );
+    }
+
+    #[test]
+    fn normalize_process_error_reports_missing_compose_binary() {
+        let request = ProcessRequest {
+            program: "/path/that/does/not/exist-compose".to_string(),
+            args: vec!["ps".to_string()],
+            cwd: None,
+            env: Default::default(),
+            log_level: ProcessLogLevel::Info,
+        };
+
+        let error = normalize_process_error(
+            &[
+                "--docker-compose-path".to_string(),
+                "/path/that/does/not/exist-compose".to_string(),
+            ],
+            &request,
+            io::Error::new(io::ErrorKind::NotFound, "missing"),
+        );
+
+        assert_eq!(
+            error,
+            "Container compose executable not found: /path/that/does/not/exist-compose. Verify --docker-compose-path or install the requested compose CLI."
+        );
+    }
+
+    #[test]
+    fn normalize_process_error_preserves_non_not_found_errors() {
+        let request = ProcessRequest {
+            program: "docker".to_string(),
+            args: vec!["ps".to_string()],
+            cwd: None,
+            env: Default::default(),
+            log_level: ProcessLogLevel::Info,
+        };
+
+        let error = normalize_process_error(
+            &[],
+            &request,
+            io::Error::new(io::ErrorKind::PermissionDenied, "permission denied"),
+        );
+
+        assert_eq!(error, "permission denied");
+    }
+
+    #[test]
+    fn normalize_process_error_reports_missing_default_docker() {
+        let request = ProcessRequest {
+            program: "docker".to_string(),
+            args: vec!["ps".to_string()],
+            cwd: None,
+            env: Default::default(),
+            log_level: ProcessLogLevel::Info,
+        };
+
+        let error = normalize_process_error(
+            &[],
+            &request,
+            io::Error::new(io::ErrorKind::NotFound, "missing"),
+        );
+
+        assert_eq!(
+            error,
+            "Container engine executable not found: docker. Install Docker or rerun with --docker-path podman."
+        );
     }
 }

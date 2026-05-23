@@ -211,6 +211,34 @@ mod tests {
                 "enabled": true
             })
         );
+        assert_eq!(
+            feature_options(
+                &json!({
+                    "options": {}
+                }),
+                &json!({
+                    "override": "value"
+                })
+            ),
+            json!({
+                "override": "value"
+            })
+        );
+        assert_eq!(
+            feature_options(
+                &json!({
+                    "options": {
+                        "enabled": {
+                            "default": true
+                        }
+                    }
+                }),
+                &json!(false)
+            ),
+            json!({
+                "enabled": true
+            })
+        );
 
         let values = feature_option_values_from_manifest(
             &json!({
@@ -230,5 +258,58 @@ mod tests {
         assert!(values.contains(&("NULL".to_string(), String::new())));
         assert!(values.contains(&("NUMBER".to_string(), "42".to_string())));
         assert!(values.contains(&("OBJECT".to_string(), r#"{"nested":true}"#.to_string())));
+    }
+
+    #[test]
+    fn feature_object_migrates_legacy_customizations_with_non_object_legacy_values() {
+        let feature = feature_object(
+            &json!({
+                "id": "demo",
+                "extensions": "not-an-array",
+                "settings": false
+            }),
+            &json!({}),
+            &json!(true),
+        );
+
+        assert_eq!(feature["customizations"]["vscode"]["extensions"], json!([]));
+        assert_eq!(feature["customizations"]["vscode"]["settings"], json!({}));
+    }
+
+    #[test]
+    fn feature_object_migrates_each_legacy_customization_independently() {
+        let only_extensions = feature_object(
+            &json!({
+                "id": "demo",
+                "extensions": ["legacy.extension"]
+            }),
+            &json!({}),
+            &json!(true),
+        );
+        let only_settings = feature_object(
+            &json!({
+                "id": "demo",
+                "settings": {
+                    "legacy.setting": true
+                }
+            }),
+            &json!({}),
+            &json!(true),
+        );
+
+        assert_eq!(
+            only_extensions["customizations"]["vscode"]["extensions"],
+            json!(["legacy.extension"])
+        );
+        assert!(only_extensions["customizations"]["vscode"]
+            .get("settings")
+            .is_none());
+        assert!(only_settings["customizations"]["vscode"]
+            .get("extensions")
+            .is_none());
+        assert_eq!(
+            only_settings["customizations"]["vscode"]["settings"]["legacy.setting"],
+            true
+        );
     }
 }

@@ -43,4 +43,14 @@ mod tests {
         assert!(rebuilt.is_object());
         assert_eq!(rebuilt.as_object().expect("object").len(), 2);
     }
+
+    #[test]
+    fn lifecycle_helpers_ignore_non_command_values_and_preserve_single_values() {
+        assert!(flatten_lifecycle_value(&json!(false)).is_empty());
+        assert_eq!(lifecycle_value_from_flattened(Vec::new()), None);
+        assert_eq!(
+            lifecycle_value_from_flattened(vec![json!("echo once")]),
+            Some(json!("echo once"))
+        );
+    }
 }

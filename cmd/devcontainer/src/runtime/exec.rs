@@ -23,7 +23,11 @@ impl ExecStdio {
     }
 
     fn should_allocate_tty(self) -> bool {
-        self.stdin_is_terminal && self.stdout_is_terminal
+        if self.stdin_is_terminal {
+            self.stdout_is_terminal
+        } else {
+            false
+        }
     }
 }
 
@@ -141,10 +145,13 @@ fn exec_engine_args_with_remote_env(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::fs;
 
     use serde_json::json;
 
-    use super::{exec_command_and_args, exec_engine_args_with_remote_env, ExecStdio};
+    use super::{
+        exec_command_and_args, exec_engine_args, exec_engine_args_with_remote_env, ExecStdio,
+    };
 
     #[test]
     fn exec_command_and_args_rejects_unknown_options() {
@@ -254,6 +261,38 @@ mod tests {
 
             assert_eq!(args.contains(&"-t".to_string()), expect_tty);
         }
+    }
+
+    #[test]
+    fn exec_engine_args_reports_remote_env_errors() {
+        let root = crate::test_support::unique_temp_dir("devcontainer-exec-test");
+        fs::create_dir_all(&root).expect("temp root");
+        let secrets = root.join("secrets.json");
+        fs::write(&secrets, "not json").expect("secrets");
+
+        let error = exec_engine_args(
+            &[
+                "--secrets-file".to_string(),
+                secrets.to_string_lossy().to_string(),
+            ],
+            &json!({
+                "remoteEnv": {
+                    "HOME": "/configured/home"
+                }
+            }),
+            "/workspace",
+            "container-id",
+            vec!["/bin/echo".to_string()],
+            ExecStdio {
+                stdin_is_terminal: false,
+                stdout_is_terminal: false,
+            },
+        )
+        .expect_err("remote env error");
+
+        assert!(error.contains("expected"), "{error}");
+
+        let _ = fs::remove_dir_all(root);
     }
 
     fn minimal_exec_engine_args(stdio: ExecStdio) -> Vec<String> {

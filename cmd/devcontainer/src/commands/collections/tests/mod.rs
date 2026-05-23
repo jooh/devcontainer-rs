@@ -98,6 +98,24 @@ fn collection_entrypoints_run_package_publish_and_docs_paths() {
 }
 
 #[test]
+fn feature_entrypoints_report_target_operation_errors() {
+    let root = support::unique_temp_dir();
+    fs::create_dir_all(&root).expect("feature root");
+    fs::write(root.join("devcontainer-feature.json"), "{").expect("invalid manifest");
+
+    assert_eq!(
+        super::run_features(&["package".to_string(), root.display().to_string()]),
+        ExitCode::from(1)
+    );
+    assert_eq!(
+        super::run_features(&["generate-docs".to_string(), root.display().to_string()]),
+        ExitCode::from(1)
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn feature_info_entrypoint_supports_text_output() {
     let root = support::unique_temp_dir();
     fs::create_dir_all(&root).expect("feature root");
@@ -204,4 +222,18 @@ fn template_entrypoints_run_metadata_publish_and_docs_paths() {
 
     let _ = fs::remove_dir_all(root);
     let _ = fs::remove_dir_all(output);
+}
+
+#[test]
+fn template_entrypoints_report_target_operation_errors() {
+    let root = support::unique_temp_dir();
+    fs::create_dir_all(&root).expect("template root");
+    fs::write(root.join("devcontainer-template.json"), "{").expect("invalid manifest");
+
+    assert_eq!(
+        super::run_templates(&["generate-docs".to_string(), root.display().to_string()]),
+        ExitCode::from(1)
+    );
+
+    let _ = fs::remove_dir_all(root);
 }

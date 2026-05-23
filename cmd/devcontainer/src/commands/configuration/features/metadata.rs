@@ -208,3 +208,151 @@ fn merge_lifecycle_value(merged: &mut Map<String, Value>, metadata: &Value, key:
         merged.insert(key.to_string(), value);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{apply_feature_metadata, feature_metadata_entry};
+
+    #[test]
+    fn feature_metadata_entry_ignores_non_object_manifests() {
+        assert_eq!(feature_metadata_entry(&json!(null)), json!({}));
+    }
+
+    #[test]
+    fn apply_feature_metadata_merges_supported_fields_by_policy() {
+        let configuration = json!({
+            "image": "debian:bookworm",
+            "remoteUser": "config-user",
+            "customizations": {
+                "codespaces": {
+                    "openFiles": [
+                        "README.md"
+                    ]
+                }
+            },
+            "postAttachCommand": "echo config"
+        });
+        let merged = apply_feature_metadata(
+            &configuration,
+            &[json!({
+                "init": true,
+                "privileged": true,
+                "capAdd": ["SYS_PTRACE", "SYS_PTRACE"],
+                "securityOpt": ["seccomp=unconfined", "seccomp=unconfined"],
+                "forwardPorts": [3000, 3000],
+                "mounts": [
+                    "source=old,target=/cache,type=volume",
+                    {
+                        "type": "bind",
+                        "source": "/new",
+                        "target": "/cache"
+                    },
+                    true,
+                    true,
+                    false
+                ],
+                "containerEnv": {
+                    "A": "1"
+                },
+                "remoteEnv": {
+                    "B": "2"
+                },
+                "portsAttributes": {
+                    "3000": {
+                        "label": "web"
+                    }
+                },
+                "customizations": {
+                    "vscode": {
+                        "extensions": ["feature.extension"]
+                    }
+                },
+                "containerUser": "node",
+                "entrypoint": "/entry.sh",
+                "hostRequirements": {
+                    "cpus": 2
+                },
+                "otherPortsAttributes": {
+                    "onAutoForward": "silent"
+                },
+                "overrideCommand": false,
+                "remoteUser": "feature-user",
+                "shutdownAction": "stopContainer",
+                "updateRemoteUserUID": false,
+                "userEnvProbe": "loginShell",
+                "waitFor": "postCreateCommand",
+                "onCreateCommand": "echo one",
+                "updateContentCommand": ["echo", "two"],
+                "postCreateCommand": {
+                    "first": "echo three"
+                },
+                "postStartCommand": true
+            })],
+            false,
+        );
+
+        assert_eq!(merged["image"], "debian:bookworm");
+        assert_eq!(merged["init"], true);
+        assert_eq!(merged["privileged"], true);
+        assert_eq!(merged["capAdd"], json!(["SYS_PTRACE"]));
+        assert_eq!(merged["securityOpt"], json!(["seccomp=unconfined"]));
+        assert_eq!(merged["forwardPorts"], json!([3000]));
+        assert_eq!(
+            merged["mounts"],
+            json!([
+                {
+                    "type": "bind",
+                    "source": "/new",
+                    "target": "/cache"
+                },
+                true,
+                false
+            ])
+        );
+        assert_eq!(merged["containerEnv"]["A"], "1");
+        assert_eq!(merged["remoteEnv"]["B"], "2");
+        assert_eq!(merged["portsAttributes"]["3000"]["label"], "web");
+        assert_eq!(
+            merged["customizations"]["codespaces"]["openFiles"],
+            json!(["README.md"])
+        );
+        assert_eq!(
+            merged["customizations"]["vscode"]["extensions"],
+            json!(["feature.extension"])
+        );
+        assert_eq!(merged["containerUser"], "node");
+        assert_eq!(merged["entrypoint"], "/entry.sh");
+        assert_eq!(merged["hostRequirements"]["cpus"], 2);
+        assert_eq!(merged["otherPortsAttributes"]["onAutoForward"], "silent");
+        assert_eq!(merged["overrideCommand"], false);
+        assert_eq!(merged["remoteUser"], "config-user");
+        assert_eq!(merged["shutdownAction"], "stopContainer");
+        assert_eq!(merged["updateRemoteUserUID"], false);
+        assert_eq!(merged["userEnvProbe"], "loginShell");
+        assert_eq!(merged["waitFor"], "postCreateCommand");
+        assert_eq!(merged["onCreateCommand"], "echo one");
+        assert_eq!(merged["updateContentCommand"], json!(["echo", "two"]));
+        assert_eq!(merged["postCreateCommand"], "echo three");
+        assert_eq!(merged["postAttachCommand"], "echo config");
+        assert!(merged.get("postStartCommand").is_none());
+    }
+
+    #[test]
+    fn apply_feature_metadata_can_skip_feature_customizations() {
+        let merged = apply_feature_metadata(
+            &json!({}),
+            &[json!({
+                "customizations": {
+                    "vscode": {
+                        "extensions": ["feature.extension"]
+                    }
+                }
+            })],
+            true,
+        );
+
+        assert!(merged.get("customizations").is_none());
+    }
+}

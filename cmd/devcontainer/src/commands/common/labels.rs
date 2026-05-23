@@ -135,9 +135,9 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        default_devcontainer_id_label_pairs_for_platform,
-        normalize_devcontainer_label_path_for_platform, DEVCONTAINER_CONFIG_FILE_LABEL,
-        DEVCONTAINER_LOCAL_FOLDER_LABEL,
+        default_devcontainer_id_label_pairs_for_platform, id_label_map,
+        normalize_devcontainer_label_path, normalize_devcontainer_label_path_for_platform,
+        DEVCONTAINER_CONFIG_FILE_LABEL, DEVCONTAINER_LOCAL_FOLDER_LABEL,
     };
 
     #[test]
@@ -159,6 +159,44 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn normalize_devcontainer_label_path_preserves_non_windows_paths() {
+        assert_eq!(
+            normalize_devcontainer_label_path_for_platform("linux", "/workspace/../workspace/demo"),
+            "/workspace/../workspace/demo"
+        );
+        assert_eq!(
+            normalize_devcontainer_label_path("relative/path"),
+            "relative/path"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalize_devcontainer_label_path_uses_windows_current_platform() {
+        assert_eq!(
+            normalize_devcontainer_label_path("relative/path"),
+            r"relative\path"
+        );
+    }
+
+    #[test]
+    fn normalize_devcontainer_label_path_handles_unc_relative_and_empty_windows_paths() {
+        assert_eq!(
+            normalize_devcontainer_label_path_for_platform("windows", r"\\server\share\folder"),
+            r"\\server\share\folder"
+        );
+        assert_eq!(
+            normalize_devcontainer_label_path_for_platform("windows", r"foo\..\..\bar"),
+            r"..\bar"
+        );
+        assert_eq!(
+            normalize_devcontainer_label_path_for_platform("windows", "."),
+            "."
+        );
+    }
+
     #[test]
     fn default_devcontainer_id_labels_use_normalized_windows_paths() {
         let [(workspace_key, workspace_value), (config_key, config_value)] =
@@ -175,5 +213,24 @@ mod tests {
             config_value,
             "c:\\CodeBlocks\\remill\\.devcontainer\\devcontainer.json"
         );
+    }
+
+    #[test]
+    fn id_label_map_uses_explicit_labels_without_defaults() {
+        let labels = id_label_map(
+            &[
+                "--id-label".to_string(),
+                "custom=value".to_string(),
+                "--id-label".to_string(),
+                "ignored".to_string(),
+            ],
+            Path::new("/workspace/demo"),
+            Path::new("/workspace/demo/.devcontainer/devcontainer.json"),
+        );
+
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels["custom"], "value");
+        assert!(!labels.contains_key(DEVCONTAINER_LOCAL_FOLDER_LABEL));
+        assert!(!labels.contains_key(DEVCONTAINER_CONFIG_FILE_LABEL));
     }
 }

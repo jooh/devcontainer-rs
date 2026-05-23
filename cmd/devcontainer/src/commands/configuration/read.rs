@@ -26,7 +26,7 @@ pub(super) fn build_read_configuration_payload(args: &[String]) -> Result<Value,
         loaded
             .as_ref()
             .map(|loaded| {
-                super::features::resolve_feature_support_without_lockfile(
+                super::resolve_feature_support_without_lockfile(
                     args,
                     &loaded.workspace_folder,
                     &loaded.config_file,
@@ -49,10 +49,10 @@ pub(super) fn build_read_configuration_payload(args: &[String]) -> Result<Value,
     if include_features || (include_merged && inspected.is_none()) {
         payload.insert(
             "featuresConfiguration".to_string(),
-            resolved_features
-                .as_ref()
-                .map(|resolved| resolved.features_configuration.clone())
-                .unwrap_or_else(|| json!({ "featureSets": [] })),
+            match resolved_features.as_ref() {
+                Some(resolved) => resolved.features_configuration.clone(),
+                None => json!({ "featureSets": [] }),
+            },
         );
     }
 

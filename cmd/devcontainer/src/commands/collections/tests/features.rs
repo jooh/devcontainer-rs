@@ -101,6 +101,45 @@ fn feature_dependency_resolution_ignores_existing_lockfile() {
 }
 
 #[test]
+fn feature_dependency_resolution_returns_empty_order_without_features() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    fs::create_dir_all(&config_dir).expect("failed to create config directory");
+    fs::write(
+        config_dir.join("devcontainer.json"),
+        "{\n  \"image\": \"debian:bookworm\"\n}\n",
+    )
+    .expect("failed to write config");
+
+    let payload = build_features_resolve_dependencies_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+    ])
+    .expect("payload");
+
+    assert_eq!(payload["resolvedFeatures"], serde_json::json!([]));
+    assert_eq!(payload["installOrder"], serde_json::json!([]));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn feature_dependency_resolution_reports_config_parse_errors() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    fs::create_dir_all(&config_dir).expect("failed to create config directory");
+    fs::write(config_dir.join("devcontainer.json"), "{").expect("failed to write config");
+
+    let error = build_features_resolve_dependencies_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+    ])
+    .expect_err("invalid config should fail");
+
+    assert!(!error.is_empty());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn feature_dependency_resolution_matches_upstream_local_option_round_order() {
     let root = copy_upstream_fixture("feature-dependencies/dependsOn/local-with-options");
 
@@ -297,6 +336,49 @@ fn feature_info_reads_manifest_metadata() {
 }
 
 #[test]
+fn feature_info_uses_manifest_fallbacks_for_missing_metadata() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create feature root");
+    fs::write(root.join("devcontainer-feature.json"), "{}\n")
+        .expect("failed to write feature manifest");
+
+    let manifest = build_feature_info_payload("manifest", root.to_string_lossy().as_ref())
+        .expect("manifest payload");
+    let tags =
+        build_feature_info_payload("tags", root.to_string_lossy().as_ref()).expect("tags payload");
+    let dependencies = build_feature_info_payload("dependencies", root.to_string_lossy().as_ref())
+        .expect("dependencies payload");
+    let verbose = build_feature_info_payload("verbose", root.to_string_lossy().as_ref())
+        .expect("verbose payload");
+
+    assert_eq!(manifest["id"], "unknown");
+    assert_eq!(manifest["name"], "unknown");
+    assert_eq!(manifest["version"], "0.0.0");
+    assert_eq!(manifest["options"], serde_json::json!({}));
+    assert_eq!(tags["tags"], serde_json::json!([]));
+    assert_eq!(dependencies["dependsOn"], serde_json::json!({}));
+    assert_eq!(verbose["dependsOn"], serde_json::json!({}));
+    assert_eq!(verbose["tags"], serde_json::json!([]));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn feature_info_reports_local_manifest_parse_errors_for_all_manifest_modes() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create feature root");
+    fs::write(root.join("devcontainer-feature.json"), "{")
+        .expect("failed to write feature manifest");
+
+    for mode in ["manifest", "tags", "dependencies", "verbose"] {
+        let error = build_feature_info_payload(mode, root.to_string_lossy().as_ref())
+            .expect_err("invalid feature manifest should fail");
+        assert!(!error.is_empty(), "{mode}");
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn feature_info_reads_published_catalog_oci_manifest() {
     let payload =
         build_feature_info_payload("manifest", "ghcr.io/devcontainers/features/azure-cli:1")
@@ -390,6 +472,32 @@ fn feature_info_reports_tags_dependencies_and_verbose_payloads() {
 }
 
 #[test]
+fn feature_info_reports_published_verbose_payloads() {
+    let payload = build_feature_info_payload("verbose", "ghcr.io/devcontainers/features/git:1")
+        .expect("verbose payload");
+
+    assert_eq!(payload["feature"], "ghcr.io/devcontainers/features/git");
+    assert_eq!(
+        payload["canonicalId"],
+        "ghcr.io/devcontainers/features/git@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    );
+    assert_eq!(payload["manifest"]["schemaVersion"], 2);
+    assert_eq!(payload["dependsOn"], serde_json::json!({}));
+    let tags = payload["publishedTags"]
+        .as_array()
+        .expect("published tags array");
+    assert!(tags.iter().any(|tag| tag == "1.2.0"));
+}
+
+#[test]
+fn feature_info_reports_unsupported_modes() {
+    let error = build_feature_info_payload("licenses", "ghcr.io/devcontainers/features/git:1")
+        .expect_err("unsupported mode");
+
+    assert_eq!(error, "Unsupported features info mode: licenses");
+}
+
+#[test]
 fn feature_info_reads_catalog_tags_for_published_features() {
     let payload = build_feature_info_payload("tags", "ghcr.io/devcontainers/features/git:1")
         .expect("tags payload");
@@ -438,5 +546,33 @@ fn feature_info_registry_tags_do_not_require_resolved_manifest() {
     .expect("tags payload");
 
     assert_eq!(payload["publishedTags"], serde_json::json!(["dev"]));
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn feature_info_reports_workspace_oci_index_errors() {
+    let workspace = unique_temp_dir();
+    let layout_dir = workspace
+        .join(".devcontainer")
+        .join("oci-layouts")
+        .join("ghcr.io/acme/features/fake");
+    fs::create_dir_all(&layout_dir).expect("layout dir");
+    fs::write(
+        layout_dir.join("oci-layout"),
+        "{\"imageLayoutVersion\":\"1.0.0\"}\n",
+    )
+    .expect("oci layout");
+    fs::write(layout_dir.join("index.json"), "{").expect("invalid index");
+
+    for mode in ["manifest", "tags", "verbose"] {
+        let error = build_feature_info_payload_with_workspace(
+            mode,
+            "ghcr.io/acme/features/fake",
+            Some(&workspace),
+        )
+        .expect_err("invalid workspace OCI index should fail");
+        assert!(!error.is_empty(), "{mode}");
+    }
+
     let _ = fs::remove_dir_all(workspace);
 }

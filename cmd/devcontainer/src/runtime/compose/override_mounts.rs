@@ -224,14 +224,10 @@ fn compose_mount_definition_from_str(mount: &str) -> Option<ComposeMountDefiniti
             }
         } else if let Some((key, value)) = option.split_once('=') {
             let path = mount_option_key_path(key);
-            if let Some((leaf, parents)) = path.split_last() {
-                insert_nested_mount_value(
-                    &mut fields,
-                    parents,
-                    leaf,
-                    parse_mount_option_scalar(value),
-                );
-            }
+            let (leaf, parents) = path
+                .split_last()
+                .expect("mount option keys always contain a leaf");
+            insert_nested_mount_value(&mut fields, parents, leaf, parse_mount_option_scalar(value));
         }
     }
 
@@ -360,14 +356,14 @@ mod tests {
     use super::{
         compose_mount_definition, compose_mount_definition_from_str, compose_named_volumes,
         insert_nested_mount_value, merge_mount_scalar_or_object, parse_mount_option_scalar,
-        ComposeVolumeEntry,
+        ComposeMountDefinition, ComposeVolumeEntry,
     };
 
-    fn long_definition(entry: Option<ComposeVolumeEntry>) -> Map<String, Value> {
-        let Some(ComposeVolumeEntry::Long(definition)) = entry else {
-            panic!("expected long compose mount definition");
-        };
-        definition.fields
+    fn long_definition(entry: Option<ComposeVolumeEntry>) -> Option<Map<String, Value>> {
+        match entry? {
+            ComposeVolumeEntry::Long(definition) => Some(definition.fields),
+            ComposeVolumeEntry::Short(_) => None,
+        }
     }
 
     #[test]
@@ -384,7 +380,8 @@ mod tests {
                 }
             },
             "consistency": "cached"
-        })));
+        })))
+        .expect("expected long compose mount definition");
 
         assert_eq!(fields.get("type"), Some(&json!("volume")));
         assert_eq!(fields.get("source"), Some(&json!("cache")));
@@ -401,14 +398,26 @@ mod tests {
             }))
         );
         assert!(compose_mount_definition(&json!(false)).is_none());
+        assert!(compose_mount_definition(&json!({
+            "type": "bind",
+            "source": "/host"
+        }))
+        .is_none());
 
-        let Some(ComposeVolumeEntry::Long(definition)) = compose_mount_definition(&json!({
+        let definition = long_definition(compose_mount_definition(&json!({
             "type": "volume",
             "target": "/cache"
-        })) else {
-            panic!("expected long compose mount definition");
-        };
-        assert_eq!(definition.short_syntax(), None);
+        })))
+        .expect("expected long compose mount definition");
+        assert_eq!(
+            ComposeMountDefinition { fields: definition }.short_syntax(),
+            None
+        );
+        assert!(long_definition(None).is_none());
+        assert!(long_definition(Some(ComposeVolumeEntry::Short(
+            "/host:/workspace".to_string()
+        )))
+        .is_none());
     }
 
     #[test]
@@ -442,6 +451,31 @@ mod tests {
         let readonly = compose_mount_definition_from_str("source=/host,target=/work,readonly")
             .expect("readonly bind mount should parse");
         assert_eq!(readonly.short_syntax(), Some("/host:/work:ro".to_string()));
+
+        let with_false_values = compose_mount_definition_from_str(
+            "type=volume,src=cache,destination=/cache,external=false,enabled=false",
+        )
+        .expect("false values should parse");
+        assert_eq!(
+            with_false_values.fields.get("volume"),
+            Some(&json!({ "external": false }))
+        );
+        assert_eq!(with_false_values.fields.get("enabled"), Some(&json!(false)));
+
+        let mut no_source = Map::new();
+        no_source.insert("type".to_string(), json!("bind"));
+        no_source.insert("target".to_string(), json!("/work"));
+        assert_eq!(
+            ComposeMountDefinition { fields: no_source }.short_syntax(),
+            None
+        );
+        let mut no_target = Map::new();
+        no_target.insert("type".to_string(), json!("bind"));
+        no_target.insert("source".to_string(), json!("/host"));
+        assert_eq!(
+            ComposeMountDefinition { fields: no_target }.short_syntax(),
+            None
+        );
     }
 
     #[test]

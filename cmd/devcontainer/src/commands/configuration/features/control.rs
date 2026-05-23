@@ -365,6 +365,33 @@ mod tests {
     }
 
     #[test]
+    fn ensure_no_disallowed_features_reports_unreadable_control_manifest_content() {
+        let root = unique_temp_dir("devcontainer-control-manifest-test");
+        let user_data = root.join("user-data");
+        std::fs::create_dir_all(&user_data).expect("user data dir");
+        std::fs::write(user_data.join("control-manifest.json"), [0xff]).expect("control manifest");
+        let features = Map::from_iter([(
+            "ghcr.io/devcontainers/features/problematic-feature:1".to_string(),
+            Value::Object(Map::new()),
+        )]);
+
+        let error = ensure_no_disallowed_features(
+            &[
+                "--user-data-folder".to_string(),
+                user_data.display().to_string(),
+            ],
+            &features,
+        )
+        .expect_err("invalid UTF-8 manifest should report read error");
+
+        assert!(
+            error.to_ascii_lowercase().contains("utf"),
+            "unexpected error: {error}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn ensure_no_disallowed_features_supports_user_data_folder_override() {
         let root = unique_temp_dir("devcontainer-control-manifest-test");
         let user_data = root.join("user-data");

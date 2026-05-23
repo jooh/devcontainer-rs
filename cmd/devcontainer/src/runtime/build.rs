@@ -17,13 +17,13 @@ pub(crate) fn runtime_image_name(
     resolved: &ResolvedConfig,
     args: &[String],
 ) -> Result<String, String> {
-    let has_native_features = configuration::resolve_feature_support(
+    let feature_support = configuration::resolve_feature_support(
         args,
         &resolved.workspace_folder,
         &resolved.config_file,
         &resolved.configuration,
-    )?
-    .is_some();
+    );
+    let has_native_features = feature_support?.is_some();
     if compose::uses_compose_config(&resolved.configuration) {
         compose::build_service(resolved, args)
     } else if has_build_definition(&resolved.configuration) || has_native_features {
@@ -48,65 +48,66 @@ pub(crate) fn build_image(resolved: &ResolvedConfig, args: &[String]) -> Result<
         &resolved.workspace_folder,
         &resolved.config_file,
         &resolved.configuration,
-    )?;
+    );
+    let feature_support = feature_support?;
     if !has_build_definition(&resolved.configuration) {
-        let image = resolved
+        let Some(image) = resolved
             .configuration
             .get("image")
             .and_then(Value::as_str)
             .map(|value| value.to_string())
-            .ok_or_else(|| {
+        else {
+            return Err(
                 "Unsupported configuration: only image and build-based configs are supported natively"
-                    .to_string()
-            })?;
+                    .to_string(),
+            );
+        };
         return if let Some(feature_support) = feature_support {
-            configuration::validate_native_lockfile(
+            let lockfile_validation = configuration::validate_native_lockfile(
                 args,
                 &resolved.config_file,
                 &resolved.configuration,
                 &feature_support,
-            )?;
-            let image_name = common::parse_option_value(args, "--image-name")
-                .unwrap_or_else(|| default_image_name(&resolved.workspace_folder));
+            );
+            lockfile_validation?;
+            let image_name = image_name_arg_or_default(args, &resolved.workspace_folder);
             let built =
                 build_feature_image(args, &image_name, &image, &feature_support.installations)?;
             maybe_push_image(args, &built)?;
-            configuration::ensure_native_lockfile(
+            let lockfile_update = configuration::ensure_native_lockfile(
                 args,
                 &resolved.config_file,
                 &resolved.configuration,
                 &feature_support,
-            )?;
+            );
+            lockfile_update?;
             Ok(built)
         } else {
             Ok(image)
         };
     }
 
-    let image_name = common::parse_option_value(args, "--image-name")
-        .unwrap_or_else(|| default_image_name(&resolved.workspace_folder));
+    let image_name = image_name_arg_or_default(args, &resolved.workspace_folder);
     if let Some(feature_support) = feature_support {
-        configuration::validate_native_lockfile(
+        let lockfile_validation = configuration::validate_native_lockfile(
             args,
             &resolved.config_file,
             &resolved.configuration,
             &feature_support,
-        )?;
+        );
+        lockfile_validation?;
         let base_image = format!("{image_name}-base");
         build_base_image(resolved, args, &base_image)?;
-        let built = build_feature_image(
-            args,
-            &image_name,
-            &base_image,
-            &feature_support.installations,
-        )?;
+        let installations = &feature_support.installations;
+        let built = build_feature_image(args, &image_name, &base_image, installations)?;
         maybe_push_image(args, &built)?;
-        configuration::ensure_native_lockfile(
+        let lockfile_update = configuration::ensure_native_lockfile(
             args,
             &resolved.config_file,
             &resolved.configuration,
             &feature_support,
-        )?;
+        );
+        lockfile_update?;
         return Ok(built);
     }
 
@@ -286,15 +287,26 @@ fn is_buildx_cache_to_inline(buildx_cache_to: Option<&str>) -> bool {
             continue;
         };
         let target = after_equals.trim_start();
-        if target
-            .get(.."inline".len())
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("inline"))
-        {
+        if target_has_inline_prefix(target) {
             return true;
         }
         value = target;
     }
     false
+}
+
+fn target_has_inline_prefix(target: &str) -> bool {
+    match target.get(.."inline".len()) {
+        Some(prefix) => prefix.eq_ignore_ascii_case("inline"),
+        None => false,
+    }
+}
+
+fn image_name_arg_or_default(args: &[String], workspace_folder: &Path) -> String {
+    match common::parse_option_value(args, "--image-name") {
+        Some(image_name) => image_name,
+        None => default_image_name(workspace_folder),
+    }
 }
 
 fn unique_feature_build_dir() -> PathBuf {
@@ -330,17 +342,59 @@ fn has_build_definition(configuration: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::fs;
+    use std::path::{Path, PathBuf};
 
     use serde_json::json;
 
+    use crate::runtime::context::ResolvedConfig;
+    use crate::test_support::{unique_temp_dir, write_executable_script};
+
     use super::{
-        default_image_name, dockerfile_prefix, engine_build_args, has_build_definition,
-        is_buildx_cache_to_inline, shell_single_quote,
+        build_base_image, build_feature_image, build_image, default_image_name, dockerfile_prefix,
+        engine_build_args, has_build_definition, is_buildx_cache_to_inline, maybe_push_image,
+        runtime_image_name, shell_single_quote,
     };
 
     fn contains_arg(args: &[String], expected: &str) -> bool {
         args.iter().any(|arg| arg == expected)
+    }
+
+    fn resolved_config(root: &Path, configuration: serde_json::Value) -> ResolvedConfig {
+        let config_dir = root.join(".devcontainer");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        let config_file = config_dir.join("devcontainer.json");
+        fs::write(&config_file, configuration.to_string()).expect("config");
+        ResolvedConfig {
+            workspace_folder: root.to_path_buf(),
+            config_file,
+            configuration,
+        }
+    }
+
+    fn write_engine_script(root: &Path, script: &str) -> PathBuf {
+        fs::create_dir_all(root).expect("engine root");
+        let path = root.join("engine");
+        write_executable_script(&path, script);
+        path
+    }
+
+    fn write_local_feature(root: &Path, id: &str, options: serde_json::Value) -> PathBuf {
+        let feature_dir = root.join(id);
+        fs::create_dir_all(&feature_dir).expect("feature dir");
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            json!({
+                "id": id,
+                "version": "1.0.0",
+                "name": id,
+                "options": options
+            })
+            .to_string(),
+        )
+        .expect("feature manifest");
+        fs::write(feature_dir.join("install.sh"), "#!/bin/sh\nexit 0\n").expect("install script");
+        feature_dir
     }
 
     #[test]
@@ -354,6 +408,7 @@ mod tests {
         assert!(is_buildx_cache_to_inline(Some(
             "mode=max,type=inline,compression=zstd"
         )));
+        assert!(is_buildx_cache_to_inline(Some("type,type=inline")));
 
         assert!(!is_buildx_cache_to_inline(Some("type=registry")));
         assert!(!is_buildx_cache_to_inline(Some("type=local")));
@@ -475,5 +530,620 @@ mod tests {
         assert!(!has_build_definition(&json!({
             "build": "Dockerfile"
         })));
+    }
+
+    #[test]
+    fn runtime_image_name_returns_plain_image_configs_without_building() {
+        let root = unique_temp_dir("devcontainer-runtime-image-name");
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "image": "debian:bookworm"
+            }),
+        );
+
+        assert_eq!(
+            runtime_image_name(&resolved, &[])
+                .expect("image name")
+                .as_str(),
+            "debian:bookworm"
+        );
+    }
+
+    #[test]
+    fn runtime_image_name_reports_unsupported_configs() {
+        let root = unique_temp_dir("devcontainer-runtime-image-name-unsupported");
+        let resolved = resolved_config(&root, json!({}));
+
+        let error = runtime_image_name(&resolved, &[]).expect_err("unsupported config");
+
+        assert!(error.contains("Unsupported configuration"), "{error}");
+    }
+
+    #[test]
+    fn runtime_image_name_reports_feature_resolution_errors() {
+        let root = unique_temp_dir("devcontainer-runtime-image-name-feature-error");
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "image": "debian:bookworm",
+                "features": {
+                    "../missing-feature": {}
+                }
+            }),
+        );
+
+        let error = runtime_image_name(&resolved, &[]).expect_err("missing feature");
+
+        assert!(error.contains("No such file"), "{error}");
+    }
+
+    #[test]
+    fn runtime_image_name_delegates_compose_configs() {
+        let root = unique_temp_dir("devcontainer-runtime-compose-image-name");
+        let config_dir = root.join(".devcontainer");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        fs::write(
+            config_dir.join("docker-compose.yml"),
+            "services:\n  app:\n    image: example/compose:test\n    build:\n      context: .\n",
+        )
+        .expect("compose file");
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "dockerComposeFile": "docker-compose.yml",
+                "service": "app"
+            }),
+        );
+        let engine = write_engine_script(
+            &root,
+            r#"#!/bin/sh
+set -eu
+if [ "$1" = "compose" ]; then
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "${1:-}" in
+      --project-name|-f) shift 2 ;;
+      version) exit 0 ;;
+      build) exit 0 ;;
+      *) shift ;;
+    esac
+  done
+fi
+exit 0
+"#,
+        );
+        let args = vec!["--docker-path".to_string(), engine.display().to_string()];
+
+        assert_eq!(
+            runtime_image_name(&resolved, &args)
+                .expect("compose image name")
+                .as_str(),
+            "example/compose:test"
+        );
+    }
+
+    #[test]
+    fn runtime_image_name_delegates_build_configs_to_native_build() {
+        let root = unique_temp_dir("devcontainer-runtime-build-image-name");
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "build": {
+                    "dockerFile": "Dockerfile",
+                    "context": "."
+                }
+            }),
+        );
+        fs::write(
+            root.join(".devcontainer").join("Dockerfile"),
+            "FROM debian:bookworm\n",
+        )
+        .expect("dockerfile");
+        let log = root.join("engine.log");
+        let engine = write_engine_script(
+            &root,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+                log.display()
+            ),
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            engine.display().to_string(),
+            "--image-name".to_string(),
+            "example/native:test".to_string(),
+        ];
+
+        let image = runtime_image_name(&resolved, &args).expect("built image");
+
+        assert_eq!(image, "example/native:test");
+        let log = fs::read_to_string(log).expect("engine log");
+        assert!(log.contains("build --tag example/native:test"), "{log}");
+    }
+
+    #[test]
+    fn build_image_delegates_compose_configs() {
+        let root = unique_temp_dir("devcontainer-build-compose-image");
+        fs::create_dir_all(&root).expect("workspace root");
+        fs::write(
+            root.join("docker-compose.yml"),
+            "services:\n  app:\n    image: example/compose:test\n",
+        )
+        .expect("compose file");
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "dockerComposeFile": "../docker-compose.yml",
+                "service": "app"
+            }),
+        );
+
+        assert_eq!(
+            build_image(&resolved, &[]).expect("compose image"),
+            "example/compose:test"
+        );
+    }
+
+    #[test]
+    fn build_image_returns_plain_image_without_build_definition() {
+        let root = unique_temp_dir("devcontainer-build-image-plain");
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "image": "debian:bookworm"
+            }),
+        );
+
+        assert_eq!(
+            build_image(&resolved, &[]).expect("plain image").as_str(),
+            "debian:bookworm"
+        );
+    }
+
+    #[test]
+    fn build_image_reports_missing_image_and_build_definition() {
+        let root = unique_temp_dir("devcontainer-build-image-unsupported");
+        let resolved = resolved_config(&root, json!({}));
+
+        let error = build_image(&resolved, &[]).expect_err("unsupported config");
+
+        assert!(error.contains("Unsupported configuration"), "{error}");
+    }
+
+    #[test]
+    fn build_image_reports_feature_resolution_errors() {
+        let root = unique_temp_dir("devcontainer-build-image-feature-error");
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "image": "debian:bookworm",
+                "features": {
+                    "../missing-feature": {}
+                }
+            }),
+        );
+
+        let error = build_image(&resolved, &[]).expect_err("missing feature");
+
+        assert!(error.contains("No such file"), "{error}");
+    }
+
+    #[test]
+    fn build_image_reports_base_engine_failures() {
+        let root = unique_temp_dir("devcontainer-build-base-failure");
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "build": {
+                    "dockerfile": "Dockerfile"
+                }
+            }),
+        );
+        fs::write(
+            root.join(".devcontainer").join("Dockerfile"),
+            "FROM debian:bookworm\n",
+        )
+        .expect("dockerfile");
+        let engine = write_engine_script(
+            &root,
+            r#"#!/bin/sh
+set -eu
+if [ "$1" = "build" ]; then
+  echo "base build rejected" >&2
+  exit 23
+fi
+exit 0
+"#,
+        );
+        let args = vec!["--docker-path".to_string(), engine.display().to_string()];
+
+        let error = build_image(&resolved, &args).expect_err("base build failure");
+
+        assert_eq!(error, "base build rejected");
+    }
+
+    #[test]
+    fn build_image_reports_engine_spawn_failures() {
+        let root = unique_temp_dir("devcontainer-build-spawn-failure");
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "build": {
+                    "dockerfile": "Dockerfile"
+                }
+            }),
+        );
+        fs::write(
+            root.join(".devcontainer").join("Dockerfile"),
+            "FROM debian:bookworm\n",
+        )
+        .expect("dockerfile");
+        let missing_engine = root.join("missing-engine");
+        let args = vec![
+            "--docker-path".to_string(),
+            missing_engine.display().to_string(),
+        ];
+
+        let error = build_image(&resolved, &args).expect_err("engine spawn failure");
+
+        assert!(error.contains("missing-engine"), "{error}");
+    }
+
+    #[test]
+    fn build_image_builds_base_image_with_args_and_pushes_successfully() {
+        let root = unique_temp_dir("devcontainer-build-base-success");
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "build": {
+                    "dockerfile": "Dockerfile",
+                    "context": "..",
+                    "args": {
+                        "STRING_ARG": "value",
+                        "IGNORED_ARG": true
+                    }
+                }
+            }),
+        );
+        fs::write(
+            root.join(".devcontainer").join("Dockerfile"),
+            "FROM debian:bookworm\n",
+        )
+        .expect("dockerfile");
+        let log = root.join("engine.log");
+        let engine = write_engine_script(
+            &root,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+                log.display()
+            ),
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            engine.display().to_string(),
+            "--image-name".to_string(),
+            "example/native:test".to_string(),
+            "--push".to_string(),
+        ];
+
+        let image = build_image(&resolved, &args).expect("built image");
+
+        assert_eq!(image, "example/native:test");
+        let log = fs::read_to_string(log).expect("engine log");
+        assert!(log.contains("--build-arg STRING_ARG=value"), "{log}");
+        assert!(!log.contains("IGNORED_ARG"), "{log}");
+        assert!(log.contains("push example/native:test"), "{log}");
+    }
+
+    #[test]
+    fn build_base_image_defaults_build_shape_and_accepts_docker_file_alias() {
+        let root = unique_temp_dir("devcontainer-build-base-defaults");
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "build": {
+                    "dockerFile": "Dockerfile.alt"
+                }
+            }),
+        );
+        fs::write(
+            root.join(".devcontainer").join("Dockerfile.alt"),
+            "FROM debian:bookworm\n",
+        )
+        .expect("dockerfile");
+        let log = root.join("engine.log");
+        let engine = write_engine_script(
+            &root,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+                log.display()
+            ),
+        );
+
+        build_base_image(
+            &resolved,
+            &["--docker-path".to_string(), engine.display().to_string()],
+            "example/native:test",
+        )
+        .expect("base image");
+
+        let log = fs::read_to_string(log).expect("engine log");
+        assert!(log.contains("Dockerfile.alt"), "{log}");
+        assert!(
+            log.contains(&format!(" {}", root.join(".devcontainer/.").display())),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn build_base_image_uses_default_build_definition_when_called_without_build_config() {
+        let root = unique_temp_dir("devcontainer-build-base-empty-config");
+        let resolved = resolved_config(&root, json!({}));
+        let log = root.join("engine.log");
+        let engine = write_engine_script(
+            &root,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+                log.display()
+            ),
+        );
+
+        build_base_image(
+            &resolved,
+            &["--docker-path".to_string(), engine.display().to_string()],
+            "example/native:test",
+        )
+        .expect("base image");
+
+        let log = fs::read_to_string(log).expect("engine log");
+        assert!(log.contains("Dockerfile"), "{log}");
+        assert!(
+            log.contains(&format!(" {}", root.join(".devcontainer/.").display())),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn build_image_layers_features_over_image_configs() {
+        let root = unique_temp_dir("devcontainer-build-image-feature-success");
+        write_local_feature(
+            &root,
+            "local-feature",
+            json!({
+                "featureFlag": {
+                    "type": "string",
+                    "default": "enabled"
+                }
+            }),
+        );
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "image": "debian:bookworm",
+                "features": {
+                    "../local-feature": {}
+                }
+            }),
+        );
+        let captured = root.join("feature.Dockerfile");
+        let engine = write_engine_script(
+            &root,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+dockerfile=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--file" ]; then
+    dockerfile="$2"
+    shift 2
+    continue
+  fi
+  shift
+done
+cp "$dockerfile" '{}'
+exit 0
+"#,
+                captured.display()
+            ),
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            engine.display().to_string(),
+            "--image-name".to_string(),
+            "example/featured:test".to_string(),
+        ];
+
+        let image = build_image(&resolved, &args).expect("featured image");
+
+        assert_eq!(image, "example/featured:test");
+        let dockerfile = fs::read_to_string(captured).expect("captured dockerfile");
+        assert!(dockerfile.contains("FROM debian:bookworm"), "{dockerfile}");
+        assert!(
+            dockerfile.contains(r#"FEATUREFLAG='"'"'enabled'"'"' ./install.sh"#),
+            "{dockerfile}"
+        );
+    }
+
+    #[test]
+    fn build_image_layers_features_over_build_configs() {
+        let root = unique_temp_dir("devcontainer-build-feature-success");
+        write_local_feature(&root, "local-feature", json!({}));
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "build": {
+                    "dockerfile": "Dockerfile"
+                },
+                "features": {
+                    "../local-feature": {}
+                }
+            }),
+        );
+        fs::write(
+            root.join(".devcontainer").join("Dockerfile"),
+            "FROM debian:bookworm\n",
+        )
+        .expect("dockerfile");
+        let log = root.join("engine.log");
+        let engine = write_engine_script(
+            &root,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+                log.display()
+            ),
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            engine.display().to_string(),
+            "--image-name".to_string(),
+            "example/featured:test".to_string(),
+        ];
+
+        let image = build_image(&resolved, &args).expect("featured image");
+
+        assert_eq!(image, "example/featured:test");
+        let log = fs::read_to_string(log).expect("engine log");
+        assert!(log.contains("--tag example/featured:test-base"), "{log}");
+        assert!(log.contains("--tag example/featured:test"), "{log}");
+    }
+
+    #[test]
+    fn build_feature_image_succeeds_and_cleans_up_empty_feature_contexts() {
+        let root = unique_temp_dir("devcontainer-feature-build-success");
+        let log = root.join("engine.log");
+        let engine = write_engine_script(
+            &root,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> '{}'
+last=
+for arg in "$@"; do
+  last="$arg"
+done
+test -d "$last"
+exit 0
+"#,
+                log.display()
+            ),
+        );
+        let args = vec!["--docker-path".to_string(), engine.display().to_string()];
+
+        let image = build_feature_image(&args, "example/native:test", "example/base:test", &[])
+            .expect("feature build");
+
+        assert_eq!(image, "example/native:test");
+        let log = fs::read_to_string(log).expect("engine log");
+        assert!(log.contains("--tag example/native:test"), "{log}");
+    }
+
+    #[test]
+    fn maybe_push_image_is_noop_without_push_flag() {
+        maybe_push_image(&[], "example/native:test").expect("push skipped");
+    }
+
+    #[test]
+    fn maybe_push_image_pushes_when_requested() {
+        let root = unique_temp_dir("devcontainer-build-push-success");
+        let log = root.join("engine.log");
+        let engine = write_engine_script(
+            &root,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+                log.display()
+            ),
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            engine.display().to_string(),
+            "--push".to_string(),
+        ];
+
+        maybe_push_image(&args, "example/native:test").expect("push");
+
+        let log = fs::read_to_string(log).expect("engine log");
+        assert!(log.contains("push example/native:test"), "{log}");
+    }
+
+    #[test]
+    fn build_feature_image_reports_engine_failures() {
+        let root = unique_temp_dir("devcontainer-feature-build-failure");
+        let engine = write_engine_script(
+            &root,
+            r#"#!/bin/sh
+set -eu
+if [ "$1" = "build" ]; then
+  echo "feature build rejected" >&2
+  exit 24
+fi
+exit 0
+"#,
+        );
+        let args = vec!["--docker-path".to_string(), engine.display().to_string()];
+
+        let error = build_feature_image(&args, "example/native:test", "example/base:test", &[])
+            .expect_err("feature build failure");
+
+        assert_eq!(error, "feature build rejected");
+    }
+
+    #[test]
+    fn build_feature_image_reports_engine_spawn_failures() {
+        let root = unique_temp_dir("devcontainer-feature-build-spawn-failure");
+        fs::create_dir_all(&root).expect("root dir");
+        let missing_engine = root.join("missing-engine");
+        let args = vec![
+            "--docker-path".to_string(),
+            missing_engine.display().to_string(),
+        ];
+
+        let error = build_feature_image(&args, "example/native:test", "example/base:test", &[])
+            .expect_err("feature build spawn failure");
+
+        assert!(error.contains("missing-engine"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn maybe_push_image_reports_engine_failures() {
+        let root = unique_temp_dir("devcontainer-build-push-failure");
+        let engine = write_engine_script(
+            &root,
+            r#"#!/bin/sh
+set -eu
+if [ "$1" = "push" ]; then
+  echo "push rejected" >&2
+  exit 12
+fi
+exit 0
+"#,
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            engine.display().to_string(),
+            "--push".to_string(),
+        ];
+
+        let error = maybe_push_image(&args, "example/native:test").expect_err("push failure");
+
+        assert_eq!(error, "push rejected");
+    }
+
+    #[test]
+    fn maybe_push_image_reports_engine_spawn_failures() {
+        let root = unique_temp_dir("devcontainer-build-push-spawn-failure");
+        fs::create_dir_all(&root).expect("root dir");
+        let missing_engine = root.join("missing-engine");
+        let args = vec![
+            "--docker-path".to_string(),
+            missing_engine.display().to_string(),
+            "--push".to_string(),
+        ];
+
+        let error = maybe_push_image(&args, "example/native:test").expect_err("push spawn failure");
+
+        assert!(error.contains("missing-engine"), "{error}");
+        let _ = fs::remove_dir_all(root);
     }
 }

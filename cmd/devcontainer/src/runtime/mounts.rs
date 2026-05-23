@@ -85,7 +85,11 @@ fn mount_object_to_engine_arg(entries: &Map<String, Value>) -> Option<String> {
             options.push(format!("{key}={value}"));
         }
     }
-    (!options.is_empty()).then(|| options.join(","))
+    if options.is_empty() {
+        None
+    } else {
+        Some(options.join(","))
+    }
 }
 
 pub(crate) fn cli_mount_values(args: &[String]) -> Result<Vec<String>, String> {
@@ -117,15 +121,17 @@ pub(crate) fn validate_cli_mount_value(mount: &str) -> Result<(), String> {
             return Err(invalid_cli_mount_error(mount));
         };
         let value = value.trim_matches('"');
-        match key {
-            "type" if matches!(value, "bind" | "volume") => {
+        if key == "type" {
+            if matches!(value, "bind" | "volume") {
                 has_mount_type = true;
                 is_volume_mount = value == "volume";
+            } else {
+                return Err(invalid_cli_mount_error(mount));
             }
-            "type" => return Err(invalid_cli_mount_error(mount)),
-            "source" | "src" if !value.is_empty() => has_source = true,
-            "target" | "destination" | "dst" if !value.is_empty() => has_target = true,
-            _ => {}
+        } else if matches!(key, "source" | "src") && !value.is_empty() {
+            has_source = true;
+        } else if matches!(key, "target" | "destination" | "dst") && !value.is_empty() {
+            has_target = true;
         }
     }
 
@@ -159,6 +165,7 @@ mod tests {
 
     use super::{
         cli_mount_values, mount_option_target, mount_value_to_engine_arg, validate_cli_mount_value,
+        validate_cli_mount_values,
     };
 
     #[test]
@@ -171,6 +178,12 @@ mod tests {
 
     #[test]
     fn mount_value_to_engine_arg_preserves_read_only_and_alias_keys() {
+        assert_eq!(
+            mount_value_to_engine_arg(&json!("type=bind,source=/src,target=/dst")),
+            Some("type=bind,source=/src,target=/dst".to_string())
+        );
+        assert_eq!(mount_value_to_engine_arg(&json!(null)), None);
+
         let mount = mount_value_to_engine_arg(&json!({
             "type": "bind",
             "src": "/cache",
@@ -191,21 +204,32 @@ mod tests {
             "type": "volume",
             "source": "devcontainer-cache",
             "target": "/cache",
+            "size": 10,
             "external": true,
+            "ignored": ["not", "scalar"],
             "consistency": "delegated",
         }))
         .expect("mount argument");
 
         assert_eq!(
             mount,
-            "type=volume,source=devcontainer-cache,target=/cache,consistency=delegated,external=true"
+            "type=volume,source=devcontainer-cache,target=/cache,consistency=delegated,external=true,size=10"
         );
+        assert_eq!(mount_value_to_engine_arg(&json!({ "ignored": {} })), None);
     }
 
     #[test]
     fn validate_cli_mount_value_accepts_extended_scalar_options() {
         validate_cli_mount_value(
             "type=bind,source=/tmp/src,target=/tmp/dst,consistency=delegated,bind.propagation=rshared,readonly",
+        )
+        .expect("valid mount");
+    }
+
+    #[test]
+    fn validate_cli_mount_value_accepts_aliases_and_quoted_values() {
+        validate_cli_mount_value(
+            r#"type="bind",src="/tmp/src",destination="/tmp/dst",volume-opt=keep,ro"#,
         )
         .expect("valid mount");
     }
@@ -221,6 +245,8 @@ mod tests {
             validate_cli_mount_value("type=bind,source=/tmp/src").expect_err("missing target");
 
         assert!(error.contains("Invalid value for option --mount"));
+        assert!(validate_cli_mount_value("type=bind,source,target=/tmp/dst").is_err());
+        assert!(validate_cli_mount_value("type=tmpfs,target=/tmp/dst").is_err());
     }
 
     #[test]
@@ -228,5 +254,32 @@ mod tests {
         let error = cli_mount_values(&["--mount".to_string()]).expect_err("missing mount value");
 
         assert_eq!(error, "Missing value for option: --mount");
+    }
+
+    #[test]
+    fn cli_mount_values_returns_valid_mount_values() {
+        let args = vec![
+            "--mount".to_string(),
+            "type=bind,source=/tmp/src,target=/tmp/dst".to_string(),
+            "--mount".to_string(),
+            "type=volume,target=/cache".to_string(),
+        ];
+
+        assert_eq!(
+            cli_mount_values(&args).expect("valid mount values"),
+            vec![
+                "type=bind,source=/tmp/src,target=/tmp/dst".to_string(),
+                "type=volume,target=/cache".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn validate_cli_mount_values_checks_each_mount() {
+        validate_cli_mount_values(&[
+            "type=bind,source=/tmp/src,target=/tmp/dst".to_string(),
+            "type=volume,target=/cache".to_string(),
+        ])
+        .expect("valid mount list");
     }
 }

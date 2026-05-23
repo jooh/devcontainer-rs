@@ -2,6 +2,7 @@
 
 use std::env;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,6 +19,10 @@ use crate::commands::common;
 
 const DEFAULT_PUBLISHED_TEMPLATE_BASE_IMAGE: &str = "docker.io/library/debian:bookworm-slim";
 static NEXT_TEMPLATE_TMP_ID: AtomicU64 = AtomicU64::new(0);
+
+fn io_error_to_string(error: io::Error) -> String {
+    error.to_string()
+}
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn apply_template_target(
@@ -178,12 +183,12 @@ fn apply_catalog_template_with_options(
         "features": features,
     });
     let config_dir = workspace_root.join(".devcontainer");
-    fs::create_dir_all(&config_dir).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&config_dir).map_err(io_error_to_string)?;
     fs::write(
         config_dir.join("devcontainer.json"),
-        serde_json::to_string_pretty(&devcontainer).map_err(|error| error.to_string())?,
+        serde_json::to_string_pretty(&devcontainer).expect("serializing JSON value cannot fail"),
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(io_error_to_string)?;
 
     Ok(json!({
         "files": ["./.devcontainer/devcontainer.json"],
@@ -191,10 +196,20 @@ fn apply_catalog_template_with_options(
 }
 
 fn template_workspace_folder(args: &[String]) -> Result<PathBuf, String> {
+    template_workspace_folder_with_current_dir(args, env::current_dir)
+}
+
+fn template_workspace_folder_with_current_dir(
+    args: &[String],
+    current_dir: impl FnOnce() -> io::Result<PathBuf>,
+) -> Result<PathBuf, String> {
     if let Some(workspace) = common::parse_option_value(args, "--workspace-folder") {
         return Ok(PathBuf::from(workspace));
     }
-    env::current_dir().map_err(|_| "Unable to determine workspace folder".to_string())
+    match current_dir() {
+        Ok(current_dir) => Ok(current_dir),
+        Err(_) => Err("Unable to determine workspace folder".to_string()),
+    }
 }
 
 fn parse_json_option_or_default(
@@ -227,7 +242,7 @@ fn extract_local_published_template_source_root(
         None => std::env::temp_dir(),
     };
     let extraction_root = extraction_parent.join(unique_template_tmp_name());
-    fs::create_dir_all(&extraction_root).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&extraction_root).map_err(io_error_to_string)?;
     extract_template_layer(&layer_path, &extraction_root)?;
 
     let source_root = if extraction_root.join("src").is_dir() {
@@ -239,12 +254,10 @@ fn extract_local_published_template_source_root(
 }
 
 fn extract_template_layer(layer_path: &Path, extraction_root: &Path) -> Result<(), String> {
-    let layer = fs::File::open(layer_path).map_err(|error| error.to_string())?;
+    let layer = fs::File::open(layer_path).map_err(io_error_to_string)?;
     let decoder = GzDecoder::new(layer);
     let mut archive = Archive::new(decoder);
-    archive
-        .unpack(extraction_root)
-        .map_err(|error| error.to_string())
+    archive.unpack(extraction_root).map_err(io_error_to_string)
 }
 
 fn apply_embedded_published_template(
@@ -299,13 +312,13 @@ fn apply_generic_published_template(
     }
 
     let config_dir = workspace_root.join(".devcontainer");
-    fs::create_dir_all(&config_dir).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&config_dir).map_err(io_error_to_string)?;
     fs::write(
         config_dir.join("devcontainer.json"),
         serde_json::to_string_pretty(&Value::Object(devcontainer))
-            .map_err(|error| error.to_string())?,
+            .expect("serializing JSON value cannot fail"),
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(io_error_to_string)?;
 
     Ok(json!({
         "files": ["./.devcontainer/devcontainer.json"],
@@ -335,9 +348,9 @@ fn copy_embedded_template_contents(
     template_options: &Map<String, Value>,
     omit_paths: &[String],
 ) -> Result<(), String> {
-    fs::create_dir_all(workspace_root).map_err(|error| error.to_string())?;
-    for entry in fs::read_dir(template_root).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
+    fs::create_dir_all(workspace_root).map_err(io_error_to_string)?;
+    for entry in fs::read_dir(template_root).map_err(io_error_to_string)? {
+        let entry = entry.map_err(io_error_to_string)?;
         if entry.file_name() == "devcontainer-template.json" {
             continue;
         }
@@ -364,9 +377,9 @@ fn copy_embedded_template_entry(
         return Ok(());
     }
     if source.is_dir() {
-        fs::create_dir_all(destination).map_err(|error| error.to_string())?;
-        for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
-            let entry = entry.map_err(|error| error.to_string())?;
+        fs::create_dir_all(destination).map_err(io_error_to_string)?;
+        for entry in fs::read_dir(source).map_err(io_error_to_string)? {
+            let entry = entry.map_err(io_error_to_string)?;
             let child_relative_path = relative_path.join(entry.file_name());
             copy_embedded_template_entry(
                 &entry.path(),
@@ -379,12 +392,12 @@ fn copy_embedded_template_entry(
         return Ok(());
     }
 
-    let bytes = fs::read(source).map_err(|error| error.to_string())?;
+    let bytes = fs::read(source).map_err(io_error_to_string)?;
     if let Ok(text) = String::from_utf8(bytes) {
         let substituted = substitute_template_options(&text, template_options);
-        fs::write(destination, substituted).map_err(|error| error.to_string())?;
+        fs::write(destination, substituted).map_err(io_error_to_string)?;
     } else {
-        fs::copy(source, destination).map_err(|error| error.to_string())?;
+        fs::copy(source, destination).map_err(io_error_to_string)?;
     }
     Ok(())
 }
@@ -396,7 +409,7 @@ fn prepare_template_source_root(
     let Some(tmp_dir) = tmp_dir else {
         return Ok(source_root.to_path_buf());
     };
-    fs::create_dir_all(tmp_dir).map_err(|error| error.to_string())?;
+    fs::create_dir_all(tmp_dir).map_err(io_error_to_string)?;
     let scratch_root = tmp_dir.join(unique_template_tmp_name());
     common::copy_directory_recursive(source_root, &scratch_root)?;
     Ok(scratch_root)
@@ -473,7 +486,7 @@ fn merge_extra_features_into_template(
         Some(config_path) => config_path,
         None => return Err("Applied template is missing a dev container config".to_string()),
     };
-    let raw = fs::read_to_string(&config_path).map_err(|error| error.to_string())?;
+    let raw = fs::read_to_string(&config_path).map_err(io_error_to_string)?;
     let mut config = crate::config::parse_jsonc_value(&raw)?;
     let config_object = match config.as_object_mut() {
         Some(config_object) => config_object,
@@ -497,9 +510,9 @@ fn merge_extra_features_into_template(
     }
     fs::write(
         config_path,
-        serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?,
+        serde_json::to_string_pretty(&config).expect("serializing JSON value cannot fail"),
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(io_error_to_string)?;
     Ok(())
 }
 
@@ -547,6 +560,7 @@ mod tests {
         copy_embedded_template_contents, merge_extra_features_into_template, run_template_apply,
         substitute_template_options, template_option_string, template_option_values,
         template_path_is_omitted, template_workspace_folder,
+        template_workspace_folder_with_current_dir,
     };
 
     #[test]
@@ -585,6 +599,19 @@ mod tests {
         let workspace = template_workspace_folder(&[]).expect("workspace folder");
 
         assert_eq!(workspace, current);
+    }
+
+    #[test]
+    fn template_workspace_folder_reports_current_directory_errors() {
+        let error = template_workspace_folder_with_current_dir(&[], || {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "current directory missing",
+            ))
+        })
+        .expect_err("current dir error");
+
+        assert_eq!(error, "Unable to determine workspace folder");
     }
 
     #[test]

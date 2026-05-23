@@ -72,8 +72,10 @@ pub(crate) fn serialized_container_metadata(
     metadata
         .entry("workspaceFolder".to_string())
         .or_insert_with(|| Value::String(remote_workspace_folder.to_string()));
-    serde_json::to_string(&Value::Array(vec![Value::Object(metadata)]))
-        .map_err(|error| format!("Failed to serialize container metadata: {error}"))
+    Ok(
+        serde_json::to_string(&Value::Array(vec![Value::Object(metadata)]))
+            .expect("container metadata values are serializable"),
+    )
 }
 
 fn merge_last_metadata_value(entries: &[Value], merged: &mut Map<String, Value>, key: &str) {
@@ -170,6 +172,13 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["postCreateCommand"], "echo ready");
+    }
+
+    #[test]
+    fn metadata_entries_ignore_invalid_or_scalar_labels() {
+        assert!(metadata_entries(None).is_empty());
+        assert!(metadata_entries(Some("not json")).is_empty());
+        assert!(metadata_entries(Some(r#""scalar""#)).is_empty());
     }
 
     #[test]

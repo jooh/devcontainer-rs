@@ -1,10 +1,12 @@
 //! Unit tests for compose runtime helpers.
 
 use serde_json::json;
+use std::env;
 use std::fs;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
-use super::build_service;
-use super::override_file::compose_metadata_override_file;
+use super::override_file::{compose_build_override_file, compose_metadata_override_file};
 use super::project::{
     compose_name_from_file, compose_project_name, sanitize_project_name,
     substitute_compose_env_with,
@@ -13,7 +15,79 @@ use super::service::{
     compose_image_name_separator, inspect_service_definition, parse_semver_prefix,
 };
 use super::uses_compose_config;
-use crate::test_support::{init_git_repo, run_git, unique_temp_dir, write_executable_script};
+use super::{
+    build_service, load_compose_spec, resolve_container_id, resolve_container_id_including_stopped,
+    up_service, ComposeSpec,
+};
+use crate::runtime::context::ResolvedConfig;
+use crate::test_support::{
+    init_git_repo, process_env_guard, run_git, unique_temp_dir, write_executable_script,
+};
+
+static PATH_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+struct PathEnvGuard {
+    original: Option<std::ffi::OsString>,
+}
+
+impl Drop for PathEnvGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => env::set_var("PATH", value),
+            None => env::remove_var("PATH"),
+        }
+    }
+}
+
+fn with_host_tool_path<T>(action: impl FnOnce() -> T) -> T {
+    let _guard = PATH_ENV_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("PATH env lock");
+    let original = env::var_os("PATH");
+    env::set_var("PATH", host_tool_path(original.as_ref()));
+    let _path_guard = PathEnvGuard { original };
+    action()
+}
+
+fn host_tool_path(original: Option<&std::ffi::OsString>) -> std::ffi::OsString {
+    let mut paths = Vec::new();
+    if let Some(parent) = git_executable().parent() {
+        paths.push(parent.to_path_buf());
+    }
+    paths.extend(
+        ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+            .iter()
+            .map(PathBuf::from),
+    );
+    if let Some(original) = original {
+        paths.extend(env::split_paths(original));
+    }
+    env::join_paths(paths).expect("host tool PATH")
+}
+
+fn git_executable() -> PathBuf {
+    [
+        "/usr/bin/git",
+        "/opt/homebrew/bin/git",
+        "/usr/local/bin/git",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .find(|path| path.is_file())
+    .unwrap_or_else(|| PathBuf::from("git"))
+}
+
+fn resolved_config(
+    workspace_folder: std::path::PathBuf,
+    configuration: serde_json::Value,
+) -> ResolvedConfig {
+    ResolvedConfig {
+        config_file: workspace_folder.join(".devcontainer.json"),
+        workspace_folder,
+        configuration,
+    }
+}
 
 #[test]
 fn detects_compose_configs() {
@@ -24,6 +98,108 @@ fn detects_compose_configs() {
     assert!(!uses_compose_config(&json!({
         "image": "alpine:3.20"
     })));
+}
+
+#[test]
+fn load_compose_spec_skips_non_compose_configs_and_reports_invalid_compose_files() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+
+    let non_compose = resolved_config(
+        root.clone(),
+        json!({
+            "image": "alpine:3.20"
+        }),
+    );
+    assert!(load_compose_spec(&non_compose)
+        .expect("non-compose config")
+        .is_none());
+
+    let service_without_compose_file = resolved_config(
+        root.clone(),
+        json!({
+            "service": "app"
+        }),
+    );
+    assert!(load_compose_spec(&service_without_compose_file)
+        .expect("service without compose file")
+        .is_none());
+
+    let invalid = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": true,
+            "service": "app"
+        }),
+    );
+    assert!(load_compose_spec(&invalid)
+        .expect_err("invalid dockerComposeFile")
+        .contains("string or array"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn load_compose_spec_reports_missing_compose_files_and_services() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+
+    let missing_file = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "missing.yml",
+            "service": "app"
+        }),
+    );
+    let error = load_compose_spec(&missing_file).expect_err("missing compose file");
+    assert!(!error.is_empty());
+
+    let compose_file = root.join("docker-compose.yml");
+    fs::write(
+        &compose_file,
+        "services:\n  other:\n    image: alpine:3.20\n",
+    )
+    .expect("compose");
+    let missing_service = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+    let error = load_compose_spec(&missing_service).expect_err("missing compose service");
+    assert!(
+        error.contains("Unable to locate compose service"),
+        "{error}"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn compose_entrypoints_report_non_compose_configs() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "image": "alpine:3.20"
+        }),
+    );
+
+    assert!(build_service(&resolved, &[])
+        .expect_err("build service")
+        .contains("expected but not found"));
+    assert!(
+        up_service(&resolved, &[], "/workspace", "alpine:3.20", false)
+            .expect_err("up service")
+            .contains("expected but not found")
+    );
+    assert!(resolve_container_id(&resolved, &[])
+        .expect_err("resolve container")
+        .contains("expected but not found"));
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -206,6 +382,53 @@ fn compose_project_name_reads_dotenv_and_reports_read_errors() {
 }
 
 #[test]
+fn compose_project_name_reads_top_level_name_from_compose_files() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    let compose_file = root.join("docker-compose.yml");
+    fs::create_dir_all(&root).expect("compose dir");
+    fs::write(
+        &compose_file,
+        "name: Named-Project\nservices:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose");
+
+    let project_name =
+        compose_project_name(std::slice::from_ref(&compose_file)).expect("project name");
+
+    assert_eq!(project_name, "named-project");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn compose_project_name_honors_environment_before_files() {
+    let mut env_guard = process_env_guard();
+    env_guard.set_var("COMPOSE_PROJECT_NAME", "Env Project!");
+
+    let project_name = compose_project_name(&[]).expect("env project name");
+
+    assert_eq!(project_name, "envproject");
+}
+
+#[test]
+fn compose_project_name_ignores_blank_environment_values() {
+    let mut env_guard = process_env_guard();
+    env_guard.set_var("COMPOSE_PROJECT_NAME", "  ");
+    let root = unique_temp_dir("devcontainer-compose-test");
+    let compose_file = root.join("docker-compose.yml");
+    fs::create_dir_all(&root).expect("compose dir");
+    fs::write(&compose_file, "services:\n  app:\n    image: alpine:3.20\n").expect("compose");
+
+    let project_name =
+        compose_project_name(std::slice::from_ref(&compose_file)).expect("project name");
+
+    assert_eq!(
+        project_name,
+        root.file_name().unwrap().to_string_lossy().to_lowercase()
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn compose_name_from_file_reads_top_level_name() {
     let root = unique_temp_dir("devcontainer-compose-test");
     let compose_file = root.join("docker-compose.yml");
@@ -221,6 +444,36 @@ fn compose_name_from_file_reads_top_level_name() {
         .expect("top-level name");
 
     assert_eq!(project_name, "Custom-Project-Name");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn compose_name_from_file_reports_read_errors() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    let compose_file = root.join("missing.yml");
+
+    let error = compose_name_from_file(&compose_file).expect_err("missing compose file");
+
+    assert!(!error.is_empty());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn compose_name_from_file_ignores_nested_names_and_unquotes_values() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    let compose_file = root.join("docker-compose.yml");
+    fs::create_dir_all(&root).expect("compose dir");
+    fs::write(
+        &compose_file,
+        "services:\n  app:\n    name: Nested\nname: 'Quoted-Project'\n",
+    )
+    .expect("compose");
+
+    let project_name = compose_name_from_file(&compose_file)
+        .expect("compose name")
+        .expect("top-level name");
+
+    assert_eq!(project_name, "Quoted-Project");
     let _ = fs::remove_dir_all(root);
 }
 
@@ -296,6 +549,10 @@ fn substitute_compose_env_supports_plain_variable_interpolation() {
         substitute_compose_env_with("${DEVCONTAINER_COMPOSE_TEST_PRESENT-fallback}", &lookup),
         "MyProject"
     );
+    assert_eq!(
+        substitute_compose_env_with("'${MISSING:-fallback}'", &lookup),
+        "fallback"
+    );
 }
 
 #[test]
@@ -307,6 +564,112 @@ fn parse_semver_prefix_reads_plain_semver_versions() {
 #[test]
 fn compose_image_name_separator_defaults_to_hyphen_without_runtime_args() {
     assert_eq!(compose_image_name_separator(&[]), '-');
+}
+
+#[test]
+fn compose_image_name_separator_tracks_compose_version_outputs() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    let compose_path = root.join("compose.sh");
+
+    write_executable_script(
+        &compose_path,
+        "#!/bin/sh\nif [ \"${1:-}\" = version ]; then\n  printf '2.7.9\\n'\n  exit 0\nfi\nexit 1\n",
+    );
+    assert_eq!(
+        compose_image_name_separator(&[
+            "--docker-compose-path".to_string(),
+            compose_path.display().to_string()
+        ]),
+        '_'
+    );
+
+    write_executable_script(
+        &compose_path,
+        "#!/bin/sh\nif [ \"${1:-}\" = version ]; then\n  printf '2.8.0\\n'\n  exit 0\nfi\nexit 1\n",
+    );
+    assert_eq!(
+        compose_image_name_separator(&[
+            "--docker-compose-path".to_string(),
+            compose_path.display().to_string()
+        ]),
+        '-'
+    );
+
+    write_executable_script(
+        &compose_path,
+        "#!/bin/sh\nif [ \"${1:-}\" = version ]; then\n  printf 'not-a-version\\n'\n  exit 0\nfi\nexit 1\n",
+    );
+    assert_eq!(
+        compose_image_name_separator(&[
+            "--docker-compose-path".to_string(),
+            compose_path.display().to_string()
+        ]),
+        '-'
+    );
+
+    write_executable_script(
+        &compose_path,
+        "#!/bin/sh\nif [ \"${1:-}\" = version ]; then\n  echo failed >&2\n  exit 7\nfi\nexit 1\n",
+    );
+    assert_eq!(
+        compose_image_name_separator(&[
+            "--docker-compose-path".to_string(),
+            compose_path.display().to_string()
+        ]),
+        '-'
+    );
+
+    assert_eq!(
+        compose_image_name_separator(&[
+            "--docker-compose-path".to_string(),
+            root.join("missing-compose").display().to_string()
+        ]),
+        '-'
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn compose_build_override_file_renders_cache_from_values_with_version() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    let compose_file = root.join("docker-compose.yml");
+    fs::create_dir_all(&root).expect("compose dir");
+    fs::write(
+        &compose_file,
+        "version: '3.9'\nservices:\n  app:\n    build: .\n",
+    )
+    .expect("compose");
+    let spec = ComposeSpec {
+        files: vec![compose_file],
+        service: "app".to_string(),
+        image: None,
+        has_build: true,
+        user: None,
+        project_name: "project".to_string(),
+    };
+
+    assert!(compose_build_override_file(&spec, &[])
+        .expect("empty cache-from")
+        .is_none());
+    let override_file = compose_build_override_file(
+        &spec,
+        &[
+            "--cache-from".to_string(),
+            "type=registry,ref=example/cache:$latest".to_string(),
+        ],
+    )
+    .expect("cache-from override")
+    .expect("override file");
+    let override_content = fs::read_to_string(&override_file).expect("override content");
+
+    assert!(override_content.starts_with("version: '3.9'\n\n"));
+    assert!(override_content.contains("cache_from:"));
+    assert!(override_content.contains("type=registry,ref=example/cache:$$latest"));
+
+    let _ = fs::remove_file(override_file);
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -343,118 +706,275 @@ fn metadata_override_file_mounts_workspace_by_default() {
 }
 
 #[test]
-fn metadata_override_file_mounts_nested_workspaces_from_the_git_root() {
+fn metadata_override_file_reports_missing_service_and_gpu_detection_errors() {
     let root = unique_temp_dir("devcontainer-compose-test");
-    let repo_root = root.join("repo");
-    let workspace = repo_root.join("packages").join("app");
-    fs::create_dir_all(&workspace).expect("workspace root");
-    init_git_repo(&repo_root);
-    let expected_repo_root = repo_root
-        .canonicalize()
-        .unwrap_or_else(|_| repo_root.clone());
-    let resolved = crate::runtime::context::ResolvedConfig {
-        workspace_folder: workspace,
-        config_file: expected_repo_root
-            .join("packages")
-            .join("app")
-            .join(".devcontainer.json"),
-        configuration: json!({
+    fs::create_dir_all(&root).expect("workspace root");
+    let missing_service = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml"
+        }),
+    );
+    assert!(
+        compose_metadata_override_file(&missing_service, &[], "/workspace", None)
+            .expect_err("missing service")
+            .contains("must define service")
+    );
+
+    let gpu_config = resolved_config(
+        root.clone(),
+        json!({
             "dockerComposeFile": "docker-compose.yml",
             "service": "app",
+            "hostRequirements": {
+                "gpu": "optional"
+            }
         }),
-    };
+    );
+    let missing_engine = root.join("missing-engine");
+    let error = compose_metadata_override_file(
+        &gpu_config,
+        &[
+            "--docker-path".to_string(),
+            missing_engine.display().to_string(),
+        ],
+        "/workspace",
+        None,
+    )
+    .expect_err("gpu detection should fail");
+    assert!(error.contains("missing-engine"), "{error}");
 
-    let override_file =
-        compose_metadata_override_file(&resolved, &[], "/workspaces/repo/packages/app", None)
-            .expect("override result")
-            .expect("override path");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn metadata_override_file_skips_non_bind_workspace_mounts() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app",
+            "workspaceMount": "type=volume,source=workspace-cache,target=/workspace"
+        }),
+    );
+
+    let override_file = compose_metadata_override_file(&resolved, &[], "/workspace", None)
+        .expect("override result")
+        .expect("override path");
     let override_content = fs::read_to_string(&override_file).expect("override content");
 
-    assert!(override_content.contains(&format!(
-        "- '{}:/workspaces/repo'",
-        expected_repo_root.display()
-    )));
-    assert!(!override_content.contains(&format!(
-        "{}:/workspaces/repo/packages/app",
-        expected_repo_root.display()
-    )));
+    assert!(!override_content.contains("\n    volumes:\n"));
+    assert!(!override_content.contains("\nvolumes:\n"));
 
     let _ = fs::remove_file(override_file);
     let _ = fs::remove_dir_all(root);
 }
 
 #[test]
-fn metadata_override_file_rebases_worktree_common_dir_for_configured_workspace_folder() {
+fn metadata_override_file_still_renders_when_compose_context_cannot_be_loaded() {
     let root = unique_temp_dir("devcontainer-compose-test");
-    let repo_root = root.join("repo");
-    let worktree_root = root.join("worktrees").join("feature");
-    fs::create_dir_all(&repo_root).expect("repo root");
-    init_git_repo(&repo_root);
-    fs::write(repo_root.join("README.md"), "hello\n").expect("readme");
-    run_git(&repo_root, &["add", "README.md"]);
-    run_git(
-        &repo_root,
-        &[
-            "-c",
-            "user.name=Devcontainer Tests",
-            "-c",
-            "user.email=devcontainer-tests@example.com",
-            "commit",
-            "-m",
-            "init",
-            "--quiet",
-        ],
-    );
-    if let Some(parent) = worktree_root.parent() {
-        fs::create_dir_all(parent).expect("worktree parent");
-    }
-    run_git(
-        &repo_root,
-        &[
-            "worktree",
-            "add",
-            "--relative-paths",
-            worktree_root.to_string_lossy().as_ref(),
-            "-b",
-            "feature",
-        ],
-    );
-    let expected_worktree_root = worktree_root
-        .canonicalize()
-        .unwrap_or_else(|_| worktree_root.clone());
-    let expected_repo_git_dir = repo_root
-        .join(".git")
-        .canonicalize()
-        .unwrap_or_else(|_| repo_root.join(".git"));
-    let resolved = crate::runtime::context::ResolvedConfig {
-        workspace_folder: expected_worktree_root.clone(),
-        config_file: expected_worktree_root.join(".devcontainer.json"),
-        configuration: json!({
-            "dockerComposeFile": "docker-compose.yml",
+    fs::create_dir_all(&root).expect("workspace root");
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": true,
             "service": "app",
-            "workspaceFolder": "/workspace",
+            "workspaceMount": "type=volume,source=workspace-cache,target=/workspace"
         }),
-    };
+    );
 
-    let override_file = compose_metadata_override_file(
-        &resolved,
-        &["--mount-git-worktree-common-dir".to_string()],
-        "/workspace",
-        None,
-    )
-    .expect("override result")
-    .expect("override path");
+    let override_file = compose_metadata_override_file(&resolved, &[], "/workspace", None)
+        .expect("override result")
+        .expect("override path");
     let override_content = fs::read_to_string(&override_file).expect("override content");
 
-    assert!(override_content.contains(&format!(
-        "- '{}:/workspace'",
-        expected_worktree_root.display()
-    )));
-    assert!(override_content.contains(&expected_repo_git_dir.display().to_string()));
-    assert!(override_content.contains("/repo/.git"));
+    assert!(override_content.starts_with("services:\n"));
+    assert!(override_content.contains("  'app':"));
+    assert!(override_content.contains("entrypoint:"));
 
     let _ = fs::remove_file(override_file);
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn metadata_override_file_preserves_compose_command_without_duplicate_override() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n    command: sleep infinity\n",
+    )
+    .expect("compose");
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app",
+            "workspaceMount": "type=volume,source=workspace-cache,target=/workspace"
+        }),
+    );
+
+    let override_file = compose_metadata_override_file(&resolved, &[], "/workspace", None)
+        .expect("override result")
+        .expect("override path");
+    let override_content = fs::read_to_string(&override_file).expect("override content");
+
+    assert!(override_content.contains("entrypoint:"));
+    assert!(!override_content.contains("command:"));
+
+    let _ = fs::remove_file(override_file);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn metadata_override_file_clears_command_when_compose_entrypoint_would_consume_it() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n    entrypoint: /entrypoint.sh\n",
+    )
+    .expect("compose");
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app",
+            "workspaceMount": "type=volume,source=workspace-cache,target=/workspace"
+        }),
+    );
+
+    let override_file = compose_metadata_override_file(&resolved, &[], "/workspace", None)
+        .expect("override result")
+        .expect("override path");
+    let override_content = fs::read_to_string(&override_file).expect("override content");
+
+    assert!(override_content.contains(r#"command: []"#));
+    assert!(override_content.contains(r#""/entrypoint.sh""#));
+
+    let _ = fs::remove_file(override_file);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn metadata_override_file_mounts_nested_workspaces_from_the_git_root() {
+    with_host_tool_path(|| {
+        let root = unique_temp_dir("devcontainer-compose-test");
+        let repo_root = root.join("repo");
+        let workspace = repo_root.join("packages").join("app");
+        fs::create_dir_all(&workspace).expect("workspace root");
+        init_git_repo(&repo_root);
+        let expected_repo_root = repo_root
+            .canonicalize()
+            .unwrap_or_else(|_| repo_root.clone());
+        let resolved = crate::runtime::context::ResolvedConfig {
+            workspace_folder: workspace,
+            config_file: expected_repo_root
+                .join("packages")
+                .join("app")
+                .join(".devcontainer.json"),
+            configuration: json!({
+                "dockerComposeFile": "docker-compose.yml",
+                "service": "app",
+            }),
+        };
+
+        let override_file =
+            compose_metadata_override_file(&resolved, &[], "/workspaces/repo/packages/app", None)
+                .expect("override result")
+                .expect("override path");
+        let override_content = fs::read_to_string(&override_file).expect("override content");
+
+        assert!(override_content.contains(&format!(
+            "- '{}:/workspaces/repo'",
+            expected_repo_root.display()
+        )));
+        assert!(!override_content.contains(&format!(
+            "{}:/workspaces/repo/packages/app",
+            expected_repo_root.display()
+        )));
+
+        let _ = fs::remove_file(override_file);
+        let _ = fs::remove_dir_all(root);
+    });
+}
+
+#[test]
+fn metadata_override_file_rebases_worktree_common_dir_for_configured_workspace_folder() {
+    with_host_tool_path(|| {
+        let root = unique_temp_dir("devcontainer-compose-test");
+        let repo_root = root.join("repo");
+        let worktree_root = root.join("worktrees").join("feature");
+        fs::create_dir_all(&repo_root).expect("repo root");
+        init_git_repo(&repo_root);
+        fs::write(repo_root.join("README.md"), "hello\n").expect("readme");
+        run_git(&repo_root, &["add", "README.md"]);
+        run_git(
+            &repo_root,
+            &[
+                "-c",
+                "user.name=Devcontainer Tests",
+                "-c",
+                "user.email=devcontainer-tests@example.com",
+                "commit",
+                "-m",
+                "init",
+                "--quiet",
+            ],
+        );
+        if let Some(parent) = worktree_root.parent() {
+            fs::create_dir_all(parent).expect("worktree parent");
+        }
+        run_git(
+            &repo_root,
+            &[
+                "worktree",
+                "add",
+                "--relative-paths",
+                worktree_root.to_string_lossy().as_ref(),
+                "-b",
+                "feature",
+            ],
+        );
+        let expected_worktree_root = worktree_root
+            .canonicalize()
+            .unwrap_or_else(|_| worktree_root.clone());
+        let expected_repo_git_dir = repo_root
+            .join(".git")
+            .canonicalize()
+            .unwrap_or_else(|_| repo_root.join(".git"));
+        let resolved = crate::runtime::context::ResolvedConfig {
+            workspace_folder: expected_worktree_root.clone(),
+            config_file: expected_worktree_root.join(".devcontainer.json"),
+            configuration: json!({
+                "dockerComposeFile": "docker-compose.yml",
+                "service": "app",
+                "workspaceFolder": "/workspace",
+            }),
+        };
+
+        let override_file = compose_metadata_override_file(
+            &resolved,
+            &["--mount-git-worktree-common-dir".to_string()],
+            "/workspace",
+            None,
+        )
+        .expect("override result")
+        .expect("override path");
+        let override_content = fs::read_to_string(&override_file).expect("override content");
+
+        assert!(override_content.contains(&format!(
+            "- '{}:/workspace'",
+            expected_worktree_root.display()
+        )));
+        assert!(override_content.contains(&expected_repo_git_dir.display().to_string()));
+        assert!(override_content.contains("/repo/.git"));
+
+        let _ = fs::remove_file(override_file);
+        let _ = fs::remove_dir_all(root);
+    });
 }
 
 #[test]
@@ -829,6 +1349,612 @@ fn metadata_override_file_adds_gpu_resources_when_requested() {
     assert!(override_content.contains("capabilities: [gpu]"));
 
     let _ = fs::remove_file(override_file);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn build_service_rejects_label_and_invalid_additional_features_before_engine_work() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n    build:\n      context: .\n",
+    )
+    .expect("compose file");
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+
+    let label_error = build_service(
+        &resolved,
+        &["--label".to_string(), "example=value".to_string()],
+    )
+    .expect_err("label should be rejected");
+    assert_eq!(label_error, "--label not supported for compose builds.");
+
+    let cache_to_error = build_service(
+        &resolved,
+        &["--cache-to".to_string(), "type=inline".to_string()],
+    )
+    .expect_err("cache-to should be rejected");
+    assert_eq!(
+        cache_to_error,
+        "--cache-to not supported for compose builds."
+    );
+
+    let platform_error = build_service(
+        &resolved,
+        &["--platform".to_string(), "linux/arm64".to_string()],
+    )
+    .expect_err("platform should be rejected");
+    assert_eq!(platform_error, "--platform or --push not supported.");
+
+    let output_error = build_service(
+        &resolved,
+        &["--output".to_string(), "type=docker".to_string()],
+    )
+    .expect_err("output should be rejected");
+    assert_eq!(output_error, "--output not supported.");
+
+    let additional_features_error = build_service(
+        &resolved,
+        &["--additional-features".to_string(), "[]".to_string()],
+    )
+    .expect_err("additional features should be validated");
+    assert_eq!(
+        additional_features_error,
+        "--additional-features must be a JSON object"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn build_service_runs_compose_build_with_cache_override_and_no_cache() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n    build:\n      context: .\n",
+    )
+    .expect("compose file");
+    let compose_path = root.join("compose.sh");
+    let log = root.join("compose.log");
+    let captured_override = root.join("build-override.yml");
+    write_executable_script(
+        &compose_path,
+        &format!(
+            r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> '{}'
+last_file=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-f" ]; then
+    last_file="$2"
+    shift 2
+    continue
+  fi
+  shift
+done
+if [ -n "$last_file" ] && [ -f "$last_file" ]; then
+  cp "$last_file" '{}'
+fi
+exit 0
+"#,
+            log.display(),
+            captured_override.display()
+        ),
+    );
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+
+    let image = build_service(
+        &resolved,
+        &[
+            "--docker-compose-path".to_string(),
+            compose_path.display().to_string(),
+            "--cache-from".to_string(),
+            "example/cache:latest".to_string(),
+            "--build-no-cache".to_string(),
+        ],
+    )
+    .expect("compose build");
+
+    assert_eq!(image, "alpine:3.20");
+    let log = fs::read_to_string(log).expect("compose log");
+    assert!(log.contains("build --pull --no-cache app"), "{log}");
+    let override_content = fs::read_to_string(captured_override).expect("override copy");
+    assert!(
+        override_content.contains("cache_from:"),
+        "{override_content}"
+    );
+    assert!(
+        override_content.contains("example/cache:latest"),
+        "{override_content}"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn build_service_returns_default_image_when_service_has_no_image_or_build() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(root.join("docker-compose.yml"), "services:\n  app: {}\n").expect("compose file");
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+
+    let image = build_service(&resolved, &[]).expect("default image");
+
+    assert_eq!(
+        image,
+        format!(
+            "{}-app",
+            root.file_name().unwrap().to_string_lossy().to_lowercase()
+        )
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn up_service_passes_no_recreate_and_configured_run_services() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n  db:\n    image: postgres:16\n",
+    )
+    .expect("compose file");
+    let compose_path = root.join("compose.sh");
+    let log_path = root.join("compose.log");
+    write_executable_script(
+        &compose_path,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+            log_path.display()
+        ),
+    );
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app",
+            "runServices": ["db"]
+        }),
+    );
+
+    up_service(
+        &resolved,
+        &[
+            "--docker-compose-path".to_string(),
+            compose_path.display().to_string(),
+        ],
+        "/workspace",
+        "alpine:3.20",
+        true,
+    )
+    .expect("compose up");
+
+    let log = fs::read_to_string(&log_path).expect("compose log");
+    assert!(log.contains("up -d --no-recreate db app"), "{log}");
+
+    fs::write(&log_path, "").expect("clear compose log");
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app",
+            "runServices": ["app", "db"]
+        }),
+    );
+    up_service(
+        &resolved,
+        &[
+            "--docker-compose-path".to_string(),
+            compose_path.display().to_string(),
+        ],
+        "/workspace",
+        "alpine:3.20",
+        false,
+    )
+    .expect("compose up with primary service listed");
+    let log = fs::read_to_string(&log_path).expect("compose log");
+    assert!(log.contains("up -d app db"), "{log}");
+    assert!(!log.contains("up -d app db app"), "{log}");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn resolve_container_id_can_include_stopped_and_skip_invalid_rows() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose file");
+    let engine_path = root.join("engine.sh");
+    write_executable_script(
+        &engine_path,
+        "#!/bin/sh\nif [ \"${1:-}\" = ps ]; then\n  printf '\\ninvalid id\\nabc123\\n'\nfi\nexit 0\n",
+    );
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+
+    let container_id = resolve_container_id_including_stopped(
+        &resolved,
+        &[
+            "--docker-path".to_string(),
+            engine_path.display().to_string(),
+        ],
+    )
+    .expect("container lookup");
+
+    assert_eq!(container_id.as_deref(), Some("abc123"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn build_service_reports_compose_build_failures() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n    build:\n      context: .\n",
+    )
+    .expect("compose file");
+    let compose_path = root.join("compose.sh");
+    write_executable_script(
+        &compose_path,
+        "#!/bin/sh\ncase \" $* \" in\n  *\" build \"*) echo compose build failed >&2; exit 12 ;;\n  *) exit 0 ;;\nesac\n",
+    );
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+
+    let error = build_service(
+        &resolved,
+        &[
+            "--docker-compose-path".to_string(),
+            compose_path.display().to_string(),
+        ],
+    )
+    .expect_err("compose build failure");
+
+    assert_eq!(error, "compose build failed");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn build_service_reports_feature_build_failures() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose file");
+    let feature_dir = root.join("local-feature");
+    fs::create_dir_all(&feature_dir).expect("feature dir");
+    fs::write(
+        feature_dir.join("devcontainer-feature.json"),
+        r#"{
+  "id": "local-feature",
+  "version": "1.0.0",
+  "name": "Local Feature"
+}
+"#,
+    )
+    .expect("feature manifest");
+    fs::write(feature_dir.join("install.sh"), "#!/bin/sh\nexit 0\n").expect("install script");
+    let engine_path = root.join("engine.sh");
+    write_executable_script(
+        &engine_path,
+        "#!/bin/sh\nif [ \"${1:-}\" = build ]; then\n  echo feature build failed >&2\n  exit 17\nfi\nexit 0\n",
+    );
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app",
+            "features": {
+                "./local-feature": {}
+            }
+        }),
+    );
+
+    let error = build_service(
+        &resolved,
+        &[
+            "--docker-path".to_string(),
+            engine_path.display().to_string(),
+        ],
+    )
+    .expect_err("feature build failure");
+
+    assert_eq!(error, "feature build failed");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn build_service_reports_lockfile_update_failures_after_feature_build() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    let workspace = root.join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace root");
+    let compose_file = workspace.join("docker-compose.yml");
+    fs::write(&compose_file, "services:\n  app:\n    image: alpine:3.20\n").expect("compose file");
+    let feature_dir = workspace.join("local-feature");
+    fs::create_dir_all(&feature_dir).expect("feature dir");
+    fs::write(
+        feature_dir.join("devcontainer-feature.json"),
+        r#"{
+  "id": "local-feature",
+  "version": "1.0.0",
+  "name": "Local Feature"
+}
+
+"#,
+    )
+    .expect("feature manifest");
+    fs::write(feature_dir.join("install.sh"), "#!/bin/sh\nexit 0\n").expect("install script");
+    let engine_path = root.join("engine.sh");
+    write_executable_script(&engine_path, "#!/bin/sh\nexit 0\n");
+    let missing_config_dir = root.join("missing-config-dir");
+    let resolved = resolved_config(
+        workspace.clone(),
+        json!({
+            "dockerComposeFile": compose_file.display().to_string(),
+            "service": "app",
+            "features": {
+                (feature_dir.display().to_string()): {}
+            }
+        }),
+    );
+    let resolved = ResolvedConfig {
+        config_file: missing_config_dir.join("devcontainer.json"),
+        ..resolved
+    };
+
+    let error = build_service(
+        &resolved,
+        &[
+            "--docker-path".to_string(),
+            engine_path.display().to_string(),
+        ],
+    )
+    .expect_err("lockfile update failure");
+
+    assert!(!error.is_empty());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn build_service_builds_feature_image_successfully() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose file");
+    let feature_dir = root.join("local-feature");
+    fs::create_dir_all(&feature_dir).expect("feature dir");
+    fs::write(
+        feature_dir.join("devcontainer-feature.json"),
+        r#"{
+  "id": "local-feature",
+  "version": "1.0.0",
+  "name": "Local Feature"
+}
+"#,
+    )
+    .expect("feature manifest");
+    fs::write(feature_dir.join("install.sh"), "#!/bin/sh\nexit 0\n").expect("install script");
+    let engine_path = root.join("engine.sh");
+    let log = root.join("engine.log");
+    write_executable_script(
+        &engine_path,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+            log.display()
+        ),
+    );
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app",
+            "features": {
+                "./local-feature": {}
+            }
+        }),
+    );
+
+    let image = build_service(
+        &resolved,
+        &[
+            "--docker-path".to_string(),
+            engine_path.display().to_string(),
+            "--image-name".to_string(),
+            "example/compose-featured:test".to_string(),
+        ],
+    )
+    .expect("feature image");
+
+    assert_eq!(image, "example/compose-featured:test");
+    let log = fs::read_to_string(log).expect("engine log");
+    assert!(
+        log.contains("build --tag example/compose-featured:test"),
+        "{log}"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn up_service_pins_rebuilt_images_and_reports_compose_errors() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose file");
+    let compose_path = root.join("compose.sh");
+    write_executable_script(
+        &compose_path,
+        "#!/bin/sh\ncase \" $* \" in\n  *\" up \"*) echo compose up failed >&2; exit 19 ;;\n  *) exit 0 ;;\nesac\n",
+    );
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+
+    let error = up_service(
+        &resolved,
+        &[
+            "--docker-compose-path".to_string(),
+            compose_path.display().to_string(),
+        ],
+        "/workspace",
+        "example/rebuilt:latest",
+        false,
+    )
+    .expect_err("compose up failure");
+
+    assert_eq!(error, "compose up failed");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn up_service_reports_metadata_override_validation_errors() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose file");
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+
+    let error = up_service(
+        &resolved,
+        &[
+            "--mount".to_string(),
+            "type=bind,target=/workspace".to_string(),
+        ],
+        "/workspace",
+        "alpine:3.20",
+        false,
+    )
+    .expect_err("invalid mount should fail before compose up");
+
+    assert!(
+        error.contains("Invalid value for option --mount"),
+        "{error}"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn up_service_reports_missing_compose_binary() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose file");
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+
+    let error = up_service(
+        &resolved,
+        &[
+            "--docker-compose-path".to_string(),
+            root.join("missing-compose").display().to_string(),
+        ],
+        "/workspace",
+        "alpine:3.20",
+        false,
+    )
+    .expect_err("missing compose binary");
+
+    assert!(
+        error.contains("Container compose executable not found"),
+        "{error}"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn resolve_container_id_reports_engine_ps_failures() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose file");
+    let engine_path = root.join("engine.sh");
+    write_executable_script(
+        &engine_path,
+        "#!/bin/sh\nif [ \"${1:-}\" = ps ]; then\n  echo ps failed >&2\n  exit 23\nfi\nexit 0\n",
+    );
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+
+    let error = resolve_container_id(
+        &resolved,
+        &[
+            "--docker-path".to_string(),
+            engine_path.display().to_string(),
+        ],
+    )
+    .expect_err("ps failure");
+
+    assert_eq!(error, "ps failed");
     let _ = fs::remove_dir_all(root);
 }
 

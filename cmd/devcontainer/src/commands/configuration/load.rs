@@ -7,8 +7,7 @@ use crate::commands::common;
 
 pub(super) fn load_config(args: &[String]) -> Result<LoadedConfig, String> {
     let (workspace_folder, config_file) = common::resolve_read_configuration_path(args)?;
-    let config_source =
-        common::resolve_override_config_path(args)?.unwrap_or_else(|| config_file.clone());
+    let config_source = common::resolve_override_config_path(args)?.unwrap_or(config_file.clone());
     let raw_text = fs::read_to_string(&config_source).map_err(|error| error.to_string())?;
     let configuration = common::load_resolved_config(args)?.2;
     Ok(LoadedConfig {

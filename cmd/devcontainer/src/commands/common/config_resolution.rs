@@ -25,10 +25,12 @@ pub(crate) fn resolve_read_configuration_path(
     let explicit_config = parse_option_value(args, "--config").map(PathBuf::from);
     let override_config = resolve_override_config_path(args)?;
 
-    let initial_workspace = explicit_workspace
-        .clone()
-        .or_else(|| env::current_dir().ok())
-        .ok_or_else(|| "Unable to determine workspace folder".to_string())?;
+    let initial_workspace = match explicit_workspace.clone() {
+        Some(path) => path,
+        None => {
+            env::current_dir().map_err(|_| "Unable to determine workspace folder".to_string())?
+        }
+    };
 
     let workspace_folder = if explicit_workspace.is_some() {
         initial_workspace.clone()
@@ -48,16 +50,34 @@ pub(crate) fn resolve_read_configuration_path(
         config::resolve_config_path(&workspace_folder, explicit_config.as_deref())?
     };
 
-    let resolved_workspace = if explicit_workspace.is_some() {
+    let resolved_workspace = resolved_workspace_path(
+        explicit_workspace.is_some(),
+        explicit_config.is_some(),
+        override_config.as_deref(),
+        workspace_folder,
+        &config_path,
+        initial_workspace,
+    );
+    Ok((resolved_workspace, config_path))
+}
+
+fn resolved_workspace_path(
+    has_explicit_workspace: bool,
+    has_explicit_config: bool,
+    override_config: Option<&Path>,
+    workspace_folder: PathBuf,
+    config_path: &Path,
+    initial_workspace: PathBuf,
+) -> PathBuf {
+    if has_explicit_workspace {
         fs::canonicalize(&workspace_folder).unwrap_or(workspace_folder)
-    } else if explicit_config.is_some() {
-        infer_workspace_folder_from_config(&config_path)
-    } else if override_config.is_some() {
-        infer_workspace_folder_from_config(override_config.as_deref().expect("override config"))
+    } else if has_explicit_config {
+        infer_workspace_folder_from_config(config_path)
+    } else if let Some(override_config) = override_config {
+        infer_workspace_folder_from_config(override_config)
     } else {
         fs::canonicalize(&initial_workspace).unwrap_or(initial_workspace)
-    };
-    Ok((resolved_workspace, config_path))
+    }
 }
 
 fn infer_workspace_folder_from_config(config_path: &Path) -> PathBuf {
@@ -67,7 +87,10 @@ fn infer_workspace_folder_from_config(config_path: &Path) -> PathBuf {
         .find(|path| path.file_name().and_then(|name| name.to_str()) == Some(".devcontainer"))
         .and_then(Path::parent)
         .unwrap_or(config_parent);
-    fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf())
+    match fs::canonicalize(workspace) {
+        Ok(path) => path,
+        Err(_) => workspace.to_path_buf(),
+    }
 }
 
 pub(crate) fn load_resolved_config(args: &[String]) -> Result<(PathBuf, PathBuf, Value), String> {
@@ -86,11 +109,13 @@ fn load_resolved_config_with_label_override(
     id_labels: Option<HashMap<String, String>>,
 ) -> Result<(PathBuf, PathBuf, Value), String> {
     let (workspace_folder, config_file) = resolve_read_configuration_path(args)?;
-    let config_source = resolve_override_config_path(args)?.unwrap_or_else(|| config_file.clone());
+    let config_source = resolve_override_config_path(args)?.unwrap_or(config_file.clone());
     let raw = fs::read_to_string(&config_source).map_err(|error| error.to_string())?;
     let parsed = config::parse_jsonc_value(&raw)?;
-    let id_labels =
-        id_labels.unwrap_or_else(|| id_label_map(args, &workspace_folder, &config_file));
+    let id_labels = match id_labels {
+        Some(id_labels) => id_labels,
+        None => id_label_map(args, &workspace_folder, &config_file),
+    };
     let base_context = ConfigContext {
         workspace_folder: workspace_folder.clone(),
         env: env::vars().collect(),
@@ -125,12 +150,8 @@ fn load_resolved_config_with_label_override(
                     "/".to_string()
                 } else {
                     crate::runtime::context::derived_workspace_mount(&workspace_folder, args)
-                        .map(|derived| derived.remote_workspace_folder)
-                        .unwrap_or_else(|| {
-                            crate::runtime::context::default_remote_workspace_folder(Some(
-                                &workspace_folder,
-                            ))
-                        })
+                        .expect("workspace mount derivation should always return a default")
+                        .remote_workspace_folder
                 },
             )
         });
@@ -175,7 +196,10 @@ mod tests {
     use crate::commands::common::DEVCONTAINER_LOCAL_FOLDER_LABEL;
     use crate::test_support::unique_temp_dir;
 
-    use super::{load_resolved_config, load_resolved_config_with_id_labels};
+    use super::{
+        load_resolved_config, load_resolved_config_with_id_labels, resolve_override_config_path,
+        resolved_workspace_path,
+    };
 
     #[test]
     fn load_resolved_config_with_id_labels_recomputes_devcontainer_id_from_override_labels() {
@@ -210,5 +234,193 @@ mod tests {
         assert_ne!(current["postAttachCommand"], legacy["postAttachCommand"]);
 
         let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn resolved_workspace_path_handles_explicit_config_override_and_default_inputs() {
+        let root = unique_temp_dir("devcontainer-resolved-workspace-path");
+        let explicit_workspace = root.join("explicit-workspace");
+        let config_workspace = root.join("config-workspace");
+        let config_dir = config_workspace.join(".devcontainer");
+        let config_file = config_dir.join("devcontainer.json");
+        let override_workspace = root.join("override-workspace");
+        let override_dir = override_workspace.join(".devcontainer");
+        let override_file = override_dir.join("devcontainer.json");
+        let default_workspace = root.join("default-workspace");
+        fs::create_dir_all(&explicit_workspace).expect("explicit workspace");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        fs::create_dir_all(&override_dir).expect("override dir");
+        fs::create_dir_all(&default_workspace).expect("default workspace");
+
+        assert_eq!(
+            resolved_workspace_path(
+                true,
+                false,
+                None,
+                explicit_workspace.clone(),
+                &config_file,
+                default_workspace.clone(),
+            ),
+            fs::canonicalize(&explicit_workspace).expect("canonical explicit workspace")
+        );
+        assert_eq!(
+            resolved_workspace_path(
+                false,
+                true,
+                None,
+                explicit_workspace,
+                &config_file,
+                default_workspace.clone(),
+            ),
+            fs::canonicalize(&config_workspace).expect("canonical config workspace")
+        );
+        assert_eq!(
+            resolved_workspace_path(
+                false,
+                false,
+                Some(&override_file),
+                config_workspace,
+                &config_file,
+                default_workspace.clone(),
+            ),
+            fs::canonicalize(&override_workspace).expect("canonical override workspace")
+        );
+        assert_eq!(
+            resolved_workspace_path(
+                false,
+                false,
+                None,
+                override_workspace,
+                &config_file,
+                default_workspace.clone(),
+            ),
+            fs::canonicalize(&default_workspace).expect("canonical default workspace")
+        );
+        assert_eq!(
+            resolved_workspace_path(
+                false,
+                true,
+                None,
+                root.join("unused"),
+                &root.join("missing-workspace/.devcontainer/devcontainer.json"),
+                default_workspace,
+            ),
+            root.join("missing-workspace")
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_resolved_config_substitutes_workspace_folder_setting() {
+        let workspace = unique_temp_dir("devcontainer-config-resolution-workspace-folder");
+        let config_dir = workspace.join(".devcontainer");
+        let config_file = config_dir.join("devcontainer.json");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        fs::write(
+            &config_file,
+            r#"{
+                "workspaceFolder": "${localWorkspaceFolder}/inside",
+                "remoteEnv": {
+                    "HERE": "${containerWorkspaceFolder}"
+                }
+            }"#,
+        )
+        .expect("config write");
+
+        let (_, _, config) = load_resolved_config(&[
+            "--workspace-folder".to_string(),
+            workspace.display().to_string(),
+        ])
+        .expect("config");
+        let canonical_workspace = fs::canonicalize(&workspace).expect("canonical workspace");
+
+        assert_eq!(
+            config["workspaceFolder"],
+            format!("{}/inside", canonical_workspace.display())
+        );
+        assert_eq!(
+            config["remoteEnv"]["HERE"],
+            format!("{}/inside", canonical_workspace.display())
+        );
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn load_resolved_config_infers_container_workspace_from_mount_and_defaults() {
+        let workspace = unique_temp_dir("devcontainer-config-resolution-workspace-mount");
+        let config_dir = workspace.join(".devcontainer");
+        fs::create_dir_all(&config_dir).expect("config dir");
+
+        fs::write(
+            config_dir.join("devcontainer.json"),
+            r#"{
+                "workspaceMount": "source=${localWorkspaceFolder},target=/custom,type=bind",
+                "remoteEnv": {
+                    "HERE": "${containerWorkspaceFolder}"
+                }
+            }"#,
+        )
+        .expect("config write");
+        let (_, _, config) = load_resolved_config(&[
+            "--workspace-folder".to_string(),
+            workspace.display().to_string(),
+        ])
+        .expect("mount config");
+        assert_eq!(config["remoteEnv"]["HERE"], "/custom");
+
+        fs::write(
+            config_dir.join("devcontainer.json"),
+            r#"{
+                "dockerComposeFile": "compose.yml",
+                "service": "app",
+                "remoteEnv": {
+                    "HERE": "${containerWorkspaceFolder}"
+                }
+            }"#,
+        )
+        .expect("compose config write");
+        let (_, _, config) = load_resolved_config(&[
+            "--workspace-folder".to_string(),
+            workspace.display().to_string(),
+        ])
+        .expect("compose config");
+        assert_eq!(config["remoteEnv"]["HERE"], "/");
+
+        fs::write(
+            config_dir.join("devcontainer.json"),
+            r#"{
+                "image": "alpine",
+                "remoteEnv": {
+                    "HERE": "${containerWorkspaceFolder}"
+                }
+            }"#,
+        )
+        .expect("image config write");
+        let (_, _, config) = load_resolved_config(&[
+            "--workspace-folder".to_string(),
+            workspace.display().to_string(),
+        ])
+        .expect("image config");
+        assert_eq!(
+            config["remoteEnv"]["HERE"],
+            format!(
+                "/workspaces/{}",
+                workspace.file_name().unwrap().to_string_lossy()
+            )
+        );
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn relative_override_config_paths_report_missing_files() {
+        let error = resolve_override_config_path(&[
+            "--override-config".to_string(),
+            "missing-devcontainer.json".to_string(),
+        ])
+        .expect_err("missing override config");
+
+        assert!(error.contains("missing-devcontainer.json"), "{error}");
     }
 }

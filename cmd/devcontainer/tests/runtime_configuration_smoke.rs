@@ -3,6 +3,7 @@
 mod support;
 
 use std::fs;
+use std::path::Path;
 
 use support::runtime_harness::{write_devcontainer_config, RuntimeHarness};
 
@@ -136,4 +137,91 @@ fn read_configuration_with_container_id_uses_container_metadata_without_config()
         payload["mergedConfiguration"]["workspaceFolder"],
         "/workspace/from-metadata"
     );
+}
+
+#[test]
+fn read_configuration_with_container_id_reports_inspect_failures() {
+    let harness = RuntimeHarness::new();
+    let failing_engine = harness.root.join("failing-podman");
+    write_executable_script(
+        &failing_engine,
+        "#!/bin/sh\nprintf 'inspect failed for %s\\n' \"$*\" >&2\nexit 7\n",
+    );
+
+    let fake_podman = failing_engine.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "read-configuration",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--container-id",
+            "fake-existing-container",
+        ],
+        &[],
+    );
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(stderr.contains("inspect failed"), "{stderr}");
+}
+
+#[test]
+fn read_configuration_with_container_id_keeps_metadata_without_local_folder() {
+    let harness = RuntimeHarness::new();
+    let inspect_path = harness.root.join("inspect.json");
+    fs::write(
+        &inspect_path,
+        r#"[{
+  "Config": {
+    "Labels": {
+      "devcontainer.metadata": "{ \"remoteEnv\": { \"LOCAL_TOKEN\": \"${localWorkspaceFolder}\" }, \"postCreateCommand\": \"echo metadata\" }"
+    },
+    "Env": []
+  },
+  "Mounts": []
+}]"#,
+    )
+    .expect("inspect file");
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "read-configuration",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--container-id",
+            "fake-existing-container",
+            "--include-merged-configuration",
+        ],
+        &[(
+            "FAKE_PODMAN_INSPECT_FILE",
+            inspect_path.to_string_lossy().as_ref(),
+        )],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let payload = harness.parse_stdout_json(&output);
+    assert_eq!(
+        payload["mergedConfiguration"]["remoteEnv"]["LOCAL_TOKEN"],
+        "${localWorkspaceFolder}"
+    );
+    assert_eq!(
+        payload["mergedConfiguration"]["postCreateCommands"]
+            .as_array()
+            .expect("post create commands")
+            .len(),
+        1
+    );
+    assert!(payload.get("workspace").is_none());
+}
+
+fn write_executable_script(path: &Path, body: &str) {
+    fs::write(path, body).expect("script");
+    let mut permissions = fs::metadata(path).expect("script metadata").permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o755);
+    }
+    fs::set_permissions(path, permissions).expect("script permissions");
 }

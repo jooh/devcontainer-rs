@@ -12,6 +12,7 @@ use super::ComposeSpec;
 use crate::runtime::engine;
 use crate::runtime::paths::resolve_relative;
 
+#[derive(Debug)]
 pub(super) struct ServiceDefinition {
     pub(super) image: Option<String>,
     pub(super) has_build: bool,
@@ -67,11 +68,10 @@ fn default_compose_files(workspace_root: &Path) -> Result<Vec<PathBuf>, String> 
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
         }) {
-            if let Some(compose_files) =
+            return Ok(
                 compose_files_from_env(Some(OsString::from(value)), workspace_root)
-            {
-                return Ok(compose_files);
-            }
+                    .unwrap_or_default(),
+            );
         }
     }
 
@@ -84,17 +84,19 @@ fn default_compose_files(workspace_root: &Path) -> Result<Vec<PathBuf>, String> 
 }
 
 fn compose_files_from_env(value: Option<OsString>, workspace_root: &Path) -> Option<Vec<PathBuf>> {
-    let value = value?;
-    let files = std::env::split_paths(&value)
-        .map(|path| {
-            if path.is_absolute() {
-                path
-            } else {
-                workspace_root.join(path)
-            }
+    value
+        .map(|value| {
+            std::env::split_paths(&value)
+                .map(|path| {
+                    if path.is_absolute() {
+                        path
+                    } else {
+                        workspace_root.join(path)
+                    }
+                })
+                .collect::<Vec<_>>()
         })
-        .collect::<Vec<_>>();
-    (!files.is_empty()).then_some(files)
+        .filter(|files| !files.is_empty())
 }
 
 pub(super) fn inspect_service_definition(
@@ -348,15 +350,16 @@ pub(super) fn parse_semver_prefix(value: &str) -> Option<(u64, u64, u64)> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     use std::fs;
     use std::path::PathBuf;
 
     use serde_json::json;
 
     use super::{
-        compose_files, default_service_image_name, inspect_service_definition, parse_build_args,
-        parse_semver_prefix, parse_service_build, parse_service_command, read_version_prefix,
-        split_shell_words, yaml_scalar_to_string,
+        compose_files, compose_files_from_env, default_service_image_name,
+        inspect_service_definition, parse_build_args, parse_semver_prefix, parse_service_build,
+        parse_service_command, read_version_prefix, split_shell_words, yaml_scalar_to_string,
     };
     use crate::runtime::compose::ComposeSpec;
 
@@ -427,6 +430,62 @@ mod tests {
                 root.join("docker-compose.override.yml")
             ]
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compose_files_default_to_compose_file_environment() {
+        let root = crate::test_support::unique_temp_dir("devcontainer-compose-service-test");
+        fs::create_dir_all(&root).expect("workspace");
+        let mut env_guard = crate::test_support::process_env_guard();
+        let original_compose_file = std::env::var_os("COMPOSE_FILE");
+        env_guard.set_var("COMPOSE_FILE", "compose.yml:sub/extra.yml");
+
+        let files =
+            compose_files(&json!({"dockerComposeFile": []}), &root, &root).expect("default files");
+
+        drop(env_guard);
+        assert_eq!(std::env::var_os("COMPOSE_FILE"), original_compose_file);
+        assert_eq!(
+            files,
+            vec![root.join("compose.yml"), root.join("sub").join("extra.yml")]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compose_files_ignore_dotenv_without_compose_file() {
+        let root = crate::test_support::unique_temp_dir("devcontainer-compose-service-test");
+        fs::create_dir_all(&root).expect("workspace");
+        fs::write(root.join(".env"), "OTHER=value\nCOMPOSE_FILE=\n").expect("env");
+
+        let files =
+            compose_files(&json!({"dockerComposeFile": []}), &root, &root).expect("default files");
+
+        assert_eq!(files, vec![root.join("docker-compose.yml")]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compose_files_from_env_preserves_absolute_paths() {
+        let root = crate::test_support::unique_temp_dir("devcontainer-compose-service-test");
+        let absolute = root.join("compose.yml");
+        let relative = PathBuf::from("relative.yml");
+        fs::create_dir_all(&root).expect("workspace");
+
+        let files = compose_files_from_env(
+            Some(OsString::from(format!(
+                "{}:{}",
+                absolute.display(),
+                relative.display()
+            ))),
+            &root,
+        )
+        .expect("compose files");
+
+        assert_eq!(files, vec![absolute, root.join(relative)]);
+        assert!(compose_files_from_env(None, &root).is_none());
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -507,22 +566,25 @@ services:
         let root = crate::test_support::unique_temp_dir("devcontainer-compose-service-test");
         let compose_file = root.join("docker-compose.yml");
         fs::create_dir_all(&root).expect("compose root");
+
+        let error = inspect_service_definition(&[], "app").expect_err("empty compose files");
+        assert!(
+            error.contains("Unable to locate compose service"),
+            "{error}"
+        );
+
         fs::write(&compose_file, "services:\n  other:\n    image: alpine\n").expect("compose");
 
-        let error = match inspect_service_definition(std::slice::from_ref(&compose_file), "app") {
-            Ok(_) => panic!("missing service should fail"),
-            Err(error) => error,
-        };
+        let error = inspect_service_definition(std::slice::from_ref(&compose_file), "app")
+            .expect_err("missing service should fail");
         assert!(
             error.contains("Unable to locate compose service"),
             "{error}"
         );
 
         fs::write(&compose_file, "services: [").expect("invalid compose");
-        let error = match inspect_service_definition(&[compose_file], "app") {
-            Ok(_) => panic!("invalid yaml should fail"),
-            Err(error) => error,
-        };
+        let error = inspect_service_definition(&[compose_file], "app")
+            .expect_err("invalid yaml should fail");
         assert!(!error.is_empty());
 
         let _ = fs::remove_dir_all(root);
@@ -558,6 +620,22 @@ args:
             parse_build_args(&serde_yaml::from_str("[one, two]").expect("yaml")),
             None
         );
+        let args_with_non_scalar_key = parse_build_args(
+            &serde_yaml::from_str(
+                r#"
+? [compound, key]
+: skipped
+kept: value
+"#,
+            )
+            .expect("yaml"),
+        )
+        .expect("args");
+        assert_eq!(args_with_non_scalar_key.len(), 1);
+        assert_eq!(
+            args_with_non_scalar_key.get("kept").map(String::as_str),
+            Some("value")
+        );
         assert_eq!(
             parse_service_command(&serde_yaml::Value::Null),
             Some(Vec::new())
@@ -580,6 +658,15 @@ args:
                 "'unterminated",
             ]
         );
+        assert_eq!(split_shell_words("  cmd  "), vec!["cmd"]);
+        assert_eq!(
+            split_shell_words(r#"cmd "dangling\"#),
+            vec!["cmd", "\"dangling"]
+        );
+        assert_eq!(
+            split_shell_words(r#"cmd trailing\"#),
+            vec!["cmd", "trailing"]
+        );
     }
 
     #[test]
@@ -601,6 +688,10 @@ args:
         assert_eq!(parse_semver_prefix("v2.8"), Some((2, 8, 0)));
         assert_eq!(parse_semver_prefix("2"), Some((2, 0, 0)));
         assert_eq!(parse_semver_prefix("not-a-version"), None);
+        assert_eq!(parse_semver_prefix(".2"), None);
+        assert_eq!(parse_semver_prefix("2."), None);
+        assert_eq!(parse_semver_prefix("2.x.0"), None);
+        assert_eq!(parse_semver_prefix("2.8.x"), None);
 
         let spec = ComposeSpec {
             files: vec![PathBuf::from("docker-compose.yml")],

@@ -22,7 +22,7 @@ pub(super) fn render_compose_volume_entry(entry: &ComposeVolumeEntry) -> String 
 }
 
 pub(super) fn render_compose_string_sequence(values: &[String]) -> Result<String, String> {
-    serde_json::to_string(values).map_err(|error| error.to_string())
+    Ok(serde_json::to_string(values).expect("compose string sequences must serialize to JSON"))
 }
 
 pub(super) fn render_named_volume_entry(entry: &ComposeNamedVolume) -> String {
@@ -194,6 +194,12 @@ mod tests {
             }),
             "  scratch:\n"
         );
+        assert_eq!(
+            render_compose_volume_entry(&ComposeVolumeEntry::Long(ComposeMountDefinition {
+                fields: Map::new(),
+            })),
+            ""
+        );
     }
 
     #[test]
@@ -222,7 +228,13 @@ mod tests {
         assert!(rendered.contains("      - false"), "{rendered}");
 
         assert_eq!(render_yaml_sequence_item(&json!(null), 4), "    - null\n");
+        assert_eq!(
+            render_yaml_key_value("enabled", &json!(false), 2, ""),
+            "  enabled: false\n"
+        );
+        assert_eq!(render_yaml_sequence_item(&json!(true), 4), "    - true\n");
         assert_eq!(render_yaml_sequence_item(&json!(false), 4), "    - false\n");
         assert_eq!(render_yaml_sequence_item(&json!(7), 4), "    - 7\n");
+        assert_eq!(render_yaml_sequence_item(&json!({}), 4), "");
     }
 }

@@ -25,7 +25,7 @@ pub(super) fn read_configuration_value(
             }
             configuration
         })
-        .unwrap_or_else(|| Value::Object(Map::new()));
+        .unwrap_or(Value::Object(Map::new()));
 
     if let Some(inspected) = inspected {
         configuration = config::substitute_container_env(&configuration, &inspected.container_env);
@@ -79,7 +79,7 @@ pub(super) fn inspect_container(
     let details = inspected
         .as_array()
         .and_then(|entries| entries.first())
-        .ok_or_else(|| "Container engine did not return inspect details".to_string())?;
+        .ok_or("Container engine did not return inspect details".to_string())?;
     let labels = details
         .get("Config")
         .and_then(|value| value.get("Labels"))

@@ -217,10 +217,11 @@ fn workspace_oci_layout_dir(base: &str, workspace_folder: Option<&Path>) -> Opti
         .join(".devcontainer")
         .join("oci-layouts")
         .join(base);
-    layout_dir
-        .join("oci-layout")
-        .is_file()
-        .then_some(layout_dir)
+    if layout_dir.join("oci-layout").is_file() {
+        Some(layout_dir)
+    } else {
+        None
+    }
 }
 
 fn local_oci_index_manifests(layout_dir: &Path) -> Result<Vec<Value>, String> {
@@ -759,6 +760,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["1.1.0", "1.0.0"]
         );
+        assert!(super::workspace_oci_layout_dir(
+            "ghcr.io/acme/features/missing-layout",
+            Some(workspace.as_path())
+        )
+        .is_none());
         let _ = fs::remove_dir_all(workspace);
     }
 
@@ -826,6 +832,7 @@ mod tests {
     #[test]
     fn resolve_wanted_version_prefers_lockfile_latest_and_selectors() {
         let locked = lockfile_with("ghcr.io/devcontainers/features/git", "1.0.4");
+        let locked_exact = lockfile_with("ghcr.io/devcontainers/features/git:1.1.5", "9.9.9");
         let untagged = feature_ref(
             "ghcr.io/devcontainers/features/git",
             "ghcr.io/devcontainers/features/git",
@@ -862,6 +869,10 @@ mod tests {
             Some("1.0.4")
         );
         assert_eq!(
+            resolve_wanted_version(&exact, Some(&locked_exact), None).as_deref(),
+            Some("1.1.5")
+        );
+        assert_eq!(
             resolve_wanted_version(&latest, None, None).as_deref(),
             Some("1.2.0")
         );
@@ -879,9 +890,15 @@ mod tests {
     #[test]
     fn build_feature_version_info_handles_oci_digest_and_unknown_features() {
         let oci = feature_ref(
-            "ghcr.io/devcontainers/features/common-utils:2",
-            "ghcr.io/devcontainers/features/common-utils",
-            Some("2"),
+            "ghcr.io/devcontainers/features/git:1",
+            "ghcr.io/devcontainers/features/git",
+            Some("1"),
+            None,
+        );
+        let catalog = feature_ref(
+            "ghcr.io/devcontainers/features/git:1.0",
+            "ghcr.io/devcontainers/features/git",
+            Some("1.0"),
             None,
         );
         let digest = feature_ref(
@@ -891,21 +908,46 @@ mod tests {
             Some("sha256:abc"),
         );
         let unknown = feature_ref("example-feature", "example-feature", None, None);
+        let locked_unknown = lockfile_with("example-feature", "9.9.9");
 
         let oci_info = build_feature_version_info(&oci, None, None)
             .expect("oci info")
             .expect("oci payload");
+        let catalog_info = build_feature_version_info(&catalog, None, None)
+            .expect("catalog info")
+            .expect("catalog payload");
         let digest_info = build_feature_version_info(&digest, None, None)
             .expect("digest info")
             .expect("digest payload");
         let unknown_info = build_feature_version_info(&unknown, None, None)
             .expect("unknown info")
             .expect("unknown payload");
+        let locked_unknown_info = build_feature_version_info(&unknown, Some(&locked_unknown), None)
+            .expect("locked unknown info")
+            .expect("locked unknown payload");
 
         assert!(oci_info.get("wanted").is_some());
         assert!(oci_info.get("latest").is_some());
+        assert_eq!(catalog_info["wanted"], "1.0.5");
+        assert_eq!(catalog_info["latest"], "1.2.0");
+        assert_eq!(catalog_info["wantedMajor"], "1");
+        assert_eq!(catalog_info["latestMajor"], "1");
         assert_eq!(digest_info, json!({}));
         assert_eq!(unknown_info, json!({}));
+        assert_eq!(locked_unknown_info["current"], "9.9.9");
+    }
+
+    #[test]
+    fn latest_oci_version_falls_back_to_resolved_metadata_without_exact_tags() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-catalog-test");
+        let base = "ghcr.io/acme/features/moving-only";
+        let digest = write_layout_version(&workspace, base, "3.0.0", None);
+        replace_layout_tags(&workspace, base, &[("latest", &digest)]);
+
+        let latest = latest_oci_version(base, Some(workspace.as_path())).expect("latest version");
+
+        assert_eq!(latest.as_deref(), Some("3.0.0"));
+        let _ = fs::remove_dir_all(workspace);
     }
 
     #[test]
@@ -933,6 +975,9 @@ mod tests {
         assert!(parse_selector("1.2")
             .expect("major minor selector")
             .matches("1.2.9"));
+        assert!(parse_selector("1.2.3")
+            .expect("exact selector")
+            .matches("1.2.3"));
         assert!(!parse_selector("1.2")
             .expect("major minor selector")
             .matches("not-semver"));

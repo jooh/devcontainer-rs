@@ -62,5 +62,6 @@ mod tests {
         assert_eq!(feature_option_env_name("myOptionName"), "MYOPTIONNAME");
         assert_eq!(feature_option_env_name("1name"), "_NAME");
         assert_eq!(feature_option_env_name("12345_option-name"), "_OPTION_NAME");
+        assert_eq!(feature_option_env_name("!!!value"), "_VALUE");
     }
 }

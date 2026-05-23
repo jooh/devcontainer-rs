@@ -232,12 +232,17 @@ fn shell_single_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use serde_json::json;
 
     use super::{
-        get_ent_passwd_shell_command, parse_passwd_user, passwd_lookup_user, select_home_folder,
+        combined_remote_env_with_home, configuration_container_env,
+        container_home_missing_or_writable, get_ent_passwd_shell_command, get_user_from_passwd_db,
+        inspected_container_details, parse_passwd_user, passwd_lookup_user, select_home_folder,
         PasswdUser,
     };
+    use crate::test_support::unique_temp_dir;
 
     fn vscode_user() -> PasswdUser {
         PasswdUser {
@@ -307,10 +312,9 @@ mod tests {
 
     #[test]
     fn select_home_folder_accepts_matching_or_writable_non_root_home() {
-        let matching = select_home_folder(Some("/home/vscode"), Some(&vscode_user()), |_| {
-            panic!("matching passwd home should not need a writability check")
-        })
-        .expect("matching home");
+        let matching =
+            select_home_folder(Some("/home/vscode"), Some(&vscode_user()), |_| Ok(false))
+                .expect("matching home");
         let writable =
             select_home_folder(Some("/home/vscode/project"), Some(&vscode_user()), |_| {
                 Ok(true)
@@ -323,10 +327,8 @@ mod tests {
 
     #[test]
     fn select_home_folder_accepts_any_home_for_root() {
-        let home = select_home_folder(Some("/home/vscode"), Some(&root_user()), |_| {
-            panic!("root home should not need a writability check")
-        })
-        .expect("root home");
+        let home = select_home_folder(Some("/home/vscode"), Some(&root_user()), |_| Ok(false))
+            .expect("root home");
 
         assert_eq!(home, "/home/vscode");
     }
@@ -341,6 +343,16 @@ mod tests {
             select_home_folder(None, None, |_| Ok(false)).expect("root fallback"),
             "/root"
         );
+    }
+
+    #[test]
+    fn select_home_folder_propagates_writability_errors() {
+        let error = select_home_folder(Some("/workspace"), Some(&vscode_user()), |_| {
+            Err("home check failed".to_string())
+        })
+        .expect_err("writability error");
+
+        assert_eq!(error, "home check failed");
     }
 
     #[test]
@@ -359,5 +371,237 @@ mod tests {
         );
         assert_eq!(passwd_lookup_user(&json!({}), Some("0:0")), "root");
         assert_eq!(passwd_lookup_user(&json!({}), None), "root");
+    }
+
+    #[test]
+    fn configuration_container_env_collects_string_values_only() {
+        let env = configuration_container_env(&json!({
+            "containerEnv": {
+                "STRING": "value",
+                "BOOL": true
+            }
+        }));
+
+        assert_eq!(env.get("STRING").map(String::as_str), Some("value"));
+        assert!(!env.contains_key("BOOL"));
+    }
+
+    #[test]
+    fn combined_remote_env_with_home_resolves_home_from_container_details() {
+        let root = unique_temp_dir("devcontainer-user-resolution-test");
+        fs::create_dir_all(&root).expect("temp root");
+        let engine = root.join("engine");
+        write_shell_script(
+            &engine,
+            "#!/bin/sh\ncase \"$1\" in\n  inspect) printf '[{\"Config\":{\"Env\":[\"HOME=/home/vscode\",\"LANG=C.UTF-8\",\"BROKEN\"],\"User\":\"vscode\"}}]\\n' ;;\n  exec) printf 'vscode:x:1000:1000::/home/vscode:/bin/bash\\n' ;;\n  *) exit 2 ;;\nesac\n",
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            engine.to_string_lossy().to_string(),
+        ];
+
+        let env = combined_remote_env_with_home(
+            &args,
+            &json!({
+                "remoteEnv": {
+                    "REMOTE": "configured"
+                }
+            }),
+            "container-id",
+        )
+        .expect("combined env");
+
+        assert_eq!(env.get("HOME").map(String::as_str), Some("/home/vscode"));
+        assert_eq!(env.get("REMOTE").map(String::as_str), Some("configured"));
+        assert!(!env.contains_key("LANG"));
+        assert!(!env.contains_key("BROKEN"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn combined_remote_env_with_home_preserves_configured_home_without_engine_lookup() {
+        let args = vec![
+            "--docker-path".to_string(),
+            "/definitely/missing/docker".to_string(),
+        ];
+
+        let env = combined_remote_env_with_home(
+            &args,
+            &json!({
+                "remoteEnv": {
+                    "HOME": "/configured/home"
+                }
+            }),
+            "container-id",
+        )
+        .expect("combined env");
+
+        assert_eq!(
+            env.get("HOME").map(String::as_str),
+            Some("/configured/home")
+        );
+    }
+
+    #[test]
+    fn combined_remote_env_with_home_reports_remote_env_errors() {
+        let root = unique_temp_dir("devcontainer-user-resolution-test");
+        fs::create_dir_all(&root).expect("temp root");
+        let secrets = root.join("secrets.json");
+        fs::write(&secrets, "not json").expect("secrets");
+        let args = vec![
+            "--secrets-file".to_string(),
+            secrets.to_string_lossy().to_string(),
+        ];
+
+        let error = combined_remote_env_with_home(
+            &args,
+            &json!({
+                "remoteEnv": {
+                    "HOME": "/configured/home"
+                }
+            }),
+            "container-id",
+        )
+        .expect_err("remote env error");
+
+        assert!(error.contains("expected"), "{error}");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn combined_remote_env_with_home_uses_writable_container_home() {
+        let root = unique_temp_dir("devcontainer-user-resolution-test");
+        fs::create_dir_all(&root).expect("temp root");
+        let engine = root.join("engine");
+        write_shell_script(
+            &engine,
+            "#!/bin/sh\ncase \"$1\" in\n  inspect) printf '[{\"Config\":{\"Env\":[\"HOME=/workspace\"],\"User\":\"vscode\"}}]\\n' ;;\n  exec) case \"$*\" in *getent*) printf 'vscode:x:1000:1000::/home/vscode:/bin/bash\\n' ;; *) exit 0 ;; esac ;;\n  *) exit 2 ;;\nesac\n",
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            engine.to_string_lossy().to_string(),
+        ];
+
+        let env =
+            combined_remote_env_with_home(&args, &json!({}), "container-id").expect("combined env");
+
+        assert_eq!(env.get("HOME").map(String::as_str), Some("/workspace"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn get_user_from_passwd_db_reports_process_errors() {
+        let root = unique_temp_dir("devcontainer-user-resolution-test");
+        fs::create_dir_all(&root).expect("temp root");
+        let missing_engine = root.join("missing-engine");
+        let args = vec![
+            "--docker-path".to_string(),
+            missing_engine.to_string_lossy().to_string(),
+        ];
+
+        let error =
+            get_user_from_passwd_db(&args, "container-id", "vscode").expect_err("missing engine");
+
+        assert!(error.contains("Container engine executable not found"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn container_home_missing_or_writable_runs_as_configured_user() {
+        let root = unique_temp_dir("devcontainer-user-resolution-test");
+        fs::create_dir_all(&root).expect("temp root");
+        let engine = root.join("engine");
+        write_shell_script(&engine, "#!/bin/sh\nexit 0\n");
+        let args = vec![
+            "--docker-path".to_string(),
+            engine.to_string_lossy().to_string(),
+        ];
+
+        assert!(container_home_missing_or_writable(
+            &args,
+            &json!({ "remoteUser": "vscode" }),
+            "container-id",
+            "/home/o'brien",
+        )
+        .expect("home check"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn container_home_missing_or_writable_reports_spawn_errors() {
+        let error = container_home_missing_or_writable(
+            &[
+                "--docker-path".to_string(),
+                "/definitely/missing/container-engine".to_string(),
+            ],
+            &json!({}),
+            "container-id",
+            "/home/vscode",
+        )
+        .expect_err("missing engine");
+
+        assert!(error.contains("Container engine executable not found"));
+    }
+
+    #[test]
+    fn inspected_container_details_reports_invalid_json() {
+        let root = unique_temp_dir("devcontainer-user-resolution-test");
+        fs::create_dir_all(&root).expect("temp root");
+        let engine = root.join("engine");
+        write_shell_script(&engine, "#!/bin/sh\nprintf 'not json\\n'\n");
+        let args = vec![
+            "--docker-path".to_string(),
+            engine.to_string_lossy().to_string(),
+        ];
+
+        let error =
+            inspected_container_details(&args, "container-id").expect_err("invalid inspect json");
+
+        assert!(error.contains("Invalid inspect JSON"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn passwd_and_inspect_helpers_report_engine_failures() {
+        let root = unique_temp_dir("devcontainer-user-resolution-test");
+        fs::create_dir_all(&root).expect("temp root");
+        let engine = root.join("engine");
+        write_shell_script(
+            &engine,
+            "#!/bin/sh\nprintf 'engine failed\\n' >&2\nexit 7\n",
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            engine.to_string_lossy().to_string(),
+        ];
+
+        assert_eq!(
+            get_user_from_passwd_db(&args, "container-id", "vscode")
+                .expect_err("passwd lookup failure"),
+            "engine failed"
+        );
+        assert_eq!(
+            inspected_container_details(&args, "container-id").expect_err("inspect failure"),
+            "engine failed"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn write_shell_script(path: &std::path::Path, body: &str) {
+        fs::write(path, body).expect("script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(path).expect("metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("permissions");
+        }
     }
 }

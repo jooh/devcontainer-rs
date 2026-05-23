@@ -20,8 +20,31 @@ pub(super) fn start_container(
     image_name: &str,
     remote_workspace_folder: &str,
 ) -> Result<String, String> {
+    let omit_config_remote_env = common::runtime_options(args).omit_config_remote_env_from_metadata;
+    let metadata = serialized_container_metadata(
+        &resolved.configuration,
+        remote_workspace_folder,
+        omit_config_remote_env,
+    );
+    start_container_with_metadata(
+        resolved,
+        args,
+        image_name,
+        remote_workspace_folder,
+        metadata,
+    )
+}
+
+fn start_container_with_metadata(
+    resolved: &ResolvedConfig,
+    args: &[String],
+    image_name: &str,
+    remote_workspace_folder: &str,
+    metadata: Result<String, String>,
+) -> Result<String, String> {
     let default_labels =
         common::default_devcontainer_id_labels(&resolved.workspace_folder, &resolved.config_file);
+    let metadata = metadata?;
     let mut engine_args = vec![
         "run".to_string(),
         "-d".to_string(),
@@ -30,14 +53,7 @@ pub(super) fn start_container(
         "--label".to_string(),
         default_labels[1].clone(),
         "--label".to_string(),
-        format!(
-            "devcontainer.metadata={}",
-            serialized_container_metadata(
-                &resolved.configuration,
-                remote_workspace_folder,
-                common::runtime_options(args).omit_config_remote_env_from_metadata,
-            )?
-        ),
+        format!("devcontainer.metadata={metadata}"),
         "--mount".to_string(),
         workspace_mount_for_args(resolved, remote_workspace_folder, args),
     ];
@@ -154,7 +170,8 @@ pub(super) fn start_existing_container(args: &[String], container_id: &str) -> R
 }
 
 pub(super) fn remove_container(args: &[String], container_id: &str) -> Result<(), String> {
-    for attempt in 0..7 {
+    let mut attempt = 0;
+    loop {
         let result = engine::run_engine(
             args,
             vec!["rm".to_string(), "-f".to_string(), container_id.to_string()],
@@ -167,9 +184,9 @@ pub(super) fn remove_container(args: &[String], container_id: &str) -> Result<()
         if attempt == 6 || !container_removal_already_in_progress(&error) {
             return Err(error);
         }
+        attempt += 1;
         thread::sleep(Duration::from_millis(100));
     }
-    unreachable!("bounded retry loop should return")
 }
 
 fn container_removal_already_in_progress(error: &str) -> bool {
@@ -215,13 +232,18 @@ mod tests {
     //! Unit tests for engine-run mount conversion helpers.
 
     use std::fs;
+    use std::path::Path;
 
     use serde_json::json;
 
+    use crate::runtime::context::ResolvedConfig;
     use crate::runtime::mounts::mount_value_to_engine_arg;
     use crate::test_support::{unique_temp_dir, write_executable_script};
 
-    use super::remove_container;
+    use super::{
+        remove_container, should_add_gpu_capability, start_container,
+        start_container_with_metadata, start_existing_container,
+    };
 
     #[test]
     fn mount_argument_preserves_read_only_and_alias_keys() {
@@ -267,6 +289,8 @@ mod tests {
             &format!(
                 r#"#!/bin/sh
 set -eu
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
 attempts="{attempts}"
 current=0
 if [ -f "$attempts" ]; then
@@ -295,5 +319,434 @@ exit 0
             "3"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn start_container_includes_run_args_and_returns_container_id() {
+        let root = unique_temp_dir("devcontainer-start-container-test");
+        fs::create_dir_all(&root).expect("root dir");
+        let fake_engine = root.join("docker");
+        let invocation_log = root.join("invocations.log");
+        write_executable_script(
+            &fake_engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" > "{invocation_log}"
+case "$1" in
+  run)
+    printf 'created-container\n'
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+                invocation_log = invocation_log.display()
+            ),
+        );
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace dir");
+        let resolved = resolved_config(
+            &workspace,
+            json!({
+                "workspaceMount": "source=/workspace,target=/workspace,type=bind",
+                "runArgs": ["--name", "devcontainer-test"],
+                "containerEnv": {
+                    "EDITOR": "vim"
+                },
+                "capAdd": ["SYS_PTRACE"],
+                "securityOpt": ["seccomp=unconfined"]
+            }),
+        );
+
+        let container_id = start_container(
+            &resolved,
+            &engine_args(&fake_engine),
+            "alpine:3.20",
+            "/workspace",
+        )
+        .expect("container should start");
+
+        assert_eq!(container_id, "created-container");
+        let invocation = fs::read_to_string(&invocation_log).expect("invocation log");
+        assert!(invocation.contains("--name devcontainer-test"));
+        assert!(invocation.contains("-e EDITOR=vim"));
+        assert!(invocation.contains("--cap-add SYS_PTRACE"));
+        assert!(invocation.contains("--security-opt seccomp=unconfined"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn start_container_includes_runtime_flags_mounts_gpu_and_git_common_dir() {
+        let root = unique_temp_dir("devcontainer-start-container-flags-test");
+        let workspace = root.join("worktree");
+        fs::create_dir_all(&workspace).expect("workspace dir");
+        fs::write(
+            workspace.join(".git"),
+            "gitdir: ../repo/.git/worktrees/worktree\n",
+        )
+        .expect("git file");
+        let fake_engine = root.join("docker");
+        let invocation_log = root.join("invocations.log");
+        write_executable_script(
+            &fake_engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "{invocation_log}"
+case "$1" in
+  info)
+    printf 'nvidia-container-runtime\n'
+    ;;
+  run)
+    printf 'created-container\n'
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+                invocation_log = invocation_log.display()
+            ),
+        );
+        let resolved = resolved_config(
+            &workspace,
+            json!({
+                "workspaceFolder": "/workspace",
+                "init": true,
+                "privileged": true,
+                "mounts": [
+                    "type=bind,source=/cache,target=/cache"
+                ],
+                "hostRequirements": {
+                    "gpu": "optional"
+                }
+            }),
+        );
+        let mut args = engine_args(&fake_engine);
+        args.extend([
+            "--mount-git-worktree-common-dir".to_string(),
+            "true".to_string(),
+            "--mount".to_string(),
+            "type=volume,target=/cli-cache".to_string(),
+        ]);
+
+        let container_id = start_container(&resolved, &args, "alpine:3.20", "/workspace")
+            .expect("container should start");
+
+        assert_eq!(container_id, "created-container");
+        let invocation = fs::read_to_string(&invocation_log).expect("invocation log");
+        assert!(invocation.contains("info -f {{.Runtimes.nvidia}}"));
+        assert!(invocation.contains("--mount type=bind,source=/cache,target=/cache"));
+        assert!(invocation.contains("--mount type=volume,target=/cli-cache"));
+        assert!(invocation.contains("--mount type=bind,source="));
+        assert!(invocation.contains("target=/repo/.git"));
+        assert!(invocation.contains("--init"));
+        assert!(invocation.contains("--privileged"));
+        assert!(invocation.contains("--gpus all"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn start_container_reports_engine_failures_and_empty_ids() {
+        let root = unique_temp_dir("devcontainer-start-container-errors-test");
+        fs::create_dir_all(&root).expect("root dir");
+        let failing_engine = root.join("failing-docker");
+        write_executable_script(
+            &failing_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  run)
+    echo "run failed" >&2
+    exit 2
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+        );
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace dir");
+        let resolved = resolved_config(
+            &workspace,
+            json!({
+                "workspaceMount": "source=/workspace,target=/workspace,type=bind"
+            }),
+        );
+
+        let run_error = start_container(
+            &resolved,
+            &engine_args(&failing_engine),
+            "alpine:3.20",
+            "/workspace",
+        )
+        .expect_err("run failure should propagate");
+        assert_eq!(run_error, "run failed");
+
+        let empty_id_engine = root.join("empty-id-docker");
+        write_executable_script(
+            &empty_id_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  run)
+    exit 0
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+        );
+
+        let empty_id_error = start_container(
+            &resolved,
+            &engine_args(&empty_id_engine),
+            "alpine:3.20",
+            "/workspace",
+        )
+        .expect_err("empty id should fail");
+        assert_eq!(
+            empty_id_error,
+            "Container engine did not return a container id"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn start_container_reports_metadata_serialization_errors() {
+        let root = unique_temp_dir("devcontainer-start-container-metadata-error-test");
+        fs::create_dir_all(&root).expect("root dir");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace dir");
+        let resolved = resolved_config(
+            &workspace,
+            json!({
+                "workspaceMount": "source=/workspace,target=/workspace,type=bind"
+            }),
+        );
+
+        let error = start_container_with_metadata(
+            &resolved,
+            &[],
+            "alpine:3.20",
+            "/workspace",
+            Err("metadata failed".to_string()),
+        )
+        .expect_err("metadata error should propagate");
+
+        assert_eq!(error, "metadata failed");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn start_existing_container_reports_engine_status_failures() {
+        let root = unique_temp_dir("devcontainer-start-existing-error-test");
+        fs::create_dir_all(&root).expect("root dir");
+        let fake_engine = root.join("docker");
+        write_executable_script(
+            &fake_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  start)
+    echo "start failed" >&2
+    exit 2
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+        );
+
+        let error = start_existing_container(&engine_args(&fake_engine), "existing-container")
+            .expect_err("start failure should propagate");
+
+        assert_eq!(error, "start failed");
+
+        let success_engine = root.join("success-docker");
+        write_executable_script(
+            &success_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  start)
+    exit 0
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+        );
+        start_existing_container(&engine_args(&success_engine), "existing-container")
+            .expect("successful start should be accepted");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remove_container_reports_spawn_and_non_retryable_errors() {
+        let missing_error = remove_container(
+            &[
+                "--docker-path".to_string(),
+                "/path/that/does/not/exist".to_string(),
+            ],
+            "missing-container",
+        )
+        .expect_err("missing engine should fail");
+        assert!(missing_error.contains("Container engine executable not found"));
+
+        let root = unique_temp_dir("devcontainer-remove-container-error-test");
+        fs::create_dir_all(&root).expect("root dir");
+        let fake_engine = root.join("docker");
+        write_executable_script(
+            &fake_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  rm)
+    echo "permission denied" >&2
+    exit 1
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+        );
+
+        let status_error = remove_container(&engine_args(&fake_engine), "blocked-container")
+            .expect_err("non retryable rm failure should propagate");
+
+        assert_eq!(status_error, "permission denied");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn gpu_capability_respects_options_and_detection_results() {
+        let gpu_config = json!({
+            "hostRequirements": {
+                "gpu": "optional"
+            }
+        });
+        assert!(!should_add_gpu_capability(&json!({}), &[]).expect("no gpu requirement"));
+        assert!(should_add_gpu_capability(
+            &gpu_config,
+            &["--gpu-availability".to_string(), "all".to_string()],
+        )
+        .expect("explicit all"));
+        assert!(!should_add_gpu_capability(
+            &gpu_config,
+            &["--gpu-availability".to_string(), "none".to_string()],
+        )
+        .expect("explicit none"));
+
+        let root = unique_temp_dir("devcontainer-gpu-detection-test");
+        fs::create_dir_all(&root).expect("root dir");
+        let gpu_engine = root.join("gpu-docker");
+        write_executable_script(
+            &gpu_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  info)
+    echo "nvidia-container-runtime"
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+        );
+        assert!(
+            should_add_gpu_capability(&gpu_config, &engine_args(&gpu_engine))
+                .expect("gpu runtime should be detected")
+        );
+
+        let no_gpu_engine = root.join("no-gpu-docker");
+        write_executable_script(
+            &no_gpu_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  info)
+    echo "<no value>"
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+        );
+        assert!(
+            !should_add_gpu_capability(&gpu_config, &engine_args(&no_gpu_engine))
+                .expect("missing gpu runtime should be false")
+        );
+
+        let failing_gpu_engine = root.join("failing-gpu-docker");
+        write_executable_script(
+            &failing_gpu_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  info)
+    echo "info failed" >&2
+    exit 1
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+        );
+        assert!(
+            !should_add_gpu_capability(&gpu_config, &engine_args(&failing_gpu_engine))
+                .expect("status failure should disable gpu")
+        );
+
+        let missing_error = should_add_gpu_capability(
+            &gpu_config,
+            &[
+                "--docker-path".to_string(),
+                "/path/that/does/not/exist".to_string(),
+            ],
+        )
+        .expect_err("spawn failure should propagate");
+        assert!(missing_error.contains("Container engine executable not found"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn engine_args(fake_engine: &Path) -> Vec<String> {
+        vec![
+            "--docker-path".to_string(),
+            fake_engine.display().to_string(),
+        ]
+    }
+
+    fn resolved_config(
+        workspace_folder: &Path,
+        configuration: serde_json::Value,
+    ) -> ResolvedConfig {
+        ResolvedConfig {
+            workspace_folder: workspace_folder.to_path_buf(),
+            config_file: workspace_folder
+                .join(".devcontainer")
+                .join("devcontainer.json"),
+            configuration,
+        }
     }
 }

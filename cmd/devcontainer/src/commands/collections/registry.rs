@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 
 pub(super) fn embedded_template_source_dir(reference: &str) -> Option<PathBuf> {
-    let slug = collection_slug(reference)?;
+    let slug = collection_slug_value(reference);
     match slug.as_str() {
         "alpine" | "cpp" | "mytemplate" | "node-mongo" => Some(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -205,7 +205,7 @@ pub(crate) fn published_feature_manifest(feature_id: &str) -> Option<Value> {
         return manifest;
     }
 
-    let slug = collection_slug(&normalized)?;
+    let slug = collection_slug_value(&normalized);
     if !normalized.contains("/features/") {
         return None;
     }
@@ -304,7 +304,7 @@ pub(super) fn published_template_manifest_with_workspace(
         return manifest;
     }
 
-    let slug = collection_slug(&normalized)?;
+    let slug = collection_slug_value(&normalized);
     if !normalized.contains("/templates/") {
         return None;
     }
@@ -323,15 +323,21 @@ pub(super) fn local_oci_artifact(
     let layout_dir = workspace_oci_layout_dir(reference, workspace_folder)?;
     let manifest_digest = resolve_local_oci_manifest_digest(reference, &layout_dir)?;
     let manifest = read_local_oci_blob_json(&layout_dir, &manifest_digest)?;
-    let metadata = manifest["annotations"]["dev.containers.metadata"]
-        .as_str()
-        .and_then(|value| serde_json::from_str::<Value>(value).ok())?;
-    let layer_path = manifest["layers"]
-        .as_array()
-        .and_then(|layers| layers.first())
-        .and_then(|layer| layer["digest"].as_str())
-        .and_then(|digest| digest.strip_prefix("sha256:"))
-        .map(|digest| layout_dir.join("blobs").join("sha256").join(digest));
+    let metadata_raw = manifest["annotations"]["dev.containers.metadata"].as_str()?;
+    let metadata = serde_json::from_str::<Value>(metadata_raw).ok()?;
+    let first_layer = match manifest["layers"].as_array() {
+        Some(layers) => layers.first(),
+        None => None,
+    };
+    let layer_path = match first_layer {
+        Some(layer) => match layer["digest"].as_str() {
+            Some(digest) => digest
+                .strip_prefix("sha256:")
+                .map(|digest| layout_dir.join("blobs").join("sha256").join(digest)),
+            None => None,
+        },
+        None => None,
+    };
     Some(LocalOciArtifact {
         metadata,
         layer_path,
@@ -350,43 +356,41 @@ pub(crate) fn normalize_collection_reference(reference: &str) -> String {
 }
 
 pub(crate) fn collection_slug(reference: &str) -> Option<String> {
-    normalize_collection_reference(reference)
+    Some(collection_slug_value(reference))
+}
+
+fn collection_slug_value(reference: &str) -> String {
+    let normalized = normalize_collection_reference(reference);
+    normalized
         .rsplit('/')
         .next()
-        .map(|value| value.to_ascii_lowercase())
+        .expect("split always yields one segment")
+        .to_ascii_lowercase()
 }
 
 pub(crate) fn collection_reference_version(reference: &str) -> String {
     let normalized = normalize_collection_reference(reference);
-    if let Some(digest) = reference
-        .strip_prefix(&normalized)
-        .and_then(|suffix| suffix.strip_prefix('@'))
-    {
+    let suffix = reference.strip_prefix(&normalized).unwrap_or_default();
+    if let Some(digest) = suffix.strip_prefix('@') {
         return digest.to_string();
     }
-    if let Some(version) = reference
-        .strip_prefix(&normalized)
-        .and_then(|suffix| suffix.strip_prefix(':'))
-    {
+    if let Some(version) = suffix.strip_prefix(':') {
         return version.to_string();
     }
     "latest".to_string()
 }
 
 pub(super) fn humanize_collection_slug(slug: &str) -> String {
-    slug.split('-')
-        .filter(|segment| !segment.is_empty())
-        .map(|segment| {
-            let mut chars = segment.chars();
-            match chars.next() {
-                Some(first) => {
-                    format!("{}{}", first.to_ascii_uppercase(), chars.as_str())
-                }
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut words = Vec::new();
+    for segment in slug.split('-') {
+        if segment.is_empty() {
+            continue;
+        }
+        let mut chars = segment.chars();
+        let first = chars.next().expect("non-empty slug segment");
+        words.push(format!("{}{}", first.to_ascii_uppercase(), chars.as_str()));
+    }
+    words.join(" ")
 }
 
 fn workspace_oci_layout_dir(reference: &str, workspace_folder: Option<&Path>) -> Option<PathBuf> {
@@ -394,10 +398,11 @@ fn workspace_oci_layout_dir(reference: &str, workspace_folder: Option<&Path>) ->
         .join(".devcontainer")
         .join("oci-layouts")
         .join(normalize_collection_reference(reference));
-    layout_dir
-        .join("oci-layout")
-        .is_file()
-        .then_some(layout_dir)
+    if layout_dir.join("oci-layout").is_file() {
+        Some(layout_dir)
+    } else {
+        None
+    }
 }
 
 fn resolve_local_oci_manifest_digest(reference: &str, layout_dir: &Path) -> Option<String> {
@@ -406,19 +411,23 @@ fn resolve_local_oci_manifest_digest(reference: &str, layout_dir: &Path) -> Opti
     }
 
     let wanted_tag = collection_reference_version(reference);
-    let index: Value =
-        serde_json::from_str(&fs::read_to_string(layout_dir.join("index.json")).ok()?).ok()?;
-    index["manifests"].as_array()?.iter().find_map(|entry| {
-        let tag = entry["annotations"]["org.opencontainers.image.ref.name"].as_str()?;
-        (tag == wanted_tag)
-            .then(|| {
-                entry["digest"]
-                    .as_str()?
-                    .strip_prefix("sha256:")
-                    .map(str::to_string)
-            })
-            .flatten()
-    })
+    let index_raw = match fs::read_to_string(layout_dir.join("index.json")) {
+        Ok(index_raw) => index_raw,
+        Err(_) => return None,
+    };
+    let index: Value = match serde_json::from_str(&index_raw) {
+        Ok(index) => index,
+        Err(_) => return None,
+    };
+    for entry in index["manifests"].as_array()? {
+        let tag = entry["annotations"]["org.opencontainers.image.ref.name"].as_str();
+        if tag != Some(wanted_tag.as_str()) {
+            continue;
+        }
+        let digest = entry["digest"].as_str()?;
+        return digest.strip_prefix("sha256:").map(str::to_string);
+    }
+    None
 }
 
 fn read_local_oci_blob_json(layout_dir: &Path, digest: &str) -> Option<Value> {
@@ -429,7 +438,7 @@ fn read_local_oci_blob_json(layout_dir: &Path, digest: &str) -> Option<Value> {
 }
 
 fn embedded_template_manifest(reference: &str) -> Option<Value> {
-    match collection_slug(reference)?.as_str() {
+    match collection_slug_value(reference).as_str() {
         "alpine" => Some(json!({
             "id": "alpine",
             "version": "1.0.0",
@@ -519,9 +528,9 @@ fn embedded_template_manifest(reference: &str) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, path::Path};
 
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     use super::{
         collection_reference_version, collection_slug, direct_tarball_feature_manifest,
@@ -751,6 +760,145 @@ mod tests {
             artifact.layer_path.as_deref(),
             Some(expected_layer_path.as_path())
         );
+        let digest_pinned = local_oci_artifact(
+            &format!("ghcr.io/acme/templates/local-template@sha256:{manifest_digest}"),
+            Some(workspace.as_path()),
+        )
+        .expect("digest-pinned local artifact");
+        assert_eq!(digest_pinned.metadata["version"], "1.2.3");
+        let workspace_manifest = published_template_manifest_with_workspace(
+            "ghcr.io/acme/templates/local-template:1.2.3",
+            Some(workspace.as_path()),
+        )
+        .expect("workspace template manifest");
+        assert_eq!(workspace_manifest["id"], "local-template");
+
+        let no_layers_manifest = json!({
+            "schemaVersion": 2,
+            "annotations": {
+                "dev.containers.metadata": json!({
+                    "id": "local-template",
+                    "version": "no-layers",
+                }).to_string(),
+            }
+        });
+        let no_layers_bytes = serde_json::to_vec_pretty(&no_layers_manifest).expect("manifest");
+        let no_layers_digest = sha256(&no_layers_bytes);
+        fs::write(
+            layout_dir
+                .join("blobs")
+                .join("sha256")
+                .join(&no_layers_digest),
+            &no_layers_bytes,
+        )
+        .expect("no layers manifest blob");
+        fs::write(
+            layout_dir.join("index.json"),
+            serde_json::to_string_pretty(&json!({
+                "schemaVersion": 2,
+                "manifests": [{
+                    "digest": format!("sha256:{no_layers_digest}"),
+                    "annotations": {
+                        "org.opencontainers.image.ref.name": "no-layers",
+                    }
+                }]
+            }))
+            .expect("index"),
+        )
+        .expect("index write");
+        let artifact = local_oci_artifact(
+            "ghcr.io/acme/templates/local-template:no-layers",
+            Some(workspace.as_path()),
+        )
+        .expect("no-layers local artifact");
+        assert!(artifact.layer_path.is_none());
+
+        let unsupported_layer_manifest = json!({
+            "schemaVersion": 2,
+            "layers": [{
+                "digest": "md5:unsupported",
+            }],
+            "annotations": {
+                "dev.containers.metadata": json!({
+                    "id": "local-template",
+                    "version": "unsupported-layer",
+                }).to_string(),
+            }
+        });
+        let unsupported_layer_bytes =
+            serde_json::to_vec_pretty(&unsupported_layer_manifest).expect("manifest");
+        let unsupported_layer_digest = sha256(&unsupported_layer_bytes);
+        fs::write(
+            layout_dir
+                .join("blobs")
+                .join("sha256")
+                .join(&unsupported_layer_digest),
+            &unsupported_layer_bytes,
+        )
+        .expect("unsupported layer manifest blob");
+        fs::write(
+            layout_dir.join("index.json"),
+            serde_json::to_string_pretty(&json!({
+                "schemaVersion": 2,
+                "manifests": [{
+                    "digest": format!("sha256:{unsupported_layer_digest}"),
+                    "annotations": {
+                        "org.opencontainers.image.ref.name": "unsupported-layer",
+                    }
+                }]
+            }))
+            .expect("index"),
+        )
+        .expect("index write");
+        let artifact = local_oci_artifact(
+            "ghcr.io/acme/templates/local-template:unsupported-layer",
+            Some(workspace.as_path()),
+        )
+        .expect("unsupported-layer local artifact");
+        assert!(artifact.layer_path.is_none());
+
+        let missing_layer_digest_manifest = json!({
+            "schemaVersion": 2,
+            "layers": [{}],
+            "annotations": {
+                "dev.containers.metadata": json!({
+                    "id": "local-template",
+                    "version": "missing-layer-digest",
+                }).to_string(),
+            }
+        });
+        let missing_layer_digest_bytes =
+            serde_json::to_vec_pretty(&missing_layer_digest_manifest).expect("manifest");
+        let missing_layer_digest = sha256(&missing_layer_digest_bytes);
+        fs::write(
+            layout_dir
+                .join("blobs")
+                .join("sha256")
+                .join(&missing_layer_digest),
+            &missing_layer_digest_bytes,
+        )
+        .expect("missing layer digest manifest blob");
+        fs::write(
+            layout_dir.join("index.json"),
+            serde_json::to_string_pretty(&json!({
+                "schemaVersion": 2,
+                "manifests": [{
+                    "digest": format!("sha256:{missing_layer_digest}"),
+                    "annotations": {
+                        "org.opencontainers.image.ref.name": "missing-layer-digest",
+                    }
+                }]
+            }))
+            .expect("index"),
+        )
+        .expect("index write");
+        let artifact = local_oci_artifact(
+            "ghcr.io/acme/templates/local-template:missing-layer-digest",
+            Some(workspace.as_path()),
+        )
+        .expect("missing-layer-digest local artifact");
+        assert!(artifact.layer_path.is_none());
+
         assert!(local_oci_artifact(
             "ghcr.io/acme/templates/local-template:not-present",
             Some(workspace.as_path()),
@@ -758,6 +906,158 @@ mod tests {
         .is_none());
 
         let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn local_oci_artifact_ignores_incomplete_or_invalid_layout_entries() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-registry-test");
+        let layout_dir = workspace
+            .join(".devcontainer")
+            .join("oci-layouts")
+            .join("ghcr.io/acme/templates/local-template");
+        fs::create_dir_all(layout_dir.join("blobs").join("sha256")).expect("layout blobs");
+        fs::write(
+            layout_dir.join("oci-layout"),
+            "{\n  \"imageLayoutVersion\": \"1.0.0\"\n}\n",
+        )
+        .expect("layout marker");
+
+        assert!(local_oci_artifact(
+            "ghcr.io/acme/templates/local-template:missing-index",
+            Some(workspace.as_path()),
+        )
+        .is_none());
+
+        fs::write(layout_dir.join("index.json"), "{").expect("invalid index");
+        assert!(local_oci_artifact(
+            "ghcr.io/acme/templates/local-template:invalid-index",
+            Some(workspace.as_path()),
+        )
+        .is_none());
+
+        write_index_entry(
+            &layout_dir,
+            "missing-blob",
+            Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        );
+        assert!(local_oci_artifact(
+            "ghcr.io/acme/templates/local-template:missing-blob",
+            Some(workspace.as_path()),
+        )
+        .is_none());
+
+        let invalid_json_digest = sha256(b"{");
+        fs::write(
+            layout_dir
+                .join("blobs")
+                .join("sha256")
+                .join(&invalid_json_digest),
+            b"{",
+        )
+        .expect("invalid manifest blob");
+        write_index_entry(
+            &layout_dir,
+            "invalid-json",
+            Some(&format!("sha256:{invalid_json_digest}")),
+        );
+        assert!(local_oci_artifact(
+            "ghcr.io/acme/templates/local-template:invalid-json",
+            Some(workspace.as_path()),
+        )
+        .is_none());
+
+        let missing_metadata = json!({
+            "schemaVersion": 2,
+            "layers": [],
+            "annotations": {}
+        });
+        let missing_metadata_digest = write_manifest_blob(&layout_dir, &missing_metadata);
+        write_index_entry(
+            &layout_dir,
+            "missing-metadata",
+            Some(&format!("sha256:{missing_metadata_digest}")),
+        );
+        assert!(local_oci_artifact(
+            "ghcr.io/acme/templates/local-template:missing-metadata",
+            Some(workspace.as_path()),
+        )
+        .is_none());
+
+        let invalid_metadata = json!({
+            "schemaVersion": 2,
+            "layers": [],
+            "annotations": {
+                "dev.containers.metadata": "{",
+            }
+        });
+        let invalid_metadata_digest = write_manifest_blob(&layout_dir, &invalid_metadata);
+        write_index_entry(
+            &layout_dir,
+            "invalid-metadata",
+            Some(&format!("sha256:{invalid_metadata_digest}")),
+        );
+        assert!(local_oci_artifact(
+            "ghcr.io/acme/templates/local-template:invalid-metadata",
+            Some(workspace.as_path()),
+        )
+        .is_none());
+
+        write_index_entry(&layout_dir, "missing-digest", None);
+        assert!(local_oci_artifact(
+            "ghcr.io/acme/templates/local-template:missing-digest",
+            Some(workspace.as_path()),
+        )
+        .is_none());
+
+        write_index_entry(&layout_dir, "unsupported-digest", Some("md5:unsupported"));
+        assert!(local_oci_artifact(
+            "ghcr.io/acme/templates/local-template:unsupported-digest",
+            Some(workspace.as_path()),
+        )
+        .is_none());
+
+        fs::write(layout_dir.join("index.json"), "{\"schemaVersion\":2}\n").expect("index");
+        assert!(local_oci_artifact(
+            "ghcr.io/acme/templates/local-template:missing-manifests",
+            Some(workspace.as_path()),
+        )
+        .is_none());
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    fn write_manifest_blob(layout_dir: &Path, manifest: &Value) -> String {
+        let bytes = serde_json::to_vec_pretty(manifest).expect("manifest");
+        let digest = sha256(&bytes);
+        fs::write(
+            layout_dir.join("blobs").join("sha256").join(&digest),
+            &bytes,
+        )
+        .expect("manifest blob");
+        digest
+    }
+
+    fn write_index_entry(layout_dir: &Path, tag: &str, digest: Option<&str>) {
+        let mut entry = json!({
+            "annotations": {
+                "org.opencontainers.image.ref.name": tag,
+            }
+        });
+        if let Some(digest) = digest {
+            entry
+                .as_object_mut()
+                .expect("index entry object")
+                .insert("digest".to_string(), Value::String(digest.to_string()));
+        }
+        fs::write(
+            layout_dir.join("index.json"),
+            serde_json::to_string_pretty(&json!({
+                "schemaVersion": 2,
+                "manifests": [entry],
+            }))
+            .expect("index"),
+        )
+        .expect("index write");
     }
 
     fn sha256(bytes: &[u8]) -> String {
