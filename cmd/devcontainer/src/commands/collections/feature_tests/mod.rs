@@ -375,4 +375,28 @@ mod tests {
         assert!(!error.is_empty());
         let _ = fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn unused_runtime_panics_if_discovery_reaches_runtime() {
+        assert!(std::panic::catch_unwind(|| {
+            let mut runtime = UnusedRuntime;
+            let _ = runtime.build_image(&[], "image", Path::new("Dockerfile"), Path::new("."));
+        })
+        .is_err());
+        assert!(std::panic::catch_unwind(|| {
+            let mut runtime = UnusedRuntime;
+            let _ = runtime.start_container(&[], "image", Path::new("."));
+        })
+        .is_err());
+        assert!(std::panic::catch_unwind(|| {
+            let mut runtime = UnusedRuntime;
+            let _ = runtime.exec_script(&[], "container", Path::new("."), None, &[], "test.sh");
+        })
+        .is_err());
+        assert!(std::panic::catch_unwind(|| {
+            let mut runtime = UnusedRuntime;
+            let _ = runtime.remove_container(&[], "container");
+        })
+        .is_err());
+    }
 }
