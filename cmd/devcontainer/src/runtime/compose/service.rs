@@ -367,6 +367,8 @@ mod tests {
     fn compose_files_accept_strings_arrays_defaults_and_reject_invalid_entries() {
         let root = crate::test_support::unique_temp_dir("devcontainer-compose-service-test");
         let config_root = root.join(".devcontainer");
+        let mut env_guard = crate::test_support::process_env_guard();
+        env_guard.remove_var("COMPOSE_FILE");
         fs::create_dir_all(&config_root).expect("config root");
         fs::write(
             root.join(".env"),
