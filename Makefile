@@ -63,7 +63,7 @@ cargo-deny-check:
 	cargo deny --manifest-path $(RUST_MANIFEST) check -A license-not-encountered
 
 rust-coverage:
-	$(CARGO_LLVM_COV) --manifest-path $(RUST_MANIFEST) --locked --all-features --workspace --fail-uncovered-lines 0
+	$(CARGO_LLVM_COV) --manifest-path $(RUST_MANIFEST) --locked --all-features --workspace --show-missing-lines --fail-uncovered-lines 0
 
 actionlint-check:
 	$(ACTIONLINT) .github/workflows/*.yml
