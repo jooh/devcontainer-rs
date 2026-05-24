@@ -1018,8 +1018,7 @@ fn docker_config_auth(registry: &str) -> Option<RegistryAuth> {
             }
         }
     }
-    let helper = platform_default_credential_helper()?;
-    credential_helper_auth(helper, registry)
+    platform_default_credential_auth(registry)
 }
 
 fn docker_config_path() -> Option<PathBuf> {
@@ -1052,6 +1051,19 @@ fn platform_default_credential_helper() -> Option<&'static str> {
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
+        None
+    }
+}
+
+fn platform_default_credential_auth(registry: &str) -> Option<RegistryAuth> {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        let helper = platform_default_credential_helper()?;
+        credential_helper_auth(helper, registry)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = registry;
         None
     }
 }
@@ -2606,6 +2618,7 @@ esac
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
             assert_eq!(platform_default_credential_helper(), None);
+            assert!(super::platform_default_credential_auth("registry.example.com").is_none());
         }
 
         let _ = fs::remove_dir_all(config_dir);

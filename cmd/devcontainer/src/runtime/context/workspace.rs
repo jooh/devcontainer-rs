@@ -343,11 +343,12 @@ fn ascend_container_path(path: &str, segments: usize) -> String {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn append_workspace_mount_consistency(_mount: &mut String, _args: &[String]) {}
-
-#[cfg(not(target_os = "linux"))]
 fn append_workspace_mount_consistency(mount: &mut String, args: &[String]) {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (mount, args);
+    }
+    #[cfg(not(target_os = "linux"))]
     if let Some(consistency) = common::parse_option_value(args, "--workspace-mount-consistency") {
         mount.push_str(&format!(",consistency={consistency}"));
     }
