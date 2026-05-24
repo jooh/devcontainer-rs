@@ -1040,6 +1040,7 @@ fn registry_config_keys(registry: &str) -> Vec<String> {
     ]
 }
 
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
 fn platform_default_credential_helper() -> Option<&'static str> {
     #[cfg(target_os = "macos")]
     {
