@@ -362,6 +362,17 @@ mod tests {
     }
 
     #[test]
+    fn run_features_test_succeeds_for_empty_project_without_quiet_flag() {
+        let root = crate::test_support::unique_temp_dir("feature-test-mod");
+        fs::create_dir_all(&root).expect("root");
+
+        let status = run_features_test(&[root.display().to_string()]);
+
+        assert_eq!(status, std::process::ExitCode::SUCCESS);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn execute_feature_tests_with_runtime_reports_discovery_errors_after_option_parsing() {
         let root = crate::test_support::unique_temp_dir("feature-test-mod");
         let test_dir = root.join("test").join("demo");

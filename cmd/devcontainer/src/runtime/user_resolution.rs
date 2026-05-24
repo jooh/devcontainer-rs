@@ -270,6 +270,16 @@ mod tests {
             parse_passwd_user("vscode:x:1000:1000::/home/vscode:/bin/bash\n"),
             Some(vscode_user())
         );
+        assert_eq!(
+            parse_passwd_user("daemon:x:1"),
+            Some(PasswdUser {
+                name: "daemon".to_string(),
+                uid: "1".to_string(),
+                gid: "".to_string(),
+                home: "".to_string(),
+                shell: "".to_string(),
+            })
+        );
     }
 
     #[test]
@@ -528,6 +538,25 @@ mod tests {
             "/home/o'brien",
         )
         .expect("home check"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn container_home_missing_or_writable_returns_false_for_unwritable_home() {
+        let root = unique_temp_dir("devcontainer-user-resolution-test");
+        fs::create_dir_all(&root).expect("temp root");
+        let engine = root.join("engine");
+        write_shell_script(&engine, "#!/bin/sh\nexit 1\n");
+        let args = vec![
+            "--docker-path".to_string(),
+            engine.to_string_lossy().to_string(),
+        ];
+
+        assert!(
+            !container_home_missing_or_writable(&args, &json!({}), "container-id", "/root",)
+                .expect("home check")
+        );
 
         let _ = fs::remove_dir_all(root);
     }

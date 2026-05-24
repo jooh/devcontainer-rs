@@ -386,6 +386,11 @@ mod tests {
     }
 
     #[test]
+    fn unknown_help_paths_do_not_resolve() {
+        assert!(resolve_command_help("unknown", &[]).is_none());
+    }
+
+    #[test]
     fn normalizes_command_scoped_short_option_aliases() {
         let normalized = normalize_option_aliases(
             "templates apply",

@@ -221,6 +221,18 @@ mod tests {
 
     #[test]
     fn selected_lifecycle_steps_respect_mode_and_wait_for() {
+        let skipped = selected_lifecycle_steps(
+            &json!({
+                "postCreateCommand": "echo post-create",
+                "postStartCommand": "echo post-start",
+                "postAttachCommand": "echo post-attach"
+            }),
+            &["--skip-post-create".to_string()],
+            LifecycleMode::RunUserCommands,
+        );
+
+        assert!(skipped.is_empty());
+
         let initialize_wait = selected_lifecycle_steps(
             &json!({
                 "waitFor": "initializeCommand",
@@ -246,6 +258,29 @@ mod tests {
         );
 
         assert_eq!(steps.len(), 4);
+
+        let started = selected_lifecycle_steps(
+            &json!({
+                "onCreateCommand": "echo on-create",
+                "postCreateCommand": "echo post-create",
+                "postStartCommand": "echo post-start",
+                "postAttachCommand": "echo post-attach"
+            }),
+            &[],
+            LifecycleMode::UpStarted,
+        );
+
+        assert_eq!(started.len(), 2);
+
+        let created = selected_lifecycle_steps(
+            &json!({
+                "onCreateCommand": "echo on-create"
+            }),
+            &[],
+            LifecycleMode::UpCreated,
+        );
+
+        assert_eq!(created.len(), 1);
 
         let reused = selected_lifecycle_steps(
             &json!({
@@ -363,6 +398,28 @@ mod tests {
             fs::read_to_string(root.join("initialize-marker")).expect("marker"),
             "initialized"
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_initialize_and_lifecycle_commands_are_noops_without_configured_commands() {
+        let root = unique_temp_dir("devcontainer-lifecycle-test");
+        fs::create_dir_all(&root).expect("workspace");
+        let missing_engine_args = vec![
+            "--docker-path".to_string(),
+            "/definitely/missing/container-engine".to_string(),
+        ];
+
+        run_initialize_command(&[], &json!({}), &root).expect("initialize noop");
+        run_lifecycle_commands(
+            "container-id",
+            &missing_engine_args,
+            &json!({}),
+            "/workspace",
+            LifecycleMode::RunUserCommands,
+        )
+        .expect("lifecycle noop");
 
         let _ = fs::remove_dir_all(root);
     }

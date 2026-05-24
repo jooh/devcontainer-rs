@@ -74,7 +74,7 @@ fn safe_feature_installation_name(candidate: Option<String>, fallback: &str) -> 
 }
 
 fn github_feature_manifest(feature_id: &str) -> serde_json::Value {
-    let slug = collection_slug(feature_id);
+    let slug = collection_slug(feature_id).and_then(|slug| safe_path_segment(&slug));
     let id = slug.clone().unwrap_or("github-feature".to_string());
     let name = slug.unwrap_or("GitHub Feature".to_string());
     serde_json::json!({
@@ -242,6 +242,7 @@ mod tests {
         let tarball_destination = workspace.join("tarball");
         let github_destination = workspace.join("github");
         let generic_github_destination = workspace.join("generic-github");
+        let fallback_github_destination = workspace.join("fallback-github");
         let tarball_uri = "https://github.com/codspace/features/releases/download/tarball02/devcontainer-feature-docker-in-docker.tgz";
         let tarball = FeatureInstallation {
             source: FeatureInstallationSource::DirectTarball(tarball_uri.to_string()),
@@ -257,6 +258,10 @@ mod tests {
             source: FeatureInstallationSource::GithubRepo("owner/unknown-feature".to_string()),
             env: Vec::new(),
         };
+        let fallback_github = FeatureInstallation {
+            source: FeatureInstallationSource::GithubRepo("https://github.com/".to_string()),
+            env: Vec::new(),
+        };
 
         materialize_feature_installation(&tarball, &tarball_destination)
             .expect("tarball materialized");
@@ -264,6 +269,8 @@ mod tests {
             .expect("github materialized");
         materialize_feature_installation(&generic_github, &generic_github_destination)
             .expect("generic github materialized");
+        materialize_feature_installation(&fallback_github, &fallback_github_destination)
+            .expect("fallback github materialized");
 
         let tarball_manifest =
             fs::read_to_string(tarball_destination.join("devcontainer-feature.json"))
@@ -280,6 +287,12 @@ mod tests {
                 .expect("generic github manifest");
         assert!(generic_github_manifest.contains(r#""id": "unknown-feature""#));
         assert!(generic_github_destination.join("install.sh").is_file());
+        let fallback_github_manifest =
+            fs::read_to_string(fallback_github_destination.join("devcontainer-feature.json"))
+                .expect("fallback github manifest");
+        assert!(fallback_github_manifest.contains(r#""id": "github-feature""#));
+        assert!(fallback_github_manifest.contains(r#""name": "GitHub Feature""#));
+        assert!(fallback_github_destination.join("install.sh").is_file());
         let _ = fs::remove_dir_all(workspace);
     }
 

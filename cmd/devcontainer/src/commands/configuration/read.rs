@@ -135,3 +135,24 @@ pub(super) fn should_use_native_read_configuration(args: &[String]) -> bool {
     }
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::should_use_native_read_configuration;
+
+    #[test]
+    fn native_read_configuration_supports_empty_args_and_rejects_positionals() {
+        assert!(should_use_native_read_configuration(&[]));
+        assert!(!should_use_native_read_configuration(&[
+            "devcontainer.json".to_string(),
+        ]));
+        assert!(!should_use_native_read_configuration(&[
+            "--unknown".to_string(),
+            "value".to_string(),
+        ]));
+        assert!(should_use_native_read_configuration(&[
+            "--mount-workspace-git-root".to_string(),
+            "--include-merged-configuration".to_string(),
+        ]));
+    }
+}

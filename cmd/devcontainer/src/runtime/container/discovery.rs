@@ -1194,6 +1194,116 @@ esac
     }
 
     #[test]
+    fn probe_id_labels_returns_none_when_compose_has_no_matching_containers() {
+        let root = unique_temp_dir("devcontainer-discovery-probe-compose-empty-test");
+        let config_root = root.join(".devcontainer");
+        fs::create_dir_all(&config_root).expect("config dir");
+        fs::write(
+            config_root.join("docker-compose.yml"),
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .expect("compose file");
+        let fake_engine = root.join("docker");
+        write_executable_script(
+            &fake_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  ps)
+    exit 0
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+        );
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "dockerComposeFile": "docker-compose.yml",
+                "service": "app"
+            }),
+        );
+
+        assert_eq!(
+            probe_up_container_id_labels(&resolved, &engine_args(&fake_engine))
+                .expect("missing compose targets should not fail"),
+            None
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn probe_id_labels_handles_stopped_engine_match_and_missing_engine_match() {
+        let root = unique_temp_dir("devcontainer-discovery-probe-engine-stopped-test");
+        fs::create_dir_all(&root).expect("root dir");
+        let resolved = resolved_config(&root, json!({"image": "alpine:3.20"}));
+
+        let stopped_engine = root.join("stopped-docker");
+        write_executable_script(
+            &stopped_engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+case "$1" in
+  ps)
+    case " $* " in
+      *" -a "*)
+        printf 'stopped-container\n'
+        ;;
+      *)
+        exit 0
+        ;;
+    esac
+    ;;
+  inspect)
+    printf '%s\n' '[{{"Config":{{"Labels":{{"devcontainer.local_folder":"{workspace}"}}}}}}]'
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+                workspace = root.display()
+            ),
+        );
+        assert_eq!(
+            probe_up_container_id_labels(&resolved, &engine_args(&stopped_engine))
+                .expect("stopped engine match should be probed"),
+            Some(HashMap::from([(
+                common::DEVCONTAINER_LOCAL_FOLDER_LABEL.to_string(),
+                root.display().to_string(),
+            )]))
+        );
+
+        let empty_engine = root.join("empty-docker");
+        write_executable_script(
+            &empty_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  ps)
+    exit 0
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+        );
+        assert_eq!(
+            probe_up_container_id_labels(&resolved, &engine_args(&empty_engine))
+                .expect("missing engine match should not fail"),
+            None
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn ensure_engine_container_reports_lookup_errors() {
         let root = unique_temp_dir("devcontainer-discovery-engine-lookup-errors-test");
         fs::create_dir_all(&root).expect("root dir");
@@ -1591,6 +1701,322 @@ esac
 
         assert_eq!(up.container_id, "new-compose-container");
         assert!(up_marker.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ensure_compose_container_removes_running_container_when_requested() {
+        let root = unique_temp_dir("devcontainer-discovery-compose-remove-running-test");
+        let config_root = root.join(".devcontainer");
+        fs::create_dir_all(&config_root).expect("config dir");
+        fs::write(
+            config_root.join("docker-compose.yml"),
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .expect("compose file");
+        let fake_engine = root.join("docker");
+        let up_marker = root.join("compose-up-called");
+        let rm_log = root.join("rm.log");
+        write_executable_script(
+            &fake_engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+case "$1" in
+  compose)
+    shift
+    case " $* " in
+      *" version "*)
+        echo "2.24.0"
+        ;;
+      *" up "*)
+        : > "{up_marker}"
+        ;;
+      *)
+        echo "unexpected compose command $*" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  ps)
+    if [ -f "{up_marker}" ]; then
+      printf 'new-compose-container\n'
+      exit 0
+    fi
+    case " $* " in
+      *" -a "*)
+        exit 0
+        ;;
+      *)
+        printf 'running-compose-container\n'
+        ;;
+    esac
+    ;;
+  rm)
+    printf '%s\n' "$*" >> "{rm_log}"
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+                up_marker = up_marker.display(),
+                rm_log = rm_log.display()
+            ),
+        );
+        let mut args = engine_args(&fake_engine);
+        args.push("--remove-existing-container".to_string());
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "dockerComposeFile": "docker-compose.yml",
+                "service": "app"
+            }),
+        );
+
+        let up = ensure_up_container(&resolved, &args, "alpine:3.20", "/workspace")
+            .expect("running compose container should be removed and recreated");
+
+        assert_eq!(up.container_id, "new-compose-container");
+        assert!(fs::read_to_string(&rm_log)
+            .expect("rm log")
+            .contains("rm -f running-compose-container"));
+        assert!(up_marker.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ensure_compose_container_refreshes_stopped_container_without_recreating() {
+        let root = unique_temp_dir("devcontainer-discovery-compose-refresh-stopped-test");
+        let config_root = root.join(".devcontainer");
+        fs::create_dir_all(&config_root).expect("config dir");
+        fs::write(
+            config_root.join("docker-compose.yml"),
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .expect("compose file");
+        let fake_engine = root.join("docker");
+        let up_marker = root.join("compose-up-called");
+        write_executable_script(
+            &fake_engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+case "$1" in
+  compose)
+    shift
+    case " $* " in
+      *" version "*)
+        echo "2.24.0"
+        ;;
+      *" up "*)
+        : > "{up_marker}"
+        exit 0
+        ;;
+      *)
+        echo "unexpected compose command $*" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  ps)
+    case " $* " in
+      *" -a "*)
+        printf 'stopped-compose-container\n'
+        ;;
+      *)
+        if [ -f "{up_marker}" ]; then
+          printf 'stopped-compose-container\n'
+        fi
+        ;;
+    esac
+    ;;
+  inspect)
+    printf '%s\n' '[{{"Config":{{"Labels":{{"devcontainer.local_folder":"{workspace}"}}}}}}]'
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+                workspace = root.display(),
+                up_marker = up_marker.display()
+            ),
+        );
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "dockerComposeFile": "docker-compose.yml",
+                "service": "app"
+            }),
+        );
+
+        let up = ensure_up_container(
+            &resolved,
+            &engine_args(&fake_engine),
+            "alpine:3.20",
+            "/workspace",
+        )
+        .expect("stopped compose container should be refreshed");
+
+        assert_eq!(up.container_id, "stopped-compose-container");
+        assert_eq!(up.lifecycle_mode, LifecycleMode::UpStarted);
+        assert_eq!(
+            up.matched_id_labels,
+            Some(HashMap::from([(
+                common::DEVCONTAINER_LOCAL_FOLDER_LABEL.to_string(),
+                root.display().to_string(),
+            )]))
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ensure_compose_container_creates_missing_container_and_honors_expect_existing() {
+        let root = unique_temp_dir("devcontainer-discovery-compose-create-test");
+        let config_root = root.join(".devcontainer");
+        fs::create_dir_all(&config_root).expect("config dir");
+        fs::write(
+            config_root.join("docker-compose.yml"),
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .expect("compose file");
+        let fake_engine = root.join("docker");
+        let up_marker = root.join("compose-up-called");
+        write_executable_script(
+            &fake_engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+case "$1" in
+  compose)
+    shift
+    case " $* " in
+      *" version "*)
+        echo "2.24.0"
+        ;;
+      *" up "*)
+        : > "{up_marker}"
+        ;;
+      *)
+        echo "unexpected compose command $*" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  ps)
+    if [ -f "{up_marker}" ]; then
+      printf 'created-compose-container\n'
+    fi
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+                up_marker = up_marker.display()
+            ),
+        );
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "dockerComposeFile": "docker-compose.yml",
+                "service": "app"
+            }),
+        );
+        let mut expect_args = engine_args(&fake_engine);
+        expect_args.push("--expect-existing-container".to_string());
+
+        let error = ensure_up_container(&resolved, &expect_args, "alpine:3.20", "/workspace")
+            .err()
+            .expect("expect existing should reject missing compose containers");
+        assert_eq!(error, "Dev container not found.");
+
+        let up = ensure_up_container(
+            &resolved,
+            &engine_args(&fake_engine),
+            "alpine:3.20",
+            "/workspace",
+        )
+        .expect("missing compose container should be created");
+
+        assert_eq!(up.container_id, "created-compose-container");
+        assert_eq!(up.lifecycle_mode, LifecycleMode::UpCreated);
+        assert_eq!(up.matched_id_labels, None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ensure_compose_container_marks_changed_container_id_as_created() {
+        let root = unique_temp_dir("devcontainer-discovery-compose-refresh-created-test");
+        let config_root = root.join(".devcontainer");
+        fs::create_dir_all(&config_root).expect("config dir");
+        fs::write(
+            config_root.join("docker-compose.yml"),
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .expect("compose file");
+        let fake_engine = root.join("docker");
+        let up_marker = root.join("compose-up-called");
+        write_executable_script(
+            &fake_engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+case "$1" in
+  compose)
+    shift
+    case " $* " in
+      *" version "*)
+        echo "2.24.0"
+        ;;
+      *" up "*)
+        : > "{up_marker}"
+        ;;
+      *)
+        echo "unexpected compose command $*" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  ps)
+    if [ -f "{up_marker}" ]; then
+      printf 'replacement-compose-container\n'
+    else
+      printf 'original-compose-container\n'
+    fi
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+                up_marker = up_marker.display()
+            ),
+        );
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "dockerComposeFile": "docker-compose.yml",
+                "service": "app"
+            }),
+        );
+
+        let up = ensure_up_container(
+            &resolved,
+            &engine_args(&fake_engine),
+            "alpine:3.20",
+            "/workspace",
+        )
+        .expect("changed compose container should be treated as created");
+
+        assert_eq!(up.container_id, "replacement-compose-container");
+        assert_eq!(up.lifecycle_mode, LifecycleMode::UpCreated);
+        assert_eq!(up.matched_id_labels, None);
         let _ = fs::remove_dir_all(root);
     }
 

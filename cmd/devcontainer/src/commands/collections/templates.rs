@@ -615,6 +615,38 @@ mod tests {
     }
 
     #[test]
+    fn run_template_apply_copies_local_target_into_requested_workspace() {
+        let template_root = crate::test_support::unique_temp_dir("devcontainer-template-source");
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-template-workspace");
+        let source = template_root.join("src");
+        fs::create_dir_all(&source).expect("template source");
+        fs::write(
+            template_root.join("devcontainer-template.json"),
+            r#"{
+  "id": "local-template",
+  "name": "Local Template"
+}"#,
+        )
+        .expect("manifest");
+        fs::write(source.join("README.md"), "# local template\n").expect("readme");
+
+        let payload = run_template_apply(&[
+            template_root.display().to_string(),
+            "--workspace-folder".to_string(),
+            workspace.display().to_string(),
+        ])
+        .expect("apply template");
+
+        assert_eq!(payload["id"], "local-template");
+        assert_eq!(
+            fs::read_to_string(workspace.join("README.md")).expect("readme"),
+            "# local template\n"
+        );
+        let _ = fs::remove_dir_all(template_root);
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
     fn substitute_template_options_preserves_unknown_and_unclosed_placeholders() {
         let options = template_option_values(
             &json!({

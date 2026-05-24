@@ -1203,6 +1203,24 @@ mod tests {
     }
 
     #[test]
+    fn resolve_feature_support_returns_none_without_declared_features() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-resolve-empty");
+        let config_root = workspace.join(".devcontainer");
+        fs::create_dir_all(&config_root).expect("config root");
+        let config_file = config_root.join("devcontainer.json");
+        let configuration = json!({
+            "image": "debian:bookworm"
+        });
+        fs::write(&config_file, configuration.to_string()).expect("config");
+
+        let support = resolve_feature_support(&[], &workspace, &config_file, &configuration)
+            .expect("resolved");
+
+        assert!(support.is_none());
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
     fn resolve_feature_support_reports_resolution_errors_from_roots_dependencies_and_overrides() {
         let workspace = crate::test_support::unique_temp_dir("devcontainer-resolve-errors");
         let config_root = workspace.join(".devcontainer");
@@ -1314,6 +1332,15 @@ mod tests {
         assert!(cycle_result.is_err());
         let cycle_error = cycle_result.err().expect("cycle error");
         assert!(cycle_error.contains("Circular feature dependency detected"));
+
+        let ignored_soft_dependency = compute_feature_install_order(vec![node(
+            soft.clone(),
+            Vec::new(),
+            vec![dependency(&dependent)],
+            0,
+        )])
+        .expect("missing soft dependency is ignored");
+        assert_eq!(ignored_soft_dependency[0].spec.user_feature_id, "soft");
     }
 
     #[test]
@@ -1877,6 +1904,10 @@ printf fixture > "$out"
         assert_eq!(
             generic_feature_manifest("demo-feature", "1.0.0".to_string())["name"],
             "Demo Feature"
+        );
+        assert_eq!(
+            generic_feature_manifest("---", "latest".to_string())["name"],
+            ""
         );
         assert_eq!(
             sha256_integrity(b"demo"),

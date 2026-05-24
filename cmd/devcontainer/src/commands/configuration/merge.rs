@@ -587,6 +587,25 @@ mod tests {
     }
 
     #[test]
+    fn merge_configuration_omits_empty_host_requirements() {
+        let merged = merge_configuration(
+            &json!({
+                "name": "demo"
+            }),
+            &[json!({
+                "hostRequirements": {
+                    "cpus": 0,
+                    "memory": "bad",
+                    "storage": ""
+                }
+            })],
+        );
+
+        assert_eq!(merged["name"], "demo");
+        assert!(merged.get("hostRequirements").is_none());
+    }
+
+    #[test]
     fn byte_port_and_gpu_helpers_cover_edge_cases() {
         assert_eq!(parse_byte_string(""), 0);
         assert_eq!(parse_byte_string("bad"), 0);

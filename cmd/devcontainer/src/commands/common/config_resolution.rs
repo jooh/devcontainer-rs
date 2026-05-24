@@ -198,7 +198,7 @@ mod tests {
 
     use super::{
         load_resolved_config, load_resolved_config_with_id_labels, resolve_override_config_path,
-        resolved_workspace_path,
+        resolve_read_configuration_path, resolved_workspace_path,
     };
 
     #[test]
@@ -410,6 +410,37 @@ mod tests {
             )
         );
 
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn override_config_reads_override_but_reports_canonical_workspace_config() {
+        let workspace = unique_temp_dir("devcontainer-config-resolution-override");
+        let config_dir = workspace.join(".devcontainer");
+        let config_file = config_dir.join("devcontainer.json");
+        let override_file = config_dir.join("override.json");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        fs::write(&config_file, r#"{"image":"base"}"#).expect("config write");
+        fs::write(&override_file, r#"{"image":"override"}"#).expect("override write");
+
+        let args = vec![
+            "--override-config".to_string(),
+            override_file.display().to_string(),
+        ];
+        let (resolved_workspace, resolved_config) =
+            resolve_read_configuration_path(&args).expect("resolved path");
+        let (_, loaded_config, config) = load_resolved_config(&args).expect("loaded config");
+
+        assert_eq!(
+            resolved_workspace,
+            fs::canonicalize(&workspace).expect("canonical workspace")
+        );
+        assert_eq!(
+            resolved_config,
+            fs::canonicalize(&config_file).expect("canonical config")
+        );
+        assert_eq!(loaded_config, resolved_config);
+        assert_eq!(config["image"], "override");
         let _ = fs::remove_dir_all(workspace);
     }
 

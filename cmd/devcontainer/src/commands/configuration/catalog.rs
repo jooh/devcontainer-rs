@@ -769,6 +769,22 @@ mod tests {
     }
 
     #[test]
+    fn workspace_oci_layout_entries_ignore_unreadable_or_incomplete_layouts() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-catalog-test");
+        let base = "ghcr.io/acme/features/incomplete-layout";
+        let layout_dir = workspace
+            .join(".devcontainer")
+            .join("oci-layouts")
+            .join(base);
+        fs::create_dir_all(&layout_dir).expect("layout dir");
+        fs::write(layout_dir.join("oci-layout"), "{}").expect("layout marker");
+
+        assert!(catalog_entries(base, Some(workspace.as_path())).is_none());
+        assert!(catalog_entries("example.com/not-ghcr", Some(workspace.as_path())).is_none());
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
     fn latest_oci_version_ignores_moving_semantic_tags() {
         let workspace = crate::test_support::unique_temp_dir("devcontainer-catalog-test");
         let base = "ghcr.io/acme/features/published-feature";

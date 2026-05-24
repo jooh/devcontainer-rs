@@ -197,7 +197,7 @@ mod tests {
 
     use crate::test_support::{unique_temp_dir, write_executable_script};
 
-    use super::{run_exec, run_set_up, run_up, run_user_commands};
+    use super::{run_build, run_exec, run_set_up, run_up, run_user_commands};
 
     #[test]
     fn run_up_reports_lockfile_option_errors() {
@@ -224,6 +224,26 @@ mod tests {
         let error = run_up(&args).expect_err("feature resolution error");
 
         assert_eq!(error, "--additional-features must be a JSON object");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_build_returns_image_config_payload_without_engine_work() {
+        let root = unique_temp_dir("devcontainer-runtime-mod-test");
+        fs::create_dir_all(&root).expect("workspace");
+        write_workspace_config(
+            &root,
+            "{\n  \"image\": \"alpine:3.20\",\n  \"remoteUser\": \"vscode\"\n}\n",
+        );
+        let args = workspace_args(&root);
+
+        let output = run_build(&args).expect("build success");
+
+        assert_eq!(output["outcome"], "success");
+        assert_eq!(output["command"], "build");
+        assert_eq!(output["imageName"], "alpine:3.20");
+        assert_eq!(output["configuration"]["remoteUser"], "vscode");
 
         let _ = fs::remove_dir_all(root);
     }
@@ -305,6 +325,30 @@ mod tests {
         let output = run_up(&args).expect("up success");
 
         assert_eq!(output["mergedConfiguration"]["remoteUser"], "vscode");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_up_creates_missing_container_and_reports_success_payload() {
+        let root = unique_temp_dir("devcontainer-runtime-mod-test");
+        fs::create_dir_all(&root).expect("workspace");
+        write_workspace_config(
+            &root,
+            "{\n  \"image\": \"alpine:3.20\",\n  \"updateRemoteUserUID\": false\n}\n",
+        );
+        let engine = root.join("engine");
+        write_missing_container_engine(&engine, "created-container-id");
+        let mut args = workspace_args(&root);
+        args.extend(docker_args(&engine));
+        args.push("--include-configuration".to_string());
+
+        let output = run_up(&args).expect("up success");
+
+        assert_eq!(output["outcome"], "success");
+        assert_eq!(output["command"], "up");
+        assert_eq!(output["containerId"], "created-container-id");
+        assert_eq!(output["configuration"]["image"], "alpine:3.20");
 
         let _ = fs::remove_dir_all(root);
     }
@@ -474,6 +518,28 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn run_exec_streams_command_to_existing_container() {
+        let root = unique_temp_dir("devcontainer-runtime-mod-test");
+        fs::create_dir_all(&root).expect("workspace");
+        write_workspace_config(&root, "{\n  \"image\": \"alpine:3.20\"\n}\n");
+        let engine = root.join("engine");
+        write_existing_container_engine(&engine, None);
+        let mut args = existing_container_args(&root, &engine);
+        args.push("/bin/true".to_string());
+
+        let status = run_exec(&args).expect("exec success");
+
+        assert_eq!(status, 0);
+        let exec_log = fs::read_to_string(engine.with_extension("exec-log")).expect("exec log");
+        assert!(
+            exec_log.contains("/bin/true"),
+            "exec invocation did not include requested command: {exec_log}"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn workspace_args(workspace: &Path) -> Vec<String> {
         vec![
             "--workspace-folder".to_string(),
@@ -502,10 +568,21 @@ mod tests {
 
     fn write_existing_container_engine(engine: &Path, lifecycle_exit: Option<i32>) {
         let lifecycle_exit = lifecycle_exit.unwrap_or(0);
+        let exec_log = engine.with_extension("exec-log");
+        let exec_log = exec_log.display();
         write_executable_script(
             engine,
             &format!(
-                "#!/bin/sh\ncase \"$1\" in\n  ps) printf 'container-id\\n' ;;\n  inspect) printf '[{{\"Config\":{{\"Labels\":{{}},\"Env\":[\"HOME=/home/vscode\"],\"User\":\"vscode\"}},\"Mounts\":[{{\"Destination\":\"/workspace\"}}]}}]\\n' ;;\n  exec)\n    case \"$*\" in\n      *getent\\ passwd*) printf 'vscode:x:1000:1000::/home/vscode:/bin/sh\\n' ;;\n      *) if [ {lifecycle_exit} -ne 0 ]; then printf 'lifecycle failed\\n' >&2; exit {lifecycle_exit}; fi ;;\n    esac\n    ;;\n  *) printf 'unexpected engine command: %s\\n' \"$*\" >&2; exit 2 ;;\nesac\n"
+                "#!/bin/sh\ncase \"$1\" in\n  ps) printf 'container-id\\n' ;;\n  inspect) printf '[{{\"Config\":{{\"Labels\":{{}},\"Env\":[\"HOME=/home/vscode\"],\"User\":\"vscode\"}},\"Mounts\":[{{\"Destination\":\"/workspace\"}}]}}]\\n' ;;\n  exec)\n    case \"$*\" in\n      *getent\\ passwd*) printf 'vscode:x:1000:1000::/home/vscode:/bin/sh\\n' ;;\n      *) printf '%s\\n' \"$*\" > '{exec_log}'; if [ {lifecycle_exit} -ne 0 ]; then printf 'lifecycle failed\\n' >&2; exit {lifecycle_exit}; fi ;;\n    esac\n    ;;\n  *) printf 'unexpected engine command: %s\\n' \"$*\" >&2; exit 2 ;;\nesac\n"
+            ),
+        );
+    }
+
+    fn write_missing_container_engine(engine: &Path, container_id: &str) {
+        write_executable_script(
+            engine,
+            &format!(
+                "#!/bin/sh\ncase \"$1\" in\n  ps) exit 0 ;;\n  run) printf '{container_id}\\n' ;;\n  *) printf 'unexpected engine command: %s\\n' \"$*\" >&2; exit 2 ;;\nesac\n"
             ),
         );
     }

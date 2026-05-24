@@ -355,4 +355,60 @@ mod tests {
 
         assert!(merged.get("customizations").is_none());
     }
+
+    #[test]
+    fn apply_feature_metadata_replaces_mounts_by_alternate_target_keys() {
+        let merged = apply_feature_metadata(
+            &json!({
+                "image": "debian:bookworm"
+            }),
+            &[
+                json!({
+                    "mounts": [
+                        {
+                            "type": "volume",
+                            "source": "old",
+                            "destination": "/cache"
+                        },
+                        {
+                            "type": "volume",
+                            "source": "logs",
+                            "dst": "/logs"
+                        }
+                    ]
+                }),
+                json!({
+                    "mounts": [
+                        {
+                            "type": "bind",
+                            "source": "/new-cache",
+                            "target": "/cache"
+                        },
+                        {
+                            "type": "bind",
+                            "source": "/new-logs",
+                            "destination": "/logs"
+                        }
+                    ]
+                }),
+            ],
+            false,
+        );
+
+        assert_eq!(
+            merged["mounts"],
+            json!([
+                {
+                    "type": "bind",
+                    "source": "/new-cache",
+                    "target": "/cache"
+                },
+                {
+                    "type": "bind",
+                    "source": "/new-logs",
+                    "destination": "/logs"
+                }
+            ])
+        );
+    }
 }
