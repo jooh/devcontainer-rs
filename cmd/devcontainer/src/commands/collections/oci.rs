@@ -976,15 +976,16 @@ struct RegistryAuth {
 fn docker_config_auth(registry: &str) -> Option<RegistryAuth> {
     let config_path = docker_config_path()?;
     let config: Value = serde_json::from_str(&fs::read_to_string(config_path).ok()?).ok()?;
-    if let Some(helper) = config["credHelpers"][registry].as_str() {
-        if let Some(auth) = credential_helper_auth(helper, registry) {
-            return Some(auth);
-        }
-    }
-    if let Some(helper) = config["credsStore"].as_str() {
-        if let Some(auth) = credential_helper_auth(helper, registry) {
-            return Some(auth);
-        }
+    let credential_auth = config["credHelpers"][registry]
+        .as_str()
+        .and_then(|helper| credential_helper_auth(helper, registry))
+        .or_else(|| {
+            config["credsStore"]
+                .as_str()
+                .and_then(|helper| credential_helper_auth(helper, registry))
+        });
+    if credential_auth.is_some() {
+        return credential_auth;
     }
     for key in registry_config_keys(registry) {
         if let Some(entry) = config["auths"].get(&key) {
@@ -1756,6 +1757,33 @@ mod tests {
         fn drop(&mut self) {
             super::replace_test_tool_dir(self.previous.take());
         }
+    }
+
+    #[test]
+    fn tool_program_uses_test_override_and_restores_previous_value() {
+        let first_dir = crate::test_support::unique_temp_dir("devcontainer-oci-tools-first");
+        let second_dir = crate::test_support::unique_temp_dir("devcontainer-oci-tools-second");
+
+        assert_eq!(super::tool_program("curl"), "curl");
+        {
+            let _first = TestToolDirGuard::new(&first_dir);
+            assert_eq!(
+                super::tool_program("curl"),
+                first_dir.join("curl").display().to_string()
+            );
+            {
+                let _second = TestToolDirGuard::new(&second_dir);
+                assert_eq!(
+                    super::tool_program("curl"),
+                    second_dir.join("curl").display().to_string()
+                );
+            }
+            assert_eq!(
+                super::tool_program("curl"),
+                first_dir.join("curl").display().to_string()
+            );
+        }
+        assert_eq!(super::tool_program("curl"), "curl");
     }
 
     #[test]
