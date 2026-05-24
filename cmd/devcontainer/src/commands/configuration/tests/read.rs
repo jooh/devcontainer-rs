@@ -14,7 +14,7 @@ use crate::commands::configuration::{
     apply_feature_metadata, apply_feature_metadata_with_options, build_read_configuration_payload,
     should_use_native_read_configuration,
 };
-use crate::test_support::write_test_control_manifest;
+use crate::test_support::{write_executable_script, write_test_control_manifest};
 
 fn upstream_feature_set_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -281,6 +281,91 @@ fn read_configuration_payload_includes_optional_sections() {
         .expect("feature sets");
     assert_eq!(feature_sets.len(), 1);
     assert_eq!(feature_sets[0]["features"][0]["id"], "git");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn read_configuration_workspace_payload_omits_mount_for_compose_configs() {
+    let root = unique_temp_dir();
+    let config_dir = root.join(".devcontainer");
+    fs::create_dir_all(&config_dir).expect("failed to create config directory");
+    fs::write(
+        config_dir.join("devcontainer.json"),
+        "{\n  \"dockerComposeFile\": \"compose.yml\",\n  \"service\": \"app\"\n}\n",
+    )
+    .expect("failed to write config");
+
+    let payload = build_read_configuration_payload(&[
+        "--workspace-folder".to_string(),
+        root.display().to_string(),
+    ])
+    .expect("payload");
+
+    assert_eq!(payload["workspace"]["workspaceFolder"], "/");
+    assert!(payload["workspace"].get("workspaceMount").is_none());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn read_configuration_uses_container_inspect_without_local_config() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    let docker = root.join("docker");
+    let inspect_payload = json!([{
+        "Config": {
+            "Labels": {
+                "devcontainer.local_folder": root.display().to_string(),
+                "devcontainer.metadata": json!([{
+                    "remoteEnv": {
+                        "FROM_META": "${containerEnv:VALUE}"
+                    }
+                }]).to_string()
+            },
+            "Env": [
+                "VALUE=from-container",
+                "BROKEN"
+            ]
+        }
+    }]);
+    write_executable_script(
+        &docker,
+        &format!("#!/bin/sh\nprintf '%s' '{}'\n", inspect_payload),
+    );
+
+    let payload = build_read_configuration_payload(&[
+        "--container-id".to_string(),
+        "container-123".to_string(),
+        "--docker-path".to_string(),
+        docker.display().to_string(),
+        "--include-merged-configuration".to_string(),
+    ])
+    .expect("payload");
+
+    assert_eq!(payload["configuration"], json!({}));
+    assert!(payload.get("workspace").is_none());
+    assert_eq!(
+        payload["mergedConfiguration"]["remoteEnv"]["FROM_META"],
+        "from-container"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn read_configuration_reports_invalid_container_inspect_json() {
+    let root = unique_temp_dir();
+    fs::create_dir_all(&root).expect("failed to create root");
+    let docker = root.join("docker");
+    write_executable_script(&docker, "#!/bin/sh\nprintf 'not-json'\n");
+
+    let error = build_read_configuration_payload(&[
+        "--container-id".to_string(),
+        "container-123".to_string(),
+        "--docker-path".to_string(),
+        docker.display().to_string(),
+    ])
+    .expect_err("invalid inspect payload should fail");
+
+    assert!(error.contains("Invalid inspect JSON"), "{error}");
     let _ = fs::remove_dir_all(root);
 }
 

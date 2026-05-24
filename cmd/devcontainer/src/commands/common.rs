@@ -16,7 +16,7 @@ pub(crate) use config_resolution::{
     load_resolved_config, load_resolved_config_with_id_labels, resolve_override_config_path,
     resolve_read_configuration_path,
 };
-pub(crate) use fs::{copy_directory_recursive, package_collection_target};
+pub(crate) use fs::copy_directory_recursive;
 pub(crate) use labels::{
     default_devcontainer_id_label_pairs, default_devcontainer_id_labels,
     normalize_devcontainer_label_path, normalize_devcontainer_label_path_for_platform,
@@ -62,5 +62,6 @@ mod tests {
         assert_eq!(feature_option_env_name("myOptionName"), "MYOPTIONNAME");
         assert_eq!(feature_option_env_name("1name"), "_NAME");
         assert_eq!(feature_option_env_name("12345_option-name"), "_OPTION_NAME");
+        assert_eq!(feature_option_env_name("!!!value"), "_VALUE");
     }
 }

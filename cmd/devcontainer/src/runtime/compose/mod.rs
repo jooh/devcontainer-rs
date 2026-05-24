@@ -18,6 +18,7 @@ use super::engine;
 const COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
 const COMPOSE_SERVICE_LABEL: &str = "com.docker.compose.service";
 
+#[derive(Debug)]
 pub(crate) struct ComposeSpec {
     pub(crate) files: Vec<PathBuf>,
     pub(crate) service: String,
@@ -36,7 +37,14 @@ pub(crate) fn uses_compose_config(configuration: &Value) -> bool {
 }
 
 pub(crate) fn load_compose_spec(resolved: &ResolvedConfig) -> Result<Option<ComposeSpec>, String> {
-    if !uses_compose_config(&resolved.configuration) {
+    let Some(service) = resolved
+        .configuration
+        .get("service")
+        .and_then(Value::as_str)
+    else {
+        return Ok(None);
+    };
+    if resolved.configuration.get("dockerComposeFile").is_none() {
         return Ok(None);
     }
 
@@ -49,12 +57,7 @@ pub(crate) fn load_compose_spec(resolved: &ResolvedConfig) -> Result<Option<Comp
         config_root,
         &resolved.workspace_folder,
     )?;
-    let service = resolved
-        .configuration
-        .get("service")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "Compose configuration must define service".to_string())?
-        .to_string();
+    let service = service.to_string();
     let project_name = project::compose_project_name(&files)?;
     let definition = service::inspect_service_definition(&files, &service)?;
     let has_build = definition.has_build || definition.build.is_some();
@@ -115,23 +118,13 @@ pub(crate) fn build_service(resolved: &ResolvedConfig, args: &[String]) -> Resul
     if let Some(feature_support) = feature_support {
         let built_image = common::parse_option_value(args, "--image-name")
             .unwrap_or_else(|| compose_image.clone());
-        super::build::build_feature_image(
-            args,
-            &built_image,
-            &compose_image,
-            &feature_support.installations,
-        )?;
-        if common::has_flag(args, "--push") {
-            let push_result =
-                engine::run_engine(args, vec!["push".to_string(), built_image.clone()])?;
-            if push_result.status_code != 0 {
-                return Err(engine::stderr_or_stdout(&push_result));
-            }
-        }
+        let installations = &feature_support.installations;
+        super::build::build_feature_image(args, &built_image, &compose_image, installations)?;
+        let configuration = &resolved.configuration;
         configuration::ensure_native_lockfile(
             args,
             &resolved.config_file,
-            &resolved.configuration,
+            configuration,
             &feature_support,
         )?;
         return Ok(built_image);

@@ -1,5 +1,7 @@
 //! Feature declaration parsing, dependency ordering, and source resolution helpers.
 
+#[cfg(test)]
+use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::env;
@@ -160,9 +162,9 @@ fn declared_features(args: &[String], configuration: &Value) -> Result<Map<Strin
         .unwrap_or_default();
     if let Some(raw_additional) = common::parse_option_value(args, "--additional-features") {
         let additional = crate::config::parse_jsonc_value(&raw_additional)?;
-        let additional = additional
-            .as_object()
-            .ok_or_else(|| "--additional-features must be a JSON object".to_string())?;
+        let Some(additional) = additional.as_object() else {
+            return Err("--additional-features must be a JSON object".to_string());
+        };
         for (key, value) in additional {
             declared.insert(key.clone(), value.clone());
         }
@@ -403,15 +405,6 @@ fn compare_nodes(left: &FeatureNode, right: &FeatureNode) -> Ordering {
 }
 
 fn compare_specs(left: &FeatureSpec, right: &FeatureSpec) -> Ordering {
-    let left_type = source_type(&left.source);
-    let right_type = source_type(&right.source);
-    if left_type != right_type {
-        return left
-            .user_feature_id
-            .cmp(&right.user_feature_id)
-            .then_with(|| left_type.cmp(right_type));
-    }
-
     match (&left.source, &right.source) {
         (
             FeatureSource::Oci {
@@ -452,7 +445,10 @@ fn compare_specs(left: &FeatureSpec, right: &FeatureSpec) -> Ordering {
         ) => id_without_version
             .cmp(right_id)
             .then_with(|| compare_options(&left.value, &right.value)),
-        _ => Ordering::Equal,
+        _ => left
+            .user_feature_id
+            .cmp(&right.user_feature_id)
+            .then_with(|| source_type(&left.source).cmp(source_type(&right.source))),
     }
 }
 
@@ -539,12 +535,13 @@ fn resolve_feature_spec(
                 feature_id.to_string(),
             )
         } else if is_direct_tarball_reference(feature_id) {
-            let manifest = direct_tarball_feature_manifest(feature_id).unwrap_or_else(|| {
-                generic_feature_manifest(
-                    &collection_slug(feature_id).unwrap_or_else(|| "tarball-feature".to_string()),
+            let manifest = match direct_tarball_feature_manifest(feature_id) {
+                Some(manifest) => manifest,
+                None => generic_feature_manifest(
+                    &collection_slug(feature_id).unwrap_or("tarball-feature".to_string()),
                     collection_reference_version(feature_id),
-                )
-            });
+                ),
+            };
             let source_information = json!({
                 "type": "direct-tarball",
                 "tarballUri": feature_id,
@@ -565,13 +562,13 @@ fn resolve_feature_spec(
             )
         } else if is_github_repo_feature_reference(feature_id) {
             let id_without_version = github_repo_id_without_version(feature_id);
-            let manifest = published_feature_manifest(feature_id).unwrap_or_else(|| {
-                generic_feature_manifest(
-                    &collection_slug(&id_without_version)
-                        .unwrap_or_else(|| id_without_version.clone()),
+            let manifest = match published_feature_manifest(feature_id) {
+                Some(manifest) => manifest,
+                None => generic_feature_manifest(
+                    &collection_slug(&id_without_version).unwrap_or(id_without_version.clone()),
                     collection_reference_version(feature_id),
-                )
-            });
+                ),
+            };
             let source_information = json!({
                 "type": "github-repo",
                 "userFeatureId": feature_id,
@@ -704,9 +701,10 @@ fn resolved_lockfile_feature(
                 user_feature_id: feature_id.to_string(),
                 version: manifest_version(manifest, None),
                 resolved: uri.clone(),
-                integrity: verified_integrity
-                    .map(Ok)
-                    .unwrap_or_else(|| direct_tarball_archive_integrity(uri))?,
+                integrity: match verified_integrity {
+                    Some(integrity) => integrity,
+                    None => direct_tarball_archive_integrity(uri)?,
+                },
                 depends_on: manifest_depends_on_entries(manifest),
             }))
         }
@@ -753,13 +751,17 @@ fn manifest_depends_on_entries(manifest: &Value) -> Option<Vec<String>> {
     } else {
         Vec::new()
     };
-    (!entries.is_empty()).then_some(entries)
+    if entries.is_empty() {
+        None
+    } else {
+        Some(entries)
+    }
 }
 
 fn direct_tarball_archive_integrity(uri: &str) -> Result<String, String> {
     let temp = TempDownloadedTarball::new();
     let result = process_runner::run_process(&ProcessRequest {
-        program: "curl".to_string(),
+        program: curl_program(),
         args: vec![
             "-fsSL".to_string(),
             "--max-time".to_string(),
@@ -786,6 +788,25 @@ fn direct_tarball_archive_integrity(uri: &str) -> Result<String, String> {
     }
     let bytes = fs::read(&temp.path).map_err(|error| error.to_string())?;
     Ok(sha256_integrity(&bytes))
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CURL_PROGRAM: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn replace_test_curl_program(program: Option<PathBuf>) -> Option<PathBuf> {
+    TEST_CURL_PROGRAM.with(|cell| cell.replace(program))
+}
+
+fn curl_program() -> String {
+    #[cfg(test)]
+    if let Some(program) = TEST_CURL_PROGRAM.with(|cell| cell.borrow().clone()) {
+        return program.display().to_string();
+    }
+
+    "curl".to_string()
 }
 
 fn sha256_integrity(bytes: &[u8]) -> String {
@@ -909,10 +930,12 @@ fn resolve_local_feature_path(config_root: &Path, feature_id: &str) -> PathBuf {
 }
 
 fn fs_path_string(path: &Path) -> String {
-    path.canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf())
-        .display()
-        .to_string()
+    match path.canonicalize() {
+        Ok(path) => path,
+        Err(_) => path.to_path_buf(),
+    }
+    .display()
+    .to_string()
 }
 
 fn source_information_string(source_information: &Value, key: &str) -> String {
@@ -929,7 +952,7 @@ fn github_repo_id_without_version(feature_id: &str) -> String {
         .find('@')
         .filter(|index| *index > last_slash)
         .map(|index| feature_id[..index].to_string())
-        .unwrap_or_else(|| feature_id.to_string())
+        .unwrap_or(feature_id.to_string())
 }
 
 fn generic_feature_manifest(id: &str, version: String) -> Value {
@@ -940,10 +963,8 @@ fn generic_feature_manifest(id: &str, version: String) -> Value {
             .filter(|segment| !segment.is_empty())
             .map(|segment| {
                 let mut chars = segment.chars();
-                match chars.next() {
-                    Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
-                    None => String::new(),
-                }
+                let first = chars.next().expect("non-empty segment after filter");
+                format!("{}{}", first.to_ascii_uppercase(), chars.as_str())
             })
             .collect::<Vec<_>>()
             .join(" "),
@@ -955,6 +976,7 @@ fn generic_feature_manifest(id: &str, version: String) -> Value {
 #[cfg(test)]
 mod tests {
     use std::cmp::Ordering;
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -963,15 +985,17 @@ mod tests {
 
     use super::{
         compare_options, compare_specs, compute_feature_install_order, declared_features,
-        feature_aliases, feature_depends_on, feature_installs_after, generic_feature_manifest,
-        github_repo_id_without_version, is_direct_tarball_reference,
-        is_github_repo_feature_reference, is_local_feature_reference,
+        direct_tarball_archive_integrity, feature_aliases, feature_depends_on,
+        feature_installs_after, generic_feature_manifest, github_repo_id_without_version,
+        is_direct_tarball_reference, is_github_repo_feature_reference, is_local_feature_reference,
         is_registry_qualified_oci_reference, manifest_depends_on_entries,
-        node_satisfies_soft_dependency, resolve_feature_spec, resolve_local_feature_path,
-        sha256_integrity, verify_direct_tarball_lockfile_integrity, FeatureDependency,
-        FeatureInstallation, FeatureInstallationSource, FeatureNode, FeatureRequest, FeatureSource,
-        FeatureSpec, LockfileEntry, TempDownloadedTarball,
+        node_satisfies_soft_dependency, resolve_feature_spec, resolve_feature_support,
+        resolve_local_feature_path, sha256_integrity, value_type_name,
+        verify_direct_tarball_lockfile_integrity, FeatureDependency, FeatureInstallation,
+        FeatureInstallationSource, FeatureNode, FeatureRequest, FeatureSource, FeatureSpec,
+        Lockfile, LockfileEntry, TempDownloadedTarball,
     };
+    use crate::test_support::{process_env_lock, write_executable_script};
 
     fn spec(
         id: &str,
@@ -1053,6 +1077,46 @@ mod tests {
         .expect("manifest");
     }
 
+    fn write_feature_manifest(feature_dir: &Path, manifest: &serde_json::Value) {
+        fs::create_dir_all(feature_dir).expect("feature dir");
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            serde_json::to_string_pretty(manifest).expect("manifest json"),
+        )
+        .expect("manifest");
+    }
+
+    fn with_fake_curl<R>(script: &str, run: impl FnOnce() -> R) -> R {
+        let _guard = process_env_lock();
+        let bin_dir = crate::test_support::unique_temp_dir("devcontainer-resolve-curl");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        write_executable_script(&bin_dir.join("curl"), script);
+        let _curl = TestCurlProgramGuard::new(bin_dir.join("curl"));
+
+        let result = run();
+
+        let _ = fs::remove_dir_all(bin_dir);
+        result
+    }
+
+    struct TestCurlProgramGuard {
+        previous: Option<PathBuf>,
+    }
+
+    impl TestCurlProgramGuard {
+        fn new(program: PathBuf) -> Self {
+            Self {
+                previous: super::replace_test_curl_program(Some(program)),
+            }
+        }
+    }
+
+    impl Drop for TestCurlProgramGuard {
+        fn drop(&mut self) {
+            super::replace_test_curl_program(self.previous.take());
+        }
+    }
+
     #[test]
     fn declared_features_merges_additional_features_and_rejects_non_objects() {
         let declared = declared_features(
@@ -1078,6 +1142,146 @@ mod tests {
             .unwrap_err(),
             "--additional-features must be a JSON object"
         );
+    }
+
+    #[test]
+    fn resolve_feature_support_orders_local_dependencies_and_overrides() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-resolve-support");
+        let config_root = workspace.join(".devcontainer");
+        let features_root = config_root.join("features");
+        write_feature_manifest(
+            &features_root.join("base"),
+            &json!({
+                "id": "base",
+                "version": "1.0.0",
+                "options": {}
+            }),
+        );
+        write_feature_manifest(
+            &features_root.join("dep"),
+            &json!({
+                "id": "dep",
+                "version": "1.0.0",
+                "dependsOn": {
+                    "./features/base": {}
+                },
+                "installsAfter": [
+                    "./features/base"
+                ],
+                "options": {}
+            }),
+        );
+        let configuration = json!({
+            "features": {
+                "./features/base": {},
+                "./features/dep": {}
+            },
+            "overrideFeatureInstallOrder": [
+                "./features/dep"
+            ]
+        });
+        let config_file = config_root.join("devcontainer.json");
+        fs::write(&config_file, configuration.to_string()).expect("config");
+
+        let support = resolve_feature_support(&[], &workspace, &config_file, &configuration)
+            .expect("resolved")
+            .expect("feature support");
+
+        assert_eq!(
+            support.ordered_feature_ids,
+            vec!["./features/base".to_string(), "./features/dep".to_string()]
+        );
+        assert_eq!(
+            support.features_configuration["featureSets"]
+                .as_array()
+                .expect("feature sets")
+                .len(),
+            2
+        );
+        assert!(support.lockfile_features.is_empty());
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn resolve_feature_support_returns_none_without_declared_features() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-resolve-empty");
+        let config_root = workspace.join(".devcontainer");
+        fs::create_dir_all(&config_root).expect("config root");
+        let config_file = config_root.join("devcontainer.json");
+        let configuration = json!({
+            "image": "debian:bookworm"
+        });
+        fs::write(&config_file, configuration.to_string()).expect("config");
+
+        let support = resolve_feature_support(&[], &workspace, &config_file, &configuration)
+            .expect("resolved");
+
+        assert!(support.is_none());
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn resolve_feature_support_reports_resolution_errors_from_roots_dependencies_and_overrides() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-resolve-errors");
+        let config_root = workspace.join(".devcontainer");
+        let features_root = config_root.join("features");
+        write_feature_manifest(
+            &features_root.join("base"),
+            &json!({
+                "id": "base",
+                "version": "1.0.0",
+                "options": {}
+            }),
+        );
+        write_feature_manifest(
+            &features_root.join("depends-on-missing"),
+            &json!({
+                "id": "depends-on-missing",
+                "version": "1.0.0",
+                "dependsOn": {
+                    "./features/missing-dependency": {}
+                },
+                "options": {}
+            }),
+        );
+        let config_file = config_root.join("devcontainer.json");
+
+        let missing_root = json!({
+            "features": {
+                "./features/missing-root": {}
+            }
+        });
+        assert!(
+            resolve_feature_support(&[], &workspace, &config_file, &missing_root)
+                .expect_err("missing root")
+                .contains("No such file")
+        );
+
+        let missing_dependency = json!({
+            "features": {
+                "./features/depends-on-missing": {}
+            }
+        });
+        assert!(
+            resolve_feature_support(&[], &workspace, &config_file, &missing_dependency)
+                .expect_err("missing dependency")
+                .contains("No such file")
+        );
+
+        let missing_override = json!({
+            "features": {
+                "./features/base": {}
+            },
+            "overrideFeatureInstallOrder": [
+                "./features/missing-override"
+            ]
+        });
+        assert!(
+            resolve_feature_support(&[], &workspace, &config_file, &missing_override)
+                .expect_err("missing override")
+                .contains("No such file")
+        );
+        let _ = fs::remove_dir_all(workspace);
     }
 
     #[test]
@@ -1121,14 +1325,22 @@ mod tests {
             vec!["base", "dependent", "soft"]
         );
 
-        let cycle_error = match compute_feature_install_order(vec![
+        let cycle_result = compute_feature_install_order(vec![
             node(base.clone(), vec![dependency(&dependent)], Vec::new(), 0),
             node(dependent.clone(), vec![dependency(&base)], Vec::new(), 0),
-        ]) {
-            Ok(_) => panic!("expected circular dependency error"),
-            Err(error) => error,
-        };
+        ]);
+        assert!(cycle_result.is_err());
+        let cycle_error = cycle_result.err().expect("cycle error");
         assert!(cycle_error.contains("Circular feature dependency detected"));
+
+        let ignored_soft_dependency = compute_feature_install_order(vec![node(
+            soft.clone(),
+            Vec::new(),
+            vec![dependency(&dependent)],
+            0,
+        )])
+        .expect("missing soft dependency is ignored");
+        assert_eq!(ignored_soft_dependency[0].spec.user_feature_id, "soft");
     }
 
     #[test]
@@ -1149,6 +1361,26 @@ mod tests {
                 resource: "ghcr.io/acme/features/legacy".to_string(),
                 tag: Some("1".to_string()),
                 digest: "sha256:legacy".to_string(),
+            },
+            json!({}),
+            &[],
+        );
+        let oci_same = spec(
+            "oci-current-same",
+            FeatureSource::Oci {
+                resource: "ghcr.io/acme/features/current".to_string(),
+                tag: Some("1".to_string()),
+                digest: "sha256:same".to_string(),
+            },
+            json!({}),
+            &[],
+        );
+        let oci_without_slash = spec(
+            "oci-without-slash",
+            FeatureSource::Oci {
+                resource: "noslash".to_string(),
+                tag: None,
+                digest: "sha256:noslash".to_string(),
             },
             json!({}),
             &[],
@@ -1181,6 +1413,14 @@ mod tests {
         assert!(node_satisfies_soft_dependency(
             &node(oci_alias, Vec::new(), Vec::new(), 0),
             &dependency(&oci_dependency)
+        ));
+        assert!(node_satisfies_soft_dependency(
+            &node(oci_same, Vec::new(), Vec::new(), 0),
+            &dependency(&oci_dependency)
+        ));
+        assert!(!node_satisfies_soft_dependency(
+            &node(oci_dependency.clone(), Vec::new(), Vec::new(), 0),
+            &dependency(&oci_without_slash)
         ));
         assert!(node_satisfies_soft_dependency(
             &node(local.clone(), Vec::new(), Vec::new(), 0),
@@ -1254,10 +1494,50 @@ mod tests {
             json!({}),
             &[],
         );
+        let direct_same_id = spec(
+            "same-id",
+            FeatureSource::DirectTarball {
+                uri: "https://example.com/same.tgz".to_string(),
+            },
+            json!({}),
+            &[],
+        );
+        let local_same_id = spec(
+            "same-id",
+            FeatureSource::Local {
+                resolved_path: "/features/same".to_string(),
+            },
+            json!({}),
+            &[],
+        );
+        let oci_same_id = spec(
+            "shared-id",
+            FeatureSource::Oci {
+                resource: "ghcr.io/acme/features/shared".to_string(),
+                tag: Some("1".to_string()),
+                digest: "sha256:shared".to_string(),
+            },
+            json!({}),
+            &[],
+        );
+        let github_same_id = spec(
+            "shared-id",
+            FeatureSource::GithubRepo {
+                id_without_version: "owner/shared".to_string(),
+            },
+            json!({}),
+            &[],
+        );
 
         assert_eq!(compare_specs(&oci_a, &oci_b), Ordering::Less);
         assert_eq!(compare_specs(&direct_a, &direct_b), Ordering::Less);
         assert_eq!(compare_specs(&github_a, &github_b), Ordering::Less);
+        assert_eq!(compare_specs(&direct_a, &github_a), Ordering::Less);
+        assert_eq!(
+            compare_specs(&direct_same_id, &local_same_id),
+            Ordering::Less
+        );
+        assert_eq!(compare_specs(&github_same_id, &oci_same_id), Ordering::Less);
         assert_eq!(compare_options(&json!("a"), &json!("b")), Ordering::Less);
         assert_eq!(compare_options(&json!(false), &json!(true)), Ordering::Less);
         assert_eq!(
@@ -1267,10 +1547,15 @@ mod tests {
         assert_eq!(compare_options(&json!(1), &json!(2)), Ordering::Less);
         assert_eq!(compare_options(&json!(null), &json!(null)), Ordering::Equal);
         assert_eq!(compare_options(&json!([1]), &json!([1, 2])), Ordering::Less);
+        assert_eq!(compare_options(&json!([1]), &json!([2])), Ordering::Less);
         assert_ne!(
             compare_options(&json!(null), &json!(false)),
             Ordering::Equal
         );
+        assert_eq!(value_type_name(&json!(0)), "number");
+        assert_eq!(value_type_name(&json!("value")), "string");
+        assert_eq!(value_type_name(&json!([])), "array");
+        assert_eq!(value_type_name(&json!({})), "object");
     }
 
     #[test]
@@ -1326,6 +1611,221 @@ mod tests {
         assert_eq!(github.manifest["version"], "1.2.3");
         assert!(github.lockfile_feature.is_none());
         let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn resolve_feature_spec_covers_generic_sources_locked_digest_and_tarball_integrity() {
+        let workspace = crate::test_support::unique_temp_dir("devcontainer-resolve-generic");
+        let config_root = workspace.join(".devcontainer");
+        fs::create_dir_all(&config_root).expect("config root");
+        let curl_success = r#"#!/bin/sh
+out=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    shift
+    out="$1"
+    break
+  fi
+  shift
+done
+printf fixture > "$out"
+"#;
+
+        with_fake_curl(curl_success, || {
+            let direct_uri = "https://example.com/devcontainer-feature-unknown.tgz";
+            let direct =
+                resolve_feature_spec(direct_uri, &json!({}), &config_root, &workspace, None)
+                    .expect("generic direct tarball");
+            assert_eq!(direct.manifest["id"], "devcontainer-feature-unknown.tgz");
+            assert_eq!(
+                direct
+                    .lockfile_feature
+                    .as_ref()
+                    .expect("direct lockfile")
+                    .integrity,
+                sha256_integrity(b"fixture")
+            );
+            let direct_lockfile = Lockfile {
+                features: BTreeMap::from([(
+                    direct_uri.to_string(),
+                    LockfileEntry {
+                        version: "latest".to_string(),
+                        resolved: direct_uri.to_string(),
+                        integrity: sha256_integrity(b"fixture"),
+                        depends_on: None,
+                    },
+                )]),
+            };
+            let locked_direct = resolve_feature_spec(
+                direct_uri,
+                &json!({}),
+                &config_root,
+                &workspace,
+                Some(&direct_lockfile),
+            )
+            .expect("locked generic direct tarball");
+            assert_eq!(
+                locked_direct
+                    .lockfile_feature
+                    .as_ref()
+                    .expect("locked direct lockfile")
+                    .integrity,
+                sha256_integrity(b"fixture")
+            );
+        });
+
+        let github = resolve_feature_spec(
+            "owner/repo/path/unknown-feature@2.0.0",
+            &json!({}),
+            &config_root,
+            &workspace,
+            None,
+        )
+        .expect("generic github");
+        assert_eq!(github.manifest["id"], "unknown-feature");
+        assert_eq!(github.manifest["version"], "2.0.0");
+
+        let feature_id = "ghcr.io/devcontainers/features/git:1.0.4";
+        let digest = "sha256:0bb490abcc0a3fb23937d29e2c18a225b51c5584edc0d9eb4131569a980f60b6";
+        let lockfile = Lockfile {
+            features: BTreeMap::from([(
+                feature_id.to_string(),
+                LockfileEntry {
+                    version: "1.0.4".to_string(),
+                    resolved: format!("ghcr.io/devcontainers/features/git@{digest}"),
+                    integrity: digest.to_string(),
+                    depends_on: None,
+                },
+            )]),
+        };
+        let oci = resolve_feature_spec(
+            feature_id,
+            &json!({}),
+            &config_root,
+            &workspace,
+            Some(&lockfile),
+        )
+        .expect("locked oci");
+        assert_eq!(oci.manifest["version"], "1.0.4");
+        assert_eq!(
+            oci.lockfile_feature
+                .as_ref()
+                .expect("oci lockfile")
+                .integrity,
+            digest
+        );
+
+        let bad_lockfile = Lockfile {
+            features: BTreeMap::from([(
+                feature_id.to_string(),
+                LockfileEntry {
+                    version: "1.0.4".to_string(),
+                    resolved: "ghcr.io/devcontainers/features/git@sha256:bad".to_string(),
+                    integrity: "sha256:bad".to_string(),
+                    depends_on: None,
+                },
+            )]),
+        };
+        let result = resolve_feature_spec(
+            feature_id,
+            &json!({}),
+            &config_root,
+            &workspace,
+            Some(&bad_lockfile),
+        );
+        assert!(result.is_err());
+        let error = result.err().expect("bad locked digest");
+        assert!(error.contains("digest mismatch"), "{error}");
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn direct_tarball_integrity_reports_success_and_failures() {
+        let curl_success = r#"#!/bin/sh
+out=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    shift
+    out="$1"
+    break
+  fi
+  shift
+done
+printf fixture > "$out"
+"#;
+        with_fake_curl(curl_success, || {
+            assert_eq!(
+                direct_tarball_archive_integrity("https://example.com/archive.tgz")
+                    .expect("integrity"),
+                sha256_integrity(b"fixture")
+            );
+            let matched = LockfileEntry {
+                version: "latest".to_string(),
+                resolved: "https://example.com/archive.tgz".to_string(),
+                integrity: sha256_integrity(b"fixture"),
+                depends_on: None,
+            };
+            assert_eq!(
+                verify_direct_tarball_lockfile_integrity(
+                    "https://example.com/archive.tgz",
+                    &matched,
+                )
+                .expect("digest match"),
+                Some(sha256_integrity(b"fixture"))
+            );
+            let mismatched = LockfileEntry {
+                version: "latest".to_string(),
+                resolved: "https://example.com/archive.tgz".to_string(),
+                integrity: "sha256:wrong".to_string(),
+                depends_on: None,
+            };
+            let error = verify_direct_tarball_lockfile_integrity(
+                "https://example.com/archive.tgz",
+                &mismatched,
+            )
+            .expect_err("digest mismatch");
+            assert!(error.contains("Digest did not match"), "{error}");
+
+            let workspace =
+                crate::test_support::unique_temp_dir("devcontainer-resolve-direct-lock-error");
+            let config_root = workspace.join(".devcontainer");
+            fs::create_dir_all(&config_root).expect("config root");
+            let direct_uri = "https://example.com/devcontainer-feature-unknown.tgz";
+            let lockfile = Lockfile {
+                features: BTreeMap::from([(
+                    direct_uri.to_string(),
+                    LockfileEntry {
+                        version: "latest".to_string(),
+                        resolved: direct_uri.to_string(),
+                        integrity: "sha256:wrong".to_string(),
+                        depends_on: None,
+                    },
+                )]),
+            };
+            let result = resolve_feature_spec(
+                direct_uri,
+                &json!({}),
+                &config_root,
+                &workspace,
+                Some(&lockfile),
+            );
+            assert!(result.is_err());
+            let error = result.err().expect("direct tarball lockfile mismatch");
+            assert!(error.contains("Digest did not match"), "{error}");
+            let _ = fs::remove_dir_all(workspace);
+        });
+
+        with_fake_curl("#!/bin/sh\nexit 7\n", || {
+            let error = direct_tarball_archive_integrity("https://example.com/archive.tgz")
+                .expect_err("curl failure");
+            assert!(error.contains("curl exited with status 7"), "{error}");
+        });
+
+        with_fake_curl("#!/bin/sh\necho broken >&2\nexit 7\n", || {
+            let error = direct_tarball_archive_integrity("https://example.com/archive.tgz")
+                .expect_err("curl stderr failure");
+            assert!(error.contains("broken"), "{error}");
+        });
     }
 
     #[test]
@@ -1394,12 +1894,20 @@ mod tests {
             PathBuf::from("/tmp/feature")
         );
         assert_eq!(
+            resolve_local_feature_path(Path::new("/config"), "/abs/feature"),
+            PathBuf::from("/abs/feature")
+        );
+        assert_eq!(
             github_repo_id_without_version("owner/repo@1.2.3"),
             "owner/repo"
         );
         assert_eq!(
             generic_feature_manifest("demo-feature", "1.0.0".to_string())["name"],
             "Demo Feature"
+        );
+        assert_eq!(
+            generic_feature_manifest("---", "latest".to_string())["name"],
+            ""
         );
         assert_eq!(
             sha256_integrity(b"demo"),

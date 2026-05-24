@@ -87,8 +87,9 @@ fn ensure_dockerfile_has_final_stage_name(
             "Error parsing Dockerfile: Dockerfile contains no FROM instructions".to_string(),
         );
     };
-    let parsed = parse_from_line(line)
-        .ok_or_else(|| "Error parsing Dockerfile: failed to parse final FROM line".to_string())?;
+    let Some(parsed) = parse_from_line(line) else {
+        return Err("Error parsing Dockerfile: failed to parse final FROM line".to_string());
+    };
     if let Some(label) = parsed.from.label {
         return Ok(FinalStageName {
             last_stage_name: label,
@@ -671,8 +672,8 @@ fn find_value(
             before_instruction_index.min(instructions.len()),
         ) {
             let instruction = &instructions[index];
-            if instruction.instruction == "ENV" {
-                return instruction.value.as_ref().map(|value| {
+            let resolved = if instruction.instruction == "ENV" {
+                instruction.value.as_ref().map(|value| {
                     replace_variables(
                         dockerfile,
                         build_args,
@@ -682,13 +683,13 @@ fn find_value(
                         scope,
                         index,
                     )
-                });
-            }
-            if instruction.instruction == "ARG" {
+                })
+            } else {
                 let value = build_args
                     .get(&instruction.name)
-                    .or(instruction.value.as_ref())?;
-                return Some(replace_variables(
+                    .or(instruction.value.as_ref())
+                    .expect("matched ARG has a build arg or default value");
+                Some(replace_variables(
                     dockerfile,
                     build_args,
                     base_image_env,
@@ -696,8 +697,9 @@ fn find_value(
                     value,
                     scope,
                     index,
-                ));
-            }
+                ))
+            };
+            return resolved;
         }
 
         let Some(from) = scope_from(dockerfile, scope) else {
@@ -785,7 +787,8 @@ mod tests {
 
     use super::{
         ensure_dockerfile_has_final_stage_name, extract_dockerfile, find_base_image,
-        find_user_statement, supports_build_contexts, BuildContextSupport,
+        find_user_statement, parse_from_line, replace_variables, supports_build_contexts,
+        BuildContextSupport, ScopeId,
     };
 
     #[test]
@@ -845,6 +848,11 @@ COPY src dest
             .expect_err("expected parse error");
 
         assert!(error.contains("Dockerfile contains no FROM instructions"));
+
+        let error = ensure_dockerfile_has_final_stage_name("FROM\n", "placeholder")
+            .expect_err("expected final FROM parse error");
+
+        assert!(error.contains("failed to parse final FROM line"));
     }
 
     #[test]
@@ -866,6 +874,15 @@ COPY src dest
         assert_eq!(stage.instructions[3].name, "G");
         assert_eq!(stage.instructions[4].instruction, "USER");
         assert_eq!(stage.instructions[4].name, "H");
+    }
+
+    #[test]
+    fn extracts_malformed_from_and_ignores_empty_instruction_names() {
+        let extracted = extract_dockerfile("FROM\nARG \nENV =value\nUSER \n");
+
+        assert_eq!(extracted.stages.len(), 1);
+        assert_eq!(extracted.stages[0].from.image, "unknown");
+        assert!(extracted.stages[0].instructions.is_empty());
     }
 
     #[test]
@@ -953,6 +970,45 @@ FROM "${cloud:-"mcr.microsoft.com/"}azure-cli:latest"
                 .as_deref(),
             Some("mcr.microsoft.com/azure-cli:latest")
         );
+
+        let global_platform_arg = extract_dockerfile("FROM --platform=$TARGETPLATFORM debian\n");
+        assert_eq!(
+            global_platform_arg.stages[0].from.platform.as_deref(),
+            Some("--platform=$TARGETPLATFORM")
+        );
+        assert_eq!(
+            find_base_image(
+                &extract_dockerfile("FROM ${TARGETARCH}/runtime\n"),
+                &HashMap::new(),
+                None,
+                &HashMap::from([("TARGETARCH".to_string(), "arm64".to_string())]),
+            )
+            .as_deref(),
+            Some("arm64/runtime")
+        );
+
+        let nested_arg_base = extract_dockerfile(
+            r#"
+ARG REGISTRY=ghcr.io/example
+ARG BASE_IMAGE=${REGISTRY}/runtime:latest
+FROM ${BASE_IMAGE}
+"#,
+        );
+        assert_eq!(
+            find_base_image(&nested_arg_base, &HashMap::new(), None, &HashMap::new()).as_deref(),
+            Some("ghcr.io/example/runtime:latest")
+        );
+
+        let stage_cycle = extract_dockerfile(
+            r#"
+FROM two AS one
+FROM one AS two
+"#,
+        );
+        assert_eq!(
+            find_base_image(&stage_cycle, &HashMap::new(), Some("one"), &HashMap::new()),
+            None
+        );
     }
 
     #[test]
@@ -1007,6 +1063,43 @@ USER $IMAGE_USER
             )
             .as_deref(),
             Some("user3")
+        );
+
+        let arg_default = extract_dockerfile(
+            r#"
+FROM debian
+ARG IMAGE_USER=user1
+USER ${IMAGE_USER}
+"#,
+        );
+        assert_eq!(
+            find_user_statement(
+                &arg_default,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+            )
+            .as_deref(),
+            Some("user1")
+        );
+
+        let arg_without_default = extract_dockerfile(
+            r#"
+FROM debian
+ARG IMAGE_USER
+USER ${IMAGE_USER}
+"#,
+        );
+        assert_eq!(
+            find_user_statement(
+                &arg_without_default,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+            ),
+            None
         );
 
         let env_after_arg = extract_dockerfile(
@@ -1068,6 +1161,43 @@ USER ${USERNAME}
             .as_deref(),
             Some("user1")
         );
+
+        let inherited_user = extract_dockerfile(
+            r#"
+FROM debian AS base
+USER base-user
+
+FROM base AS final
+"#,
+        );
+        assert_eq!(
+            find_user_statement(
+                &inherited_user,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+            )
+            .as_deref(),
+            Some("base-user")
+        );
+
+        let stage_cycle = extract_dockerfile(
+            r#"
+FROM two AS one
+FROM one AS two
+"#,
+        );
+        assert_eq!(
+            find_user_statement(
+                &stage_cycle,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                Some("two"),
+            ),
+            None
+        );
     }
 
     #[test]
@@ -1079,6 +1209,18 @@ USER ${USERNAME}
         assert_eq!(
             supports_build_contexts(&extract_dockerfile(
                 "# syntax=docker/dockerfile:1.4\nFROM debian"
+            )),
+            BuildContextSupport::Supported
+        );
+        assert_eq!(
+            supports_build_contexts(&extract_dockerfile(
+                "# syntax=docker/dockerfile\nFROM debian"
+            )),
+            BuildContextSupport::Supported
+        );
+        assert_eq!(
+            supports_build_contexts(&extract_dockerfile(
+                "# syntax=docker/dockerfile:1\nFROM debian"
             )),
             BuildContextSupport::Supported
         );
@@ -1100,5 +1242,102 @@ USER ${USERNAME}
             )),
             BuildContextSupport::Unknown
         );
+        assert_eq!(
+            supports_build_contexts(&extract_dockerfile("# syntax\nFROM debian")),
+            BuildContextSupport::Unsupported
+        );
+        assert_eq!(
+            supports_build_contexts(&extract_dockerfile("# syntax=\nFROM debian")),
+            BuildContextSupport::Unsupported
+        );
+        assert_eq!(
+            supports_build_contexts(&extract_dockerfile(
+                "# syntax=docker/dockerfile:.\nFROM debian"
+            )),
+            BuildContextSupport::Unsupported
+        );
+    }
+
+    #[test]
+    fn variable_replacement_preserves_malformed_expressions() {
+        let dockerfile = extract_dockerfile("FROM debian\n");
+        for (input, expected) in [
+            ("${", "${"),
+            ("${}", "${}"),
+            ("${BASE/foo}", "${BASE/foo}"),
+            ("${BASE-foo}", "${BASE-foo}"),
+            ("image:$", "image:$"),
+        ] {
+            assert_eq!(
+                replace_variables(
+                    &dockerfile,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    input,
+                    ScopeId::Preamble,
+                    dockerfile.preamble.instructions.len(),
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn variable_replacement_resolves_arg_defaults_and_build_overrides() {
+        let dockerfile = extract_dockerfile("FROM debian\nARG IMAGE_USER=user1\n");
+
+        assert_eq!(
+            replace_variables(
+                &dockerfile,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                "$IMAGE_USER",
+                ScopeId::Stage(0),
+                dockerfile.stages[0].instructions.len(),
+            ),
+            "user1"
+        );
+        assert_eq!(
+            replace_variables(
+                &dockerfile,
+                &HashMap::from([("IMAGE_USER".to_string(), "user2".to_string())]),
+                &HashMap::new(),
+                &HashMap::new(),
+                "$IMAGE_USER",
+                ScopeId::Stage(0),
+                dockerfile.stages[0].instructions.len(),
+            ),
+            "user2"
+        );
+    }
+
+    #[test]
+    fn variable_replacement_stops_at_stage_cycles() {
+        let dockerfile = extract_dockerfile(
+            r#"
+FROM two AS one
+FROM one AS two
+"#,
+        );
+
+        assert_eq!(
+            replace_variables(
+                &dockerfile,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                "$MISSING",
+                ScopeId::Stage(1),
+                dockerfile.stages[1].instructions.len(),
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn parse_from_line_ignores_non_from_lines() {
+        assert!(parse_from_line("RUN echo hi").is_none());
     }
 }

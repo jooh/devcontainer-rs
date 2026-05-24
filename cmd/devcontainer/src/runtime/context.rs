@@ -20,12 +20,14 @@ pub(crate) use workspace::{
     remote_workspace_folder_for_args, workspace_mount_for_args,
 };
 
+#[derive(Debug)]
 pub(crate) struct ResolvedConfig {
     pub(crate) workspace_folder: PathBuf,
     pub(crate) config_file: PathBuf,
     pub(crate) configuration: Value,
 }
 
+#[derive(Debug)]
 pub(crate) struct ExistingContainerContext {
     pub(crate) container_id: String,
     pub(crate) configuration: Value,
@@ -123,8 +125,9 @@ pub(crate) fn resolve_existing_container_context(
     } else {
         inspected
             .as_ref()
-            .map(|value| value.configuration.clone())
-            .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+            .expect("inspected context is available without resolved config")
+            .configuration
+            .clone()
     };
     let remote_workspace_folder = resolved
         .as_ref()
@@ -175,18 +178,22 @@ fn configuration_with_feature_metadata(
 mod tests {
     //! Unit tests for runtime context helpers.
 
+    use std::collections::HashMap;
     use std::fs;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
 
     use serde_json::json;
 
+    use crate::commands::common::DEVCONTAINER_LOCAL_FOLDER_LABEL;
     use crate::runtime::mounts::split_mount_options;
-    use crate::test_support::unique_temp_dir;
+    use crate::test_support::{unique_temp_dir, write_executable_script};
 
     use super::{
         configuration_with_feature_metadata, default_remote_workspace_folder,
-        derived_workspace_mount, remote_workspace_folder_for_args, workspace_mount_for_args,
-        ResolvedConfig,
+        derived_workspace_mount, load_optional_config, load_required_config,
+        load_required_config_with_id_labels, remote_workspace_folder_for_args,
+        resolve_existing_container_context, workspace_mount_for_args, ResolvedConfig,
     };
 
     #[test]
@@ -231,6 +238,434 @@ mod tests {
             configuration["containerEnv"]["LOCAL_FEATURE_ENV"],
             "enabled"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn config_load_helpers_return_required_optional_and_legacy_label_configs() {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        fs::create_dir_all(&root).expect("workspace");
+        let config_file = write_workspace_config(
+            &root,
+            "{\n  \"image\": \"alpine:3.20\",\n  \"postAttachCommand\": \"echo ${devcontainerId}\"\n}\n",
+        );
+        let args = workspace_args(&root);
+
+        let required = load_required_config(&args).expect("required config");
+        let optional = load_optional_config(&args)
+            .expect("optional config")
+            .expect("resolved optional config");
+        let legacy = load_required_config_with_id_labels(
+            &args,
+            HashMap::from([(
+                DEVCONTAINER_LOCAL_FOLDER_LABEL.to_string(),
+                root.display().to_string(),
+            )]),
+        )
+        .expect("legacy labels config");
+
+        assert_eq!(required.config_file, config_file);
+        assert_eq!(optional.workspace_folder, required.workspace_folder);
+        assert_eq!(required.configuration["image"], "alpine:3.20");
+        assert_ne!(
+            required.configuration["postAttachCommand"],
+            legacy.configuration["postAttachCommand"]
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_optional_config_skips_implicit_missing_config_but_reports_explicit_missing_config() {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        fs::create_dir_all(&root).expect("workspace");
+
+        assert!(load_optional_config(&workspace_args(&root))
+            .expect("implicit missing config")
+            .is_none());
+
+        let missing_config = root.join("missing.json");
+        let error = load_optional_config(&[
+            "--workspace-folder".to_string(),
+            root.display().to_string(),
+            "--config".to_string(),
+            missing_config.display().to_string(),
+        ])
+        .expect_err("explicit missing config should fail");
+
+        assert!(error.starts_with("Unable to locate a dev container config at "));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn load_required_config_with_id_labels_reports_config_errors() {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        fs::create_dir_all(&root).expect("workspace");
+        let missing_config = root.join("missing.json");
+
+        let error = expect_error(
+            load_required_config_with_id_labels(
+                &[
+                    "--workspace-folder".to_string(),
+                    root.display().to_string(),
+                    "--config".to_string(),
+                    missing_config.display().to_string(),
+                ],
+                HashMap::new(),
+            ),
+            "missing explicit config",
+        );
+
+        assert!(error.starts_with("Unable to locate a dev container config at "));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_existing_container_context_uses_compose_container_id() {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        fs::create_dir_all(&root).expect("workspace");
+        let config_file = write_workspace_config(
+            &root,
+            "{\n  \"dockerComposeFile\": \"compose.yml\",\n  \"service\": \"app\"\n}\n",
+        );
+        fs::write(
+            config_file
+                .parent()
+                .expect("config parent")
+                .join("compose.yml"),
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .expect("compose file");
+        let engine = root.join("engine");
+        write_executable_script(
+            &engine,
+            "#!/bin/sh\ncase \"$1\" in\n  ps) printf 'compose-container\\n' ;;\n  *) exit 2 ;;\nesac\n",
+        );
+        let mut args = workspace_args(&root);
+        args.extend(docker_args(&engine));
+
+        let context = resolve_existing_container_context(&args).expect("existing context");
+
+        assert_eq!(context.container_id, "compose-container");
+        assert_eq!(context.remote_workspace_folder, "/");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_existing_container_context_reports_compose_lookup_errors_and_missing_ids() {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        fs::create_dir_all(&root).expect("workspace");
+        let config_file = write_workspace_config(
+            &root,
+            "{\n  \"dockerComposeFile\": \"compose.yml\",\n  \"service\": \"app\"\n}\n",
+        );
+        fs::write(
+            config_file
+                .parent()
+                .expect("config parent")
+                .join("compose.yml"),
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .expect("compose file");
+
+        let failing_engine = root.join("failing-engine");
+        write_engine_script(
+            &failing_engine,
+            "#!/bin/sh\ncase \"$1\" in\n  ps) printf 'compose failed\\n' >&2; exit 7 ;;\n  *) exit 2 ;;\nesac\n",
+        );
+        let mut failing_args = workspace_args(&root);
+        failing_args.extend(docker_args(&failing_engine));
+        let failure = expect_error(
+            resolve_existing_container_context(&failing_args),
+            "compose ps failure",
+        );
+        assert_eq!(failure, "compose failed");
+
+        let empty_engine = root.join("empty-engine");
+        write_engine_script(
+            &empty_engine,
+            "#!/bin/sh\ncase \"$1\" in\n  ps) exit 0 ;;\n  *) exit 2 ;;\nesac\n",
+        );
+        let mut empty_args = workspace_args(&root);
+        empty_args.extend(docker_args(&empty_engine));
+        let missing = expect_error(
+            resolve_existing_container_context(&empty_args),
+            "missing compose container",
+        );
+        assert_eq!(missing, "Dev container not found.");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_existing_container_context_reports_compose_metadata_errors() {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        fs::create_dir_all(&root).expect("workspace");
+        let config_file = write_workspace_config(
+            &root,
+            "{\n  \"dockerComposeFile\": \"compose.yml\",\n  \"service\": \"app\"\n}\n",
+        );
+        fs::write(
+            config_file
+                .parent()
+                .expect("config parent")
+                .join("compose.yml"),
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .expect("compose file");
+        let engine = root.join("engine");
+        write_engine_script(
+            &engine,
+            "#!/bin/sh\ncase \"$1\" in\n  ps) printf 'compose-container\\n' ;;\n  *) exit 2 ;;\nesac\n",
+        );
+        let mut args = workspace_args(&root);
+        args.extend(docker_args(&engine));
+        args.extend(["--additional-features".to_string(), "[]".to_string()]);
+
+        let error = expect_error(
+            resolve_existing_container_context(&args),
+            "invalid additional features",
+        );
+
+        assert_eq!(error, "--additional-features must be a JSON object");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_existing_container_context_reloads_config_with_matched_legacy_id_labels() {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        fs::create_dir_all(&root).expect("workspace");
+        let _config_file = write_workspace_config(
+            &root,
+            "{\n  \"image\": \"alpine:3.20\",\n  \"postAttachCommand\": \"echo ${devcontainerId}\"\n}\n",
+        );
+        let canonical_root = fs::canonicalize(&root).expect("canonical workspace root");
+        let engine = root.join("engine");
+        let mut labels = serde_json::Map::new();
+        labels.insert(
+            DEVCONTAINER_LOCAL_FOLDER_LABEL.to_string(),
+            json!(canonical_root.to_string_lossy()),
+        );
+        let payload = json!([{
+            "Config": {
+                "Labels": labels
+            }
+        }])
+        .to_string();
+        write_engine_script(
+            &engine,
+            &format!(
+                "#!/bin/sh\ncase \"$1\" in\n  ps) printf 'container-id\\n' ;;\n  inspect) printf '%s\\n' '{}' ;;\n  *) exit 2 ;;\nesac\n",
+                payload
+            ),
+        );
+        let mut args = workspace_args(&root);
+        args.extend(docker_args(&engine));
+        let legacy = load_required_config_with_id_labels(
+            &args,
+            HashMap::from([(
+                DEVCONTAINER_LOCAL_FOLDER_LABEL.to_string(),
+                canonical_root.display().to_string(),
+            )]),
+        )
+        .expect("legacy labels config");
+
+        let context = resolve_existing_container_context(&args).expect("existing context");
+
+        assert_eq!(context.container_id, "container-id");
+        assert_eq!(
+            context.configuration["postAttachCommand"],
+            legacy.configuration["postAttachCommand"]
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_existing_container_context_reports_missing_matched_container() {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        fs::create_dir_all(&root).expect("workspace");
+        write_workspace_config(&root, "{\n  \"image\": \"alpine:3.20\"\n}\n");
+        let engine = root.join("engine");
+        write_engine_script(
+            &engine,
+            "#!/bin/sh\ncase \"$1\" in\n  ps) exit 0 ;;\n  *) exit 2 ;;\nesac\n",
+        );
+        let mut args = workspace_args(&root);
+        args.extend(docker_args(&engine));
+
+        let error =
+            resolve_existing_container_context(&args).expect_err("missing container should fail");
+
+        assert_eq!(error, "Dev container not found.");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_existing_container_context_reports_optional_config_errors() {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        fs::create_dir_all(&root).expect("workspace");
+        let missing_config = root.join("missing.json");
+
+        let error = expect_error(
+            resolve_existing_container_context(&[
+                "--workspace-folder".to_string(),
+                root.display().to_string(),
+                "--config".to_string(),
+                missing_config.display().to_string(),
+                "--container-id".to_string(),
+                "container-id".to_string(),
+            ]),
+            "explicit config failure",
+        );
+
+        assert!(error.starts_with("Unable to locate a dev container config at "));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_existing_container_context_reports_inspection_errors_without_config() {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        fs::create_dir_all(&root).expect("workspace");
+        let engine = root.join("engine");
+        write_engine_script(
+            &engine,
+            "#!/bin/sh\ncase \"$1\" in\n  ps) printf 'container-id\\n' ;;\n  inspect) printf 'inspect failed\\n' >&2; exit 7 ;;\n  *) exit 2 ;;\nesac\n",
+        );
+        let mut args = workspace_args(&root);
+        args.extend(docker_args(&engine));
+        args.extend([
+            "--id-label".to_string(),
+            "devcontainer.test=true".to_string(),
+        ]);
+
+        let error = expect_error(
+            resolve_existing_container_context(&args),
+            "inspect context failure",
+        );
+
+        assert_eq!(error, "inspect failed");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_existing_container_context_reports_feature_metadata_errors() {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        fs::create_dir_all(&root).expect("workspace");
+        write_workspace_config(&root, "{\n  \"image\": \"alpine:3.20\"\n}\n");
+        let engine = root.join("engine");
+        write_engine_script(
+            &engine,
+            "#!/bin/sh\ncase \"$1\" in\n  inspect) printf '[{\"Config\":{\"Labels\":{}}}]\\n' ;;\n  *) exit 2 ;;\nesac\n",
+        );
+        let mut args = workspace_args(&root);
+        args.extend(docker_args(&engine));
+        args.extend([
+            "--container-id".to_string(),
+            "container-id".to_string(),
+            "--additional-features".to_string(),
+            "[]".to_string(),
+        ]);
+
+        let error = expect_error(
+            resolve_existing_container_context(&args),
+            "feature metadata failure",
+        );
+
+        assert_eq!(error, "--additional-features must be a JSON object");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_existing_container_context_inspects_explicit_container_without_config() {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        fs::create_dir_all(&root).expect("workspace");
+        let engine = root.join("engine");
+        let payload = json!([{
+            "Config": {
+                "Labels": {},
+                "User": "vscode"
+            },
+            "Mounts": [{
+                "Destination": "/inspected"
+            }]
+        }])
+        .to_string();
+        write_inspect_engine(&engine, &payload);
+        let mut args = workspace_args(&root);
+        args.extend(docker_args(&engine));
+        args.extend(["--container-id".to_string(), "container-id".to_string()]);
+
+        let context = resolve_existing_container_context(&args).expect("existing context");
+
+        assert_eq!(context.container_id, "container-id");
+        assert_eq!(context.configuration["containerUser"], "vscode");
+        assert_eq!(context.remote_workspace_folder, "/inspected");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolve_existing_container_context_defaults_remote_workspace_without_inspected_mount() {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        fs::create_dir_all(&root).expect("workspace");
+        let engine = root.join("engine");
+        let payload = json!([{
+            "Config": {
+                "Labels": {},
+                "User": ""
+            },
+            "Mounts": []
+        }])
+        .to_string();
+        write_inspect_engine(&engine, &payload);
+        let mut args = workspace_args(&root);
+        args.extend(docker_args(&engine));
+        args.extend(["--container-id".to_string(), "container-id".to_string()]);
+
+        let context = resolve_existing_container_context(&args).expect("existing context");
+
+        assert_eq!(
+            context.remote_workspace_folder,
+            default_remote_workspace_folder(Some(
+                fs::canonicalize(&root)
+                    .expect("canonical workspace root")
+                    .as_path()
+            ))
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn configuration_with_feature_metadata_reports_additional_feature_parse_errors() {
+        let root = unique_temp_dir("devcontainer-runtime-context");
+        fs::create_dir_all(&root).expect("workspace");
+        let config_file = write_workspace_config(&root, "{\n  \"image\": \"alpine:3.20\"\n}\n");
+        let resolved = ResolvedConfig {
+            workspace_folder: root.clone(),
+            config_file,
+            configuration: json!({
+                "image": "alpine:3.20"
+            }),
+        };
+
+        let error = configuration_with_feature_metadata(
+            &["--additional-features".to_string(), "[]".to_string()],
+            &resolved,
+        )
+        .expect_err("invalid additional features should fail");
+
+        assert_eq!(error, "--additional-features must be a JSON object");
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -286,11 +721,10 @@ mod tests {
                 "delegated".to_string(),
             ],
         );
-        if std::env::consts::OS == "linux" {
-            assert!(!mount.contains("consistency="));
-        } else {
-            assert!(mount.contains("consistency=delegated"));
-        }
+        #[cfg(target_os = "linux")]
+        assert!(!mount.contains("consistency="));
+        #[cfg(not(target_os = "linux"))]
+        assert!(mount.contains("consistency=delegated"));
     }
 
     #[test]
@@ -300,13 +734,9 @@ mod tests {
         let workspace = repo_root.join("packages").join("app");
         fs::create_dir_all(workspace.join(".devcontainer")).expect("config dir");
         init_git_repo(&repo_root);
-        let expected_repo_root = repo_root
-            .canonicalize()
-            .unwrap_or_else(|_| repo_root.clone());
+        let expected_repo_root = repo_root.canonicalize().expect("canonical repo root");
         let resolved = ResolvedConfig {
-            workspace_folder: workspace
-                .canonicalize()
-                .unwrap_or_else(|_| workspace.clone()),
+            workspace_folder: workspace.canonicalize().expect("canonical workspace"),
             config_file: workspace.join(".devcontainer").join("devcontainer.json"),
             configuration: json!({
                 "workspaceFolder": "/workspace"
@@ -349,5 +779,54 @@ mod tests {
             .status()
             .expect("git init");
         assert!(status.success(), "git init failed: {status:?}");
+    }
+
+    fn workspace_args(workspace: &Path) -> Vec<String> {
+        vec![
+            "--workspace-folder".to_string(),
+            workspace.display().to_string(),
+        ]
+    }
+
+    fn docker_args(engine: &Path) -> Vec<String> {
+        vec!["--docker-path".to_string(), engine.display().to_string()]
+    }
+
+    fn write_workspace_config(workspace: &Path, contents: &str) -> PathBuf {
+        let config_dir = workspace.join(".devcontainer");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        let config_file = config_dir.join("devcontainer.json");
+        fs::write(&config_file, contents).expect("config write");
+        fs::canonicalize(&config_file).unwrap_or(config_file)
+    }
+
+    fn write_inspect_engine(engine: &Path, payload: &str) {
+        write_engine_script(
+            engine,
+            &format!(
+                "#!/bin/sh\ncase \"$1\" in\n  inspect) printf '%s\\n' '{}' ;;\n  *) exit 2 ;;\nesac\n",
+                payload
+            ),
+        );
+    }
+
+    fn write_engine_script(engine: &Path, script: &str) {
+        write_executable_script(engine, script);
+    }
+
+    fn expect_error<T>(result: Result<T, String>, context: &str) -> String {
+        match result {
+            Ok(_) => panic!("expected {context}"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn expect_error_helper_panics_for_unexpected_success() {
+        let panic = std::panic::catch_unwind(|| {
+            let _ = expect_error(Ok::<(), String>(()), "unexpected success");
+        });
+
+        assert!(panic.is_err());
     }
 }

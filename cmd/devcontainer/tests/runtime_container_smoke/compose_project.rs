@@ -95,6 +95,46 @@ fn up_reads_compose_project_name_from_compose_directory_dotenv() {
 }
 
 #[test]
+fn up_prefers_compose_project_name_from_process_environment() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    fs::write(
+        workspace.join(".devcontainer").join(".env"),
+        "COMPOSE_PROJECT_NAME=dotenv-project\n",
+    )
+    .expect("dotenv");
+    fs::write(
+        workspace.join(".devcontainer").join("docker-compose.yml"),
+        "name: file-project\nservices:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"dockerComposeFile\": \"docker-compose.yml\",\n  \"service\": \"app\",\n  \"workspaceFolder\": \"/workspace\"\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+        ],
+        &[("COMPOSE_PROJECT_NAME", "Env Project!")],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let payload = harness.parse_stdout_json(&output);
+    assert_eq!(payload["composeProjectName"], "envproject");
+
+    let invocations = harness.read_invocations();
+    assert!(invocations.contains("compose --project-name envproject -f "));
+}
+
+#[test]
 fn up_expands_plain_dollar_compose_project_names() {
     let harness = RuntimeHarness::new();
     let workspace = harness.workspace();

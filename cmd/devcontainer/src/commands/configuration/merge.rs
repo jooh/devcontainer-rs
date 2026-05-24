@@ -210,7 +210,7 @@ fn merge_forward_ports(entries: &[Value]) -> Vec<Value> {
             let Some(normalized) = normalize_forward_port(value) else {
                 continue;
             };
-            let fingerprint = serde_json::to_string(&normalized).unwrap_or_else(|_| String::new());
+            let fingerprint = serde_json::to_string(&normalized).unwrap_or_default();
             if seen.insert(fingerprint) {
                 merged.push(normalized);
             }
@@ -535,6 +535,77 @@ mod tests {
     }
 
     #[test]
+    fn merge_configuration_collects_commands_and_last_scalar_metadata() {
+        let merged = merge_configuration(
+            &json!({
+                "entrypoint": "removed",
+                "shutdownAction": "removed"
+            }),
+            &[
+                json!({
+                    "onCreateCommand": "one",
+                    "updateContentCommand": ["two"],
+                    "postCreateCommand": {
+                        "three": "echo three"
+                    },
+                    "postStartCommand": "four",
+                    "postAttachCommand": "five",
+                    "workspaceFolder": "/old",
+                    "waitFor": "postCreateCommand",
+                    "remoteUser": "vscode",
+                    "containerUser": "root",
+                    "userEnvProbe": "loginShell",
+                    "overrideCommand": true
+                }),
+                json!({
+                    "workspaceFolder": "/workspace",
+                    "waitFor": "postAttachCommand",
+                    "remoteUser": "node",
+                    "containerUser": "node",
+                    "userEnvProbe": "none",
+                    "overrideCommand": false
+                }),
+            ],
+        );
+
+        assert_eq!(merged["onCreateCommands"], json!(["one"]));
+        assert_eq!(merged["updateContentCommands"], json!([["two"]]));
+        assert_eq!(
+            merged["postCreateCommands"],
+            json!([{ "three": "echo three" }])
+        );
+        assert_eq!(merged["postStartCommands"], json!(["four"]));
+        assert_eq!(merged["postAttachCommands"], json!(["five"]));
+        assert_eq!(merged["workspaceFolder"], "/workspace");
+        assert_eq!(merged["waitFor"], "postAttachCommand");
+        assert_eq!(merged["remoteUser"], "node");
+        assert_eq!(merged["containerUser"], "node");
+        assert_eq!(merged["userEnvProbe"], "none");
+        assert_eq!(merged["overrideCommand"], false);
+        assert!(merged.get("entrypoint").is_none());
+        assert!(merged.get("shutdownAction").is_none());
+    }
+
+    #[test]
+    fn merge_configuration_omits_empty_host_requirements() {
+        let merged = merge_configuration(
+            &json!({
+                "name": "demo"
+            }),
+            &[json!({
+                "hostRequirements": {
+                    "cpus": 0,
+                    "memory": "bad",
+                    "storage": ""
+                }
+            })],
+        );
+
+        assert_eq!(merged["name"], "demo");
+        assert!(merged.get("hostRequirements").is_none());
+    }
+
+    #[test]
     fn byte_port_and_gpu_helpers_cover_edge_cases() {
         assert_eq!(parse_byte_string(""), 0);
         assert_eq!(parse_byte_string("bad"), 0);
@@ -564,6 +635,21 @@ mod tests {
         );
         assert_eq!(
             merge_gpu_requirement_values(&json!(true), &json!(true)),
+            json!(true)
+        );
+        assert_eq!(
+            merge_configuration(
+                &json!({}),
+                &[json!({
+                    "hostRequirements": {
+                        "memory": "1GB"
+                    }
+                })],
+            )["hostRequirements"]["memory"],
+            "1000000000"
+        );
+        assert_eq!(
+            merge_gpu_requirement_values(&json!("required"), &json!("required")),
             json!(true)
         );
         assert_eq!(

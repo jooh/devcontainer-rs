@@ -33,6 +33,25 @@ pub fn run_from_env() -> ExitCode {
     run(env::args().skip(1).collect())
 }
 
+#[cfg(test)]
+fn unsupported_argument_exit_code(error: Option<String>) -> Option<ExitCode> {
+    match error {
+        Some(error) => {
+            eprintln!("{error}");
+            Some(ExitCode::from(2))
+        }
+        None => None,
+    }
+}
+
+fn native_only_suffix(enabled: bool) -> &'static str {
+    if enabled {
+        " Native-only mode is enabled."
+    } else {
+        ""
+    }
+}
+
 pub fn run(raw_args: Vec<String>) -> ExitCode {
     if raw_args.is_empty() || matches!(raw_args[0].as_str(), "--help" | "-h") {
         cli::print_help();
@@ -80,11 +99,6 @@ pub fn run(raw_args: Vec<String>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    if let Some(error) = cli::unsupported_argument_error(resolved_help.path, resolved_args) {
-        eprintln!("{error}");
-        return ExitCode::from(2);
-    }
-
     let mut normalized_command_args = command_args[..resolved_help.consumed_args].to_vec();
     normalized_command_args.extend(cli::normalize_option_aliases(
         resolved_help.path,
@@ -95,11 +109,7 @@ pub fn run(raw_args: Vec<String>) -> ExitCode {
         commands::DispatchResult::Complete(code) => code,
         commands::DispatchResult::UnsupportedNativePath => {
             cli::emit_log(log_format, "Unsupported native command path.");
-            let native_only_suffix = if native_only_mode_enabled() {
-                " Native-only mode is enabled."
-            } else {
-                ""
-            };
+            let native_only_suffix = native_only_suffix(native_only_mode_enabled());
             eprintln!(
                 "Unsupported native command path: {command} {}{native_only_suffix}",
                 command_args.join(" ")
@@ -113,7 +123,12 @@ pub fn run(raw_args: Vec<String>) -> ExitCode {
 mod tests {
     use std::process::ExitCode;
 
-    use super::{native_only_mode_value_enabled, run};
+    use crate::test_support::process_env_guard;
+
+    use super::{
+        native_only_mode_enabled, native_only_mode_value_enabled, native_only_suffix, run,
+        run_from_env, unsupported_argument_exit_code, NATIVE_ONLY_ENV_VAR,
+    };
 
     #[test]
     fn native_only_mode_uses_environment_switch() {
@@ -126,8 +141,36 @@ mod tests {
     }
 
     #[test]
+    fn native_only_mode_reads_environment_switch() {
+        let mut env = process_env_guard();
+        env.set_var(NATIVE_ONLY_ENV_VAR, "yes");
+        assert!(native_only_mode_enabled());
+        env.set_var(NATIVE_ONLY_ENV_VAR, "0");
+        assert!(!native_only_mode_enabled());
+        env.remove_var(NATIVE_ONLY_ENV_VAR);
+        assert!(!native_only_mode_enabled());
+    }
+
+    #[test]
+    fn run_from_env_delegates_to_process_arguments() {
+        let _ = run_from_env();
+    }
+
+    #[test]
+    fn helper_branches_map_unsupported_arguments_and_native_only_suffixes() {
+        assert_eq!(unsupported_argument_exit_code(None), None);
+        assert_eq!(
+            unsupported_argument_exit_code(Some("unsupported".to_string())),
+            Some(ExitCode::from(2))
+        );
+        assert_eq!(native_only_suffix(true), " Native-only mode is enabled.");
+        assert_eq!(native_only_suffix(false), "");
+    }
+
+    #[test]
     fn run_handles_top_level_help_version_and_argument_errors() {
         assert_eq!(run(Vec::new()), ExitCode::SUCCESS);
+        assert_eq!(run(vec!["-h".to_string()]), ExitCode::SUCCESS);
         assert_eq!(run(vec!["--version".to_string()]), ExitCode::SUCCESS);
         assert_eq!(
             run(vec![
@@ -140,6 +183,14 @@ mod tests {
         assert_eq!(
             run(vec!["--log-format".to_string(), "json".to_string()]),
             ExitCode::from(2)
+        );
+        assert_eq!(
+            run(vec![
+                "--log-format".to_string(),
+                "json".to_string(),
+                "--version".to_string()
+            ]),
+            ExitCode::SUCCESS
         );
         assert_eq!(run(vec!["unknown".to_string()]), ExitCode::from(2));
     }
@@ -164,6 +215,13 @@ mod tests {
         assert_eq!(
             run(vec!["read-configuration".to_string()]),
             ExitCode::from(1)
+        );
+        assert_eq!(
+            run(vec![
+                "read-configuration".to_string(),
+                "--unsupported".to_string()
+            ]),
+            ExitCode::from(2)
         );
     }
 }

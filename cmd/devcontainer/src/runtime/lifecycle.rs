@@ -9,14 +9,14 @@ use std::thread;
 
 use serde_json::Value;
 
-use crate::process_runner::{self, ProcessRequest};
+use crate::process_runner::{self, ProcessRequest, ProcessResult};
 
 use requests::{host_lifecycle_request, lifecycle_exec_args};
 use selection::{lifecycle_command_value, selected_lifecycle_steps};
 
 use super::{engine, user_resolution};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LifecycleMode {
     UpCreated,
     UpStarted,
@@ -64,9 +64,8 @@ pub(crate) fn run_lifecycle_commands(
                 })?;
             }
             LifecycleStep::InstallDotfiles => {
-                let Some(command) = dotfiles::dotfiles_install_command(args) else {
-                    continue;
-                };
+                let command = dotfiles::dotfiles_install_command(args)
+                    .expect("dotfiles install step requires dotfiles options");
                 run_process_group(vec![LifecycleCommand::Shell(command)], |command| {
                     let engine_args = lifecycle_exec_args(
                         configuration,
@@ -103,50 +102,44 @@ fn run_process_group(
     build_request: impl Fn(LifecycleCommand) -> Result<ProcessRequest, String>,
 ) -> Result<(), String> {
     if command_group.len() == 1 {
-        let result = process_runner::run_process(&build_request(
+        let request = build_request(
             command_group
                 .into_iter()
                 .next()
                 .expect("single lifecycle command"),
-        )?)
-        .map_err(|error| error.to_string())?;
+        )?;
+        let result = run_lifecycle_process(request)?;
         if result.status_code != 0 {
             return Err(engine::stderr_or_stdout(&result));
         }
         return Ok(());
     }
 
-    let handles = command_group
-        .into_iter()
-        .map(|command| {
-            let request = build_request(command);
-            thread::spawn(move || match request {
-                Ok(request) => {
-                    process_runner::run_process(&request).map_err(|error| error.to_string())
-                }
-                Err(error) => Err(error),
-            })
-        })
-        .collect::<Vec<_>>();
+    let mut handles = Vec::with_capacity(command_group.len());
+    for command in command_group {
+        let request = build_request(command);
+        handles.push(thread::spawn(move || match request {
+            Ok(request) => run_lifecycle_process(request),
+            Err(error) => Err(error),
+        }));
+    }
 
     let mut first_error = None;
     for handle in handles {
-        match handle.join() {
-            Ok(Ok(result)) if result.status_code == 0 => {}
-            Ok(Ok(result)) => {
+        let result = match handle.join() {
+            Ok(result) => result,
+            Err(_) => return Err("Lifecycle command thread panicked unexpectedly".to_string()),
+        };
+        match result {
+            Ok(result) if result.status_code == 0 => {}
+            Ok(result) => {
                 if first_error.is_none() {
                     first_error = Some(engine::stderr_or_stdout(&result));
                 }
             }
-            Ok(Err(error)) => {
+            Err(error) => {
                 if first_error.is_none() {
                     first_error = Some(error);
-                }
-            }
-            Err(_) => {
-                if first_error.is_none() {
-                    first_error =
-                        Some("Lifecycle command thread panicked unexpectedly".to_string());
                 }
             }
         }
@@ -159,20 +152,35 @@ fn run_process_group(
     Ok(())
 }
 
+fn run_lifecycle_process(request: ProcessRequest) -> Result<ProcessResult, String> {
+    #[cfg(test)]
+    if request.program == "__devcontainer_lifecycle_test_panic__" {
+        panic!("synthetic lifecycle process panic");
+    }
+
+    match process_runner::run_process(&request) {
+        Ok(result) => Ok(result),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Unit tests for lifecycle helper behavior.
 
     use std::collections::HashMap;
+    use std::fs;
+    use std::path::Path;
 
     use serde_json::json;
 
     use crate::process_runner::{ProcessLogLevel, ProcessRequest};
+    use crate::test_support::{unique_temp_dir, write_executable_script};
 
     use super::{
         dotfiles::dotfiles_install_command,
         requests::{host_lifecycle_request, lifecycle_exec_args},
-        run_process_group,
+        run_initialize_command, run_lifecycle_commands, run_process_group,
         selection::{lifecycle_command_group, selected_lifecycle_steps},
         LifecycleCommand, LifecycleMode, LifecycleStep,
     };
@@ -196,10 +204,46 @@ mod tests {
             "b": ["/bin/echo", "two"]
         }))
         .is_some());
+        assert!(lifecycle_command_group(&json!({
+            "ignored": true
+        }))
+        .is_none());
+        assert!(lifecycle_command_group(&json!(true)).is_none());
+        assert!(lifecycle_command_group(&json!([])).is_none());
+        assert!(lifecycle_command_group(&json!([true])).is_none());
+        assert!(lifecycle_command_group(&json!({
+            "ignored": {
+                "nested": "not a command"
+            }
+        }))
+        .is_none());
     }
 
     #[test]
     fn selected_lifecycle_steps_respect_mode_and_wait_for() {
+        let skipped = selected_lifecycle_steps(
+            &json!({
+                "postCreateCommand": "echo post-create",
+                "postStartCommand": "echo post-start",
+                "postAttachCommand": "echo post-attach"
+            }),
+            &["--skip-post-create".to_string()],
+            LifecycleMode::RunUserCommands,
+        );
+
+        assert!(skipped.is_empty());
+
+        let initialize_wait = selected_lifecycle_steps(
+            &json!({
+                "waitFor": "initializeCommand",
+                "postCreateCommand": "echo post-create"
+            }),
+            &["--skip-non-blocking-commands".to_string()],
+            LifecycleMode::RunUserCommands,
+        );
+
+        assert!(initialize_wait.is_empty());
+
         let steps = selected_lifecycle_steps(
             &json!({
                 "onCreateCommand": "echo on-create",
@@ -214,6 +258,29 @@ mod tests {
         );
 
         assert_eq!(steps.len(), 4);
+
+        let started = selected_lifecycle_steps(
+            &json!({
+                "onCreateCommand": "echo on-create",
+                "postCreateCommand": "echo post-create",
+                "postStartCommand": "echo post-start",
+                "postAttachCommand": "echo post-attach"
+            }),
+            &[],
+            LifecycleMode::UpStarted,
+        );
+
+        assert_eq!(started.len(), 2);
+
+        let created = selected_lifecycle_steps(
+            &json!({
+                "onCreateCommand": "echo on-create"
+            }),
+            &[],
+            LifecycleMode::UpCreated,
+        );
+
+        assert_eq!(created.len(), 1);
 
         let reused = selected_lifecycle_steps(
             &json!({
@@ -314,6 +381,193 @@ mod tests {
     }
 
     #[test]
+    fn run_initialize_command_executes_host_shell_commands_in_workspace() {
+        let root = unique_temp_dir("devcontainer-lifecycle-test");
+        fs::create_dir_all(&root).expect("workspace");
+
+        run_initialize_command(
+            &[],
+            &json!({
+                "initializeCommand": "printf initialized > initialize-marker"
+            }),
+            &root,
+        )
+        .expect("initialize command");
+
+        assert_eq!(
+            fs::read_to_string(root.join("initialize-marker")).expect("marker"),
+            "initialized"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_initialize_and_lifecycle_commands_are_noops_without_configured_commands() {
+        let root = unique_temp_dir("devcontainer-lifecycle-test");
+        fs::create_dir_all(&root).expect("workspace");
+        let missing_engine_args = vec![
+            "--docker-path".to_string(),
+            "/definitely/missing/container-engine".to_string(),
+        ];
+
+        run_initialize_command(&[], &json!({}), &root).expect("initialize noop");
+        run_lifecycle_commands(
+            "container-id",
+            &missing_engine_args,
+            &json!({}),
+            "/workspace",
+            LifecycleMode::RunUserCommands,
+        )
+        .expect("lifecycle noop");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_lifecycle_commands_executes_container_steps_and_dotfiles() {
+        let root = unique_temp_dir("devcontainer-lifecycle-test");
+        fs::create_dir_all(&root).expect("temp root");
+        let log = root.join("engine.log");
+        let engine = root.join("engine");
+        write_lifecycle_engine(&engine, &log, 0);
+        let args = vec![
+            "--docker-path".to_string(),
+            engine.display().to_string(),
+            "--dotfiles-repository".to_string(),
+            "./dotfiles".to_string(),
+        ];
+
+        run_lifecycle_commands(
+            "container-id",
+            &args,
+            &json!({
+                "remoteUser": "vscode",
+                "remoteEnv": {
+                    "HOME": "/home/vscode",
+                    "FROM_CONFIG": "yes"
+                },
+                "postCreateCommand": ["/bin/echo", "created"],
+                "postStartCommand": "echo started"
+            }),
+            "/workspace",
+            LifecycleMode::RunUserCommands,
+        )
+        .expect("lifecycle commands");
+
+        let invocations = fs::read_to_string(&log).expect("engine log");
+        assert!(invocations.contains("exec --workdir /workspace --user vscode"));
+        assert!(invocations.contains("FROM_CONFIG=yes"));
+        assert!(invocations.contains("HOME=/home/vscode"));
+        assert!(invocations.contains("container-id /bin/echo created"));
+        assert!(invocations.contains("git clone --depth 1 './dotfiles'"));
+        assert!(invocations.contains("container-id /bin/sh -lc echo started"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_lifecycle_commands_reports_home_resolution_errors_before_steps() {
+        let error = run_lifecycle_commands(
+            "container-id",
+            &[
+                "--docker-path".to_string(),
+                "/definitely/missing/container-engine".to_string(),
+            ],
+            &json!({
+                "postAttachCommand": "echo attach"
+            }),
+            "/workspace",
+            LifecycleMode::UpReused,
+        )
+        .expect_err("home resolution failure");
+
+        assert!(error.contains("Container engine executable not found"));
+    }
+
+    #[test]
+    fn run_lifecycle_commands_reports_remote_env_errors_before_steps() {
+        let error = run_lifecycle_commands(
+            "container-id",
+            &[
+                "--secrets-file".to_string(),
+                "/definitely/missing/secrets.json".to_string(),
+            ],
+            &json!({
+                "remoteEnv": {
+                    "HOME": "/home/vscode"
+                },
+                "postAttachCommand": "echo attach"
+            }),
+            "/workspace",
+            LifecycleMode::UpReused,
+        )
+        .expect_err("remote env failure");
+
+        assert!(error.contains("No such file") || error.contains("not found"));
+    }
+
+    #[test]
+    fn run_lifecycle_commands_reports_container_command_failures() {
+        let root = unique_temp_dir("devcontainer-lifecycle-test");
+        fs::create_dir_all(&root).expect("temp root");
+        let log = root.join("engine.log");
+        let engine = root.join("engine");
+        write_lifecycle_engine(&engine, &log, 12);
+        let args = vec!["--docker-path".to_string(), engine.display().to_string()];
+
+        let error = run_lifecycle_commands(
+            "container-id",
+            &args,
+            &json!({
+                "remoteEnv": {
+                    "HOME": "/home/vscode"
+                },
+                "postAttachCommand": "echo attach"
+            }),
+            "/workspace",
+            LifecycleMode::UpReused,
+        )
+        .expect_err("lifecycle failure");
+
+        assert_eq!(error, "lifecycle failed");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_lifecycle_commands_reports_dotfiles_command_failures() {
+        let root = unique_temp_dir("devcontainer-lifecycle-test");
+        fs::create_dir_all(&root).expect("temp root");
+        let log = root.join("engine.log");
+        let engine = root.join("engine");
+        write_lifecycle_engine(&engine, &log, 12);
+        let args = vec![
+            "--docker-path".to_string(),
+            engine.display().to_string(),
+            "--dotfiles-repository".to_string(),
+            "./dotfiles".to_string(),
+        ];
+
+        let error = run_lifecycle_commands(
+            "container-id",
+            &args,
+            &json!({
+                "remoteEnv": {
+                    "HOME": "/home/vscode"
+                }
+            }),
+            "/workspace",
+            LifecycleMode::RunUserCommands,
+        )
+        .expect_err("dotfiles lifecycle failure");
+
+        assert_eq!(error, "lifecycle failed");
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn dotfiles_install_command_defaults_target_path_and_marker_folder() {
         let command = dotfiles_install_command(&[
             "--dotfiles-repository".to_string(),
@@ -349,6 +603,15 @@ mod tests {
 
     #[test]
     fn run_process_group_reports_single_and_parallel_errors() {
+        run_process_group(
+            vec![
+                LifecycleCommand::Shell("first".to_string()),
+                LifecycleCommand::Shell("second".to_string()),
+            ],
+            |_| Ok(shell_request("exit 0")),
+        )
+        .expect("parallel commands should succeed");
+
         let single_error =
             run_process_group(vec![LifecycleCommand::Shell("single".to_string())], |_| {
                 Ok(shell_request("echo single-failed >&2; exit 7"))
@@ -388,5 +651,100 @@ mod tests {
         )
         .expect_err("request build failure");
         assert_eq!(build_error, "request failed");
+
+        let second_error_ignored = run_process_group(
+            vec![
+                LifecycleCommand::Shell("first".to_string()),
+                LifecycleCommand::Shell("second".to_string()),
+            ],
+            |_| Ok(shell_request("echo failed >&2; exit 9")),
+        )
+        .expect_err("parallel failures");
+        assert_eq!(second_error_ignored, "failed");
+
+        let parallel_spawn_error = run_process_group(
+            vec![
+                LifecycleCommand::Shell("first".to_string()),
+                LifecycleCommand::Shell("second".to_string()),
+            ],
+            |_| {
+                Ok(ProcessRequest {
+                    program: "/definitely/missing/lifecycle-command".to_string(),
+                    args: Vec::new(),
+                    cwd: None,
+                    env: HashMap::new(),
+                    log_level: ProcessLogLevel::Info,
+                })
+            },
+        )
+        .expect_err("parallel spawn failures");
+        assert_spawn_error(&parallel_spawn_error);
+
+        let parallel_panic_error = run_process_group(
+            vec![
+                LifecycleCommand::Shell("first".to_string()),
+                LifecycleCommand::Shell("second".to_string()),
+            ],
+            |command| {
+                let program = match command {
+                    LifecycleCommand::Shell(text) if text == "second" => {
+                        "__devcontainer_lifecycle_test_panic__"
+                    }
+                    _ => "/bin/true",
+                };
+                Ok(ProcessRequest {
+                    program: program.to_string(),
+                    args: Vec::new(),
+                    cwd: None,
+                    env: HashMap::new(),
+                    log_level: ProcessLogLevel::Info,
+                })
+            },
+        )
+        .expect_err("parallel process panic");
+        assert_eq!(
+            parallel_panic_error,
+            "Lifecycle command thread panicked unexpectedly"
+        );
+    }
+
+    #[test]
+    fn run_process_group_reports_single_request_build_and_spawn_errors() {
+        let build_error =
+            run_process_group(vec![LifecycleCommand::Shell("bad".to_string())], |_| {
+                Err("single request failed".to_string())
+            })
+            .expect_err("single request build failure");
+        assert_eq!(build_error, "single request failed");
+
+        let spawn_error =
+            run_process_group(vec![LifecycleCommand::Shell("missing".to_string())], |_| {
+                Ok(ProcessRequest {
+                    program: "/definitely/missing/lifecycle-command".to_string(),
+                    args: Vec::new(),
+                    cwd: None,
+                    env: HashMap::new(),
+                    log_level: ProcessLogLevel::Info,
+                })
+            })
+            .expect_err("spawn failure");
+        assert_spawn_error(&spawn_error);
+    }
+
+    fn write_lifecycle_engine(engine: &Path, log: &Path, lifecycle_exit: i32) {
+        let log = log.display();
+        write_executable_script(
+            engine,
+            &format!(
+                "#!/bin/sh\ncase \"$1\" in\n  inspect) printf '[{{\"Config\":{{\"Env\":[\"HOME=/home/vscode\"],\"User\":\"vscode\"}}}}]\\n' ;;\n  exec)\n    case \"$*\" in\n      *getent\\ passwd*) printf 'vscode:x:1000:1000::/home/vscode:/bin/sh\\n' ;;\n      *) printf '%s\\n' \"$*\" >> '{log}'; if [ {lifecycle_exit} -ne 0 ]; then printf 'lifecycle failed\\n' >&2; exit {lifecycle_exit}; fi ;;\n    esac\n    ;;\n  *) printf 'unexpected engine command: %s\\n' \"$*\" >&2; exit 2 ;;\nesac\n"
+            ),
+        );
+    }
+
+    fn assert_spawn_error(error: &str) {
+        let recognized = ["No such file", "os error", "cannot find"]
+            .iter()
+            .any(|message| error.contains(message));
+        assert!(recognized, "{error}");
     }
 }

@@ -35,7 +35,9 @@ pub(crate) fn unique_temp_path(prefix: &str, extension: Option<&str>) -> PathBuf
 
 #[cfg(test)]
 mod tests {
-    use super::unique_temp_path;
+    use std::path::Path;
+
+    use super::{resolve_relative, unique_temp_path};
 
     #[test]
     fn unique_temp_path_uses_requested_extension() {
@@ -49,5 +51,28 @@ mod tests {
             .file_name()
             .and_then(|value| value.to_str())
             .is_some_and(|name| name.starts_with("devcontainer-path-test-")));
+    }
+
+    #[test]
+    fn unique_temp_path_omits_empty_extension() {
+        let path = unique_temp_path("devcontainer-path-test", None);
+
+        assert_eq!(path.extension(), None);
+        assert!(path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|name| !name.ends_with('.')));
+    }
+
+    #[test]
+    fn resolve_relative_preserves_absolute_paths() {
+        assert_eq!(
+            resolve_relative(Path::new("/workspace"), "/already/absolute"),
+            Path::new("/already/absolute")
+        );
+        assert_eq!(
+            resolve_relative(Path::new("/workspace"), "relative/path"),
+            Path::new("/workspace").join("relative/path")
+        );
     }
 }

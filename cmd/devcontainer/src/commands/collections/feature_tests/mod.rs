@@ -148,7 +148,8 @@ pub(super) struct PreparedFeatureTestCase {
 pub(super) fn run_features_test(args: &[String]) -> std::process::ExitCode {
     match execute_feature_tests(args) {
         Ok(results) => {
-            if !common::has_flag(args, "--quiet") && !common::has_flag(args, "-q") {
+            let quiet = common::has_flag(args, "--quiet") || common::has_flag(args, "-q");
+            if !quiet {
                 println!("  ================== TEST REPORT ==================");
                 for result in &results {
                     let status = if result.passed {
@@ -162,7 +163,7 @@ pub(super) fn run_features_test(args: &[String]) -> std::process::ExitCode {
                     println!("Cleaning up {} test containers", results.len());
                 }
             }
-            if results.iter().all(|result| result.passed) {
+            if all_feature_tests_passed(&results) {
                 std::process::ExitCode::SUCCESS
             } else {
                 std::process::ExitCode::from(1)
@@ -177,10 +178,12 @@ pub(super) fn run_features_test(args: &[String]) -> std::process::ExitCode {
 
 #[cfg(test)]
 pub(super) fn discover_feature_test_scenarios(args: &[String]) -> Result<Vec<String>, String> {
-    Ok(discovery::discover_feature_test_cases(args)?
-        .into_iter()
-        .map(|case| case.name)
-        .collect())
+    let cases = discovery::discover_feature_test_cases(args)?;
+    let mut names = Vec::with_capacity(cases.len());
+    for case in cases {
+        names.push(case.name);
+    }
+    Ok(names)
 }
 
 fn execute_feature_tests(args: &[String]) -> Result<Vec<FeatureTestResult>, String> {
@@ -198,13 +201,12 @@ pub(super) fn execute_feature_tests_with_runtime<R: FeatureTestRuntime>(
 }
 
 fn parse_feature_test_options(args: &[String]) -> Result<FeatureTestOptions, String> {
-    let project_folder = common::parse_option_value(args, "--project-folder")
-        .or_else(|| common::parse_option_value(args, "--projectFolder"))
-        .or_else(|| args.iter().rev().find(|arg| !arg.starts_with('-')).cloned())
-        .map(PathBuf::from)
-        .ok_or_else(|| "features test requires a project folder".to_string())?;
+    let project_folder = match feature_test_project_folder_arg(args) {
+        Some(project_folder) => PathBuf::from(project_folder),
+        None => return Err("features test requires a project folder".to_string()),
+    };
     let base_image = common::parse_option_value(args, "--base-image")
-        .unwrap_or_else(|| DEFAULT_FEATURE_TEST_BASE_IMAGE.to_string());
+        .unwrap_or(DEFAULT_FEATURE_TEST_BASE_IMAGE.to_string());
     let remote_user = common::parse_option_value(args, "--remote-user");
     let preserve_test_containers = common::has_flag(args, "--preserve-test-containers");
     let permit_randomization = common::has_flag(args, "--permit-randomization");
@@ -217,4 +219,195 @@ fn parse_feature_test_options(args: &[String]) -> Result<FeatureTestOptions, Str
         permit_randomization,
         quiet,
     })
+}
+
+fn all_feature_tests_passed(results: &[FeatureTestResult]) -> bool {
+    for result in results {
+        if !result.passed {
+            return false;
+        }
+    }
+    true
+}
+
+fn feature_test_project_folder_arg(args: &[String]) -> Option<String> {
+    if let Some(project_folder) = common::parse_option_value(args, "--project-folder") {
+        return Some(project_folder);
+    }
+    if let Some(project_folder) = common::parse_option_value(args, "--projectFolder") {
+        return Some(project_folder);
+    }
+    for arg in args.iter().rev() {
+        if !arg.starts_with('-') {
+            return Some(arg.clone());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+
+    use super::{
+        all_feature_tests_passed, execute_feature_tests_with_runtime,
+        feature_test_project_folder_arg, run_features_test, FeatureTestResult, FeatureTestRuntime,
+    };
+
+    struct UnusedRuntime;
+
+    impl FeatureTestRuntime for UnusedRuntime {
+        fn build_image(
+            &mut self,
+            _args: &[String],
+            _image_name: &str,
+            _dockerfile_path: &Path,
+            _context_path: &Path,
+        ) -> Result<(), String> {
+            panic!("runtime should not be called")
+        }
+
+        fn start_container(
+            &mut self,
+            _args: &[String],
+            _image_name: &str,
+            _workspace_dir: &Path,
+        ) -> Result<String, String> {
+            panic!("runtime should not be called")
+        }
+
+        fn exec_script(
+            &mut self,
+            _args: &[String],
+            _container_id: &str,
+            _workspace_dir: &Path,
+            _remote_user: Option<&str>,
+            _env: &[(String, String)],
+            _script_name: &str,
+        ) -> Result<i32, String> {
+            panic!("runtime should not be called")
+        }
+
+        fn remove_container(
+            &mut self,
+            _args: &[String],
+            _container_id: &str,
+        ) -> Result<(), String> {
+            panic!("runtime should not be called")
+        }
+    }
+
+    #[test]
+    fn feature_test_project_folder_arg_uses_trailing_positionals() {
+        let dashed = vec![
+            "--project-folder".to_string(),
+            "/workspace/dashed".to_string(),
+        ];
+        let camel = vec![
+            "--projectFolder".to_string(),
+            "/workspace/camel".to_string(),
+        ];
+        let positional = vec!["--quiet".to_string(), "/workspace/project".to_string()];
+
+        assert_eq!(
+            feature_test_project_folder_arg(&dashed).as_deref(),
+            Some("/workspace/dashed")
+        );
+        assert_eq!(
+            feature_test_project_folder_arg(&camel).as_deref(),
+            Some("/workspace/camel")
+        );
+        assert_eq!(
+            feature_test_project_folder_arg(&positional).as_deref(),
+            Some("/workspace/project")
+        );
+        assert_eq!(
+            feature_test_project_folder_arg(&["--quiet".to_string()]),
+            None
+        );
+    }
+
+    #[test]
+    fn all_feature_tests_passed_requires_every_result_to_pass() {
+        assert!(all_feature_tests_passed(&[]));
+        assert!(all_feature_tests_passed(&[FeatureTestResult {
+            name: "passing".to_string(),
+            passed: true,
+        }]));
+        assert!(!all_feature_tests_passed(&[
+            FeatureTestResult {
+                name: "passing".to_string(),
+                passed: true,
+            },
+            FeatureTestResult {
+                name: "failing".to_string(),
+                passed: false,
+            },
+        ]));
+    }
+
+    #[test]
+    fn run_features_test_suppresses_cleanup_report_when_preserving_containers() {
+        let root = crate::test_support::unique_temp_dir("feature-test-mod");
+        fs::create_dir_all(&root).expect("root");
+
+        let status = run_features_test(&[
+            "--preserve-test-containers".to_string(),
+            root.display().to_string(),
+        ]);
+
+        assert_eq!(status, std::process::ExitCode::SUCCESS);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_features_test_succeeds_for_empty_project_without_quiet_flag() {
+        let root = crate::test_support::unique_temp_dir("feature-test-mod");
+        fs::create_dir_all(&root).expect("root");
+
+        let status = run_features_test(&[root.display().to_string()]);
+
+        assert_eq!(status, std::process::ExitCode::SUCCESS);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn execute_feature_tests_with_runtime_reports_discovery_errors_after_option_parsing() {
+        let root = crate::test_support::unique_temp_dir("feature-test-mod");
+        let test_dir = root.join("test").join("demo");
+        fs::create_dir_all(&test_dir).expect("test dir");
+        fs::write(test_dir.join("scenarios.json"), "{").expect("invalid scenarios");
+        let mut runtime = UnusedRuntime;
+
+        let error = execute_feature_tests_with_runtime(&[root.display().to_string()], &mut runtime)
+            .expect_err("discovery should fail");
+
+        assert!(!error.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unused_runtime_panics_if_discovery_reaches_runtime() {
+        assert!(std::panic::catch_unwind(|| {
+            let mut runtime = UnusedRuntime;
+            let _ = runtime.build_image(&[], "image", Path::new("Dockerfile"), Path::new("."));
+        })
+        .is_err());
+        assert!(std::panic::catch_unwind(|| {
+            let mut runtime = UnusedRuntime;
+            let _ = runtime.start_container(&[], "image", Path::new("."));
+        })
+        .is_err());
+        assert!(std::panic::catch_unwind(|| {
+            let mut runtime = UnusedRuntime;
+            let _ = runtime.exec_script(&[], "container", Path::new("."), None, &[], "test.sh");
+        })
+        .is_err());
+        assert!(std::panic::catch_unwind(|| {
+            let mut runtime = UnusedRuntime;
+            let _ = runtime.remove_container(&[], "container");
+        })
+        .is_err());
+    }
 }

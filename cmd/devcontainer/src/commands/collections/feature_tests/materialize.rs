@@ -1,5 +1,6 @@
 //! Feature test materialization and build context helpers.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Component;
 use std::path::{Path, PathBuf};
@@ -13,30 +14,32 @@ use crate::commands::common;
 
 static NEXT_FEATURE_TEST_ID: AtomicU64 = AtomicU64::new(0);
 
+type FeatureOptionValues = Vec<(String, String)>;
+
 pub(super) fn scenario_base_image(
     options: &FeatureTestOptions,
     scenario_dir: &str,
     config: &Value,
     workspace_dir: &Path,
-) -> Result<BaseImageSource, String> {
+) -> BaseImageSource {
     if let Some(image) = config.get("image").and_then(Value::as_str) {
-        return Ok(BaseImageSource::Image(image.to_string()));
+        return BaseImageSource::Image(image.to_string());
     }
 
     let Some(build) = config.get("build").and_then(Value::as_object) else {
-        return Ok(BaseImageSource::Image(options.base_image.clone()));
+        return BaseImageSource::Image(options.base_image.clone());
     };
     let config_root = scenario_config_root(workspace_dir, scenario_dir);
     let dockerfile = build
         .get("dockerfile")
-        .or_else(|| build.get("dockerFile"))
         .and_then(Value::as_str)
+        .or_else(|| build.get("dockerFile").and_then(Value::as_str))
         .unwrap_or("Dockerfile");
     let context = build.get("context").and_then(Value::as_str).unwrap_or(".");
-    Ok(BaseImageSource::Build {
+    BaseImageSource::Build {
         dockerfile_path: resolve_relative_path(&config_root, dockerfile),
         context_path: resolve_relative_path(&config_root, context),
-    })
+    }
 }
 
 pub(super) fn scenario_feature_installations(
@@ -93,8 +96,10 @@ fn published_feature_installation(
     feature_id: &str,
     value: &Value,
 ) -> Result<FeatureInstallation, String> {
-    let manifest = super::super::registry::published_feature_manifest(feature_id)
-        .ok_or_else(|| format!("Unknown published feature: {feature_id}"))?;
+    let manifest = match super::super::registry::published_feature_manifest(feature_id) {
+        Some(manifest) => manifest,
+        None => return Err(format!("Unknown published feature: {feature_id}")),
+    };
     Ok(FeatureInstallation {
         source: FeatureInstallationSource::Published(feature_id.to_string()),
         env: feature_option_values_from_manifest(&manifest, value),
@@ -104,61 +109,63 @@ fn published_feature_installation(
 pub(super) fn feature_option_values(
     feature_dir: &Path,
     value: &Value,
-) -> Result<Vec<(String, String)>, String> {
+) -> Result<FeatureOptionValues, String> {
     let manifest = common::parse_manifest(feature_dir, "devcontainer-feature.json")?;
     Ok(feature_option_values_from_manifest(&manifest, value))
 }
 
-fn feature_option_values_from_manifest(manifest: &Value, value: &Value) -> Vec<(String, String)> {
-    let defaults = manifest
-        .get("options")
-        .and_then(Value::as_object)
-        .map(|options| {
-            options
-                .iter()
-                .filter_map(|(key, option)| {
-                    option.get("default").map(|default| {
-                        (
-                            common::feature_option_env_name(key),
-                            json_value_to_env(default),
-                        )
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let overrides = value
-        .as_object()
-        .map(|options| {
-            options
-                .iter()
-                .map(|(key, option)| {
-                    (
-                        common::feature_option_env_name(key),
-                        json_value_to_env(option),
-                    )
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    let mut merged = Map::new();
-    for (key, value) in defaults.into_iter().chain(overrides) {
-        merged.insert(key, Value::String(value));
+fn feature_option_values_from_manifest(manifest: &Value, value: &Value) -> FeatureOptionValues {
+    let mut merged = BTreeMap::new();
+    if let Some(options) = manifest.get("options").and_then(Value::as_object) {
+        for (key, option) in options {
+            if let Some(default) = option.get("default") {
+                merged.insert(
+                    common::feature_option_env_name(key),
+                    json_value_to_env(default),
+                );
+            }
+        }
     }
-    merged
-        .into_iter()
-        .filter_map(|(key, value)| value.as_str().map(|text| (key, text.to_string())))
-        .collect()
+    if let Some(options) = value.as_object() {
+        for (key, option) in options {
+            merged.insert(
+                common::feature_option_env_name(key),
+                json_value_to_env(option),
+            );
+        }
+    }
+    merged.into_iter().collect()
 }
 
+#[cfg(test)]
 pub(super) fn alternate_feature_option_values(
     feature_dir: &Path,
     permit_randomization: bool,
-) -> Result<Vec<(String, String)>, String> {
+) -> Result<FeatureOptionValues, String> {
     let manifest = common::parse_manifest(feature_dir, "devcontainer-feature.json")?;
+    Ok(alternate_feature_option_values_from_manifest(
+        &manifest,
+        permit_randomization,
+    ))
+}
+
+pub(super) fn duplicate_feature_option_values(
+    feature_dir: &Path,
+    permit_randomization: bool,
+) -> Result<(FeatureOptionValues, FeatureOptionValues), String> {
+    let manifest = common::parse_manifest(feature_dir, "devcontainer-feature.json")?;
+    Ok((
+        feature_option_values_from_manifest(&manifest, &Value::Object(Map::new())),
+        alternate_feature_option_values_from_manifest(&manifest, permit_randomization),
+    ))
+}
+
+fn alternate_feature_option_values_from_manifest(
+    manifest: &Value,
+    permit_randomization: bool,
+) -> FeatureOptionValues {
     let Some(options) = manifest.get("options").and_then(Value::as_object) else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
 
     let mut values = Vec::new();
@@ -171,11 +178,13 @@ pub(super) fn alternate_feature_option_values(
                 (!default).to_string()
             }
             Some("string") => {
-                if let Some(candidates) = option
-                    .get("proposals")
-                    .or_else(|| option.get("enum"))
-                    .and_then(Value::as_array)
-                {
+                let candidates =
+                    if let Some(proposals) = option.get("proposals").and_then(Value::as_array) {
+                        Some(proposals)
+                    } else {
+                        option.get("enum").and_then(Value::as_array)
+                    };
+                if let Some(candidates) = candidates {
                     let default = default.map(json_value_to_env);
                     choose_alternate_string_candidate(
                         candidates,
@@ -194,7 +203,7 @@ pub(super) fn alternate_feature_option_values(
             values.push((env_name, value));
         }
     }
-    Ok(values)
+    values
 }
 
 fn json_value_to_env(value: &Value) -> String {
@@ -217,13 +226,16 @@ fn choose_alternate_string_candidate(
         return None;
     }
 
-    let default_index =
-        default.and_then(|default| values.iter().position(|value| value == default));
-    let alternate_indexes = values
-        .iter()
-        .enumerate()
-        .filter_map(|(index, _)| (Some(index) != default_index).then_some(index))
-        .collect::<Vec<_>>();
+    let default_index = match default {
+        Some(default) => values.iter().position(|value| value == default),
+        None => None,
+    };
+    let mut alternate_indexes = Vec::new();
+    for (index, _) in values.iter().enumerate() {
+        if Some(index) != default_index {
+            alternate_indexes.push(index);
+        }
+    }
     if alternate_indexes.is_empty() {
         return values.first().cloned();
     }
@@ -254,12 +266,11 @@ pub(super) fn write_feature_test_dockerfile(
         materialize_feature_installation(installation, &copied_feature_dir)?;
         let install_path = format!("/tmp/devcontainer-features/{destination}");
         dockerfile.push_str(&format!("COPY {destination} {install_path}\n"));
-        let env_assignments = installation
-            .env
-            .iter()
-            .map(|(key, value)| format!("{key}={}", shell_single_quote(value)))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let mut env_assignments = Vec::with_capacity(installation.env.len());
+        for (key, value) in &installation.env {
+            env_assignments.push(format!("{key}={}", shell_single_quote(value)));
+        }
+        let env_assignments = env_assignments.join(" ");
         let command = if env_assignments.is_empty() {
             "chmod +x install.sh && ./install.sh".to_string()
         } else {
@@ -282,8 +293,12 @@ fn feature_installation_name(installation: &FeatureInstallation) -> String {
             .unwrap_or("feature")
             .to_string(),
         FeatureInstallationSource::Published(feature_id) => {
-            super::super::registry::collection_slug(feature_id)
-                .unwrap_or_else(|| "published-feature".to_string())
+            match super::super::registry::collection_slug(feature_id)
+                .filter(|slug| !slug.is_empty())
+            {
+                Some(slug) => slug,
+                None => "published-feature".to_string(),
+            }
         }
     }
 }
@@ -306,12 +321,14 @@ fn materialize_local_feature(source: &Path, destination: &Path) -> Result<(), St
 }
 
 fn materialize_published_feature(feature_id: &str, destination: &Path) -> Result<(), String> {
-    let manifest = super::super::registry::published_feature_manifest(feature_id)
-        .ok_or_else(|| format!("Unknown published feature: {feature_id}"))?;
+    let manifest = match super::super::registry::published_feature_manifest(feature_id) {
+        Some(manifest) => manifest,
+        None => return Err(format!("Unknown published feature: {feature_id}")),
+    };
     fs::create_dir_all(destination).map_err(|error| error.to_string())?;
     fs::write(
         destination.join("devcontainer-feature.json"),
-        serde_json::to_string_pretty(&manifest).map_err(|error| error.to_string())?,
+        serde_json::to_string_pretty(&manifest).expect("serializing JSON value cannot fail"),
     )
     .map_err(|error| error.to_string())?;
     fs::write(
@@ -380,10 +397,12 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        alternate_feature_option_values, choose_alternate_string_candidate, feature_option_values,
-        scenario_base_image, scenario_feature_installations, shell_single_quote,
-        unique_feature_test_dir, write_feature_test_dockerfile, BaseImageSource,
-        FeatureInstallation, FeatureInstallationSource, FeatureTestOptions,
+        alternate_feature_option_values, choose_alternate_string_candidate,
+        duplicate_feature_option_values, feature_installation, feature_installation_name,
+        feature_option_values, feature_option_values_from_manifest, scenario_base_image,
+        scenario_feature_installations, shell_single_quote, unique_feature_test_dir,
+        write_feature_test_dockerfile, BaseImageSource, FeatureInstallation,
+        FeatureInstallationSource, FeatureTestOptions,
     };
 
     fn test_options(project_folder: &Path) -> FeatureTestOptions {
@@ -441,7 +460,7 @@ mod tests {
         )
         .expect("selection");
 
-        assert!(selected == "green" || selected == "red");
+        assert!(["green", "red"].contains(&selected.as_str()));
     }
 
     #[test]
@@ -452,9 +471,24 @@ mod tests {
             Some("only"),
             false,
         );
+        let missing_default = choose_alternate_string_candidate(
+            &json!(["first", "second"])
+                .as_array()
+                .expect("array")
+                .clone(),
+            Some("missing"),
+            false,
+        );
+        let no_default = choose_alternate_string_candidate(
+            &json!(["alpha", "beta"]).as_array().expect("array").clone(),
+            None,
+            false,
+        );
 
         assert_eq!(empty, None);
         assert_eq!(single.as_deref(), Some("only"));
+        assert_eq!(missing_default.as_deref(), Some("first"));
+        assert_eq!(no_default.as_deref(), Some("alpha"));
     }
 
     #[test]
@@ -546,6 +580,121 @@ mod tests {
     }
 
     #[test]
+    fn alternate_feature_option_values_prefers_proposals_over_enum_values() {
+        let feature_dir = unique_feature_test_dir();
+        fs::create_dir_all(&feature_dir).expect("feature dir");
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            r#"{
+  "id": "demo",
+  "version": "1.0.0",
+  "options": {
+    "channel": {
+      "type": "string",
+      "proposals": ["stable", "nightly"],
+      "enum": ["ignored"],
+      "default": "stable"
+    }
+  }
+}"#,
+        )
+        .expect("manifest");
+
+        let values = alternate_feature_option_values(&feature_dir, false).expect("values");
+
+        assert_eq!(values, vec![("CHANNEL".to_string(), "nightly".to_string())]);
+        let _ = fs::remove_dir_all(feature_dir);
+    }
+
+    #[test]
+    fn alternate_feature_option_values_uses_string_defaults_without_candidates() {
+        let feature_dir = unique_feature_test_dir();
+        fs::create_dir_all(&feature_dir).expect("feature dir");
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            r#"{
+  "id": "demo",
+  "version": "1.0.0",
+  "options": {
+    "channel": {
+      "type": "string",
+      "default": "stable"
+    }
+  }
+}"#,
+        )
+        .expect("manifest");
+
+        let values = alternate_feature_option_values(&feature_dir, false).expect("values");
+
+        assert_eq!(values, vec![("CHANNEL".to_string(), "stable".to_string())]);
+        let _ = fs::remove_dir_all(feature_dir);
+    }
+
+    #[test]
+    fn alternate_feature_option_values_without_options_returns_empty() {
+        let feature_dir = unique_feature_test_dir();
+        fs::create_dir_all(&feature_dir).expect("feature dir");
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            r#"{
+  "id": "demo",
+  "version": "1.0.0"
+}"#,
+        )
+        .expect("manifest");
+
+        let values = alternate_feature_option_values(&feature_dir, false).expect("values");
+
+        assert!(values.is_empty());
+        let _ = fs::remove_dir_all(feature_dir);
+    }
+
+    #[test]
+    fn feature_option_values_ignore_non_object_overrides() {
+        let manifest = json!({
+            "options": {
+                "flag": {
+                    "type": "boolean",
+                    "default": true
+                },
+                "unset": {
+                    "type": "string"
+                }
+            }
+        });
+
+        let values = feature_option_values_from_manifest(&manifest, &json!("not-an-object"));
+
+        assert_eq!(values, vec![("FLAG".to_string(), "true".to_string())]);
+    }
+
+    #[test]
+    fn feature_installation_reports_manifest_parse_errors() {
+        let feature_dir = unique_feature_test_dir();
+        fs::create_dir_all(&feature_dir).expect("feature dir");
+        fs::write(feature_dir.join("devcontainer-feature.json"), "{").expect("manifest");
+
+        let error = feature_installation(&feature_dir, &json!({})).expect_err("invalid manifest");
+
+        assert!(!error.is_empty());
+        let _ = fs::remove_dir_all(feature_dir);
+    }
+
+    #[test]
+    fn feature_installation_name_falls_back_for_unparseable_published_refs() {
+        let installation = FeatureInstallation {
+            source: FeatureInstallationSource::Published(String::new()),
+            env: Vec::new(),
+        };
+
+        assert_eq!(
+            feature_installation_name(&installation),
+            "published-feature"
+        );
+    }
+
+    #[test]
     fn feature_test_option_env_names_match_upstream_safe_id_cases() {
         let feature_dir = unique_feature_test_dir();
         fs::create_dir_all(&feature_dir).expect("feature dir");
@@ -583,6 +732,44 @@ mod tests {
     }
 
     #[test]
+    fn feature_option_values_reports_manifest_parse_errors() {
+        let feature_dir = unique_feature_test_dir();
+        fs::create_dir_all(&feature_dir).expect("feature dir");
+        fs::write(feature_dir.join("devcontainer-feature.json"), "{").expect("manifest");
+
+        let error = feature_option_values(&feature_dir, &json!({})).expect_err("invalid manifest");
+
+        assert!(!error.is_empty());
+        let _ = fs::remove_dir_all(feature_dir);
+    }
+
+    #[test]
+    fn alternate_feature_option_values_reports_manifest_parse_errors() {
+        let feature_dir = unique_feature_test_dir();
+        fs::create_dir_all(&feature_dir).expect("feature dir");
+        fs::write(feature_dir.join("devcontainer-feature.json"), "{").expect("manifest");
+
+        let error =
+            alternate_feature_option_values(&feature_dir, false).expect_err("invalid manifest");
+
+        assert!(!error.is_empty());
+        let _ = fs::remove_dir_all(feature_dir);
+    }
+
+    #[test]
+    fn duplicate_feature_option_values_reports_manifest_parse_errors() {
+        let feature_dir = unique_feature_test_dir();
+        fs::create_dir_all(&feature_dir).expect("feature dir");
+        fs::write(feature_dir.join("devcontainer-feature.json"), "{").expect("manifest");
+
+        let error =
+            duplicate_feature_option_values(&feature_dir, false).expect_err("invalid manifest");
+
+        assert!(!error.is_empty());
+        let _ = fs::remove_dir_all(feature_dir);
+    }
+
+    #[test]
     fn scenario_base_image_resolves_image_default_and_build_paths() {
         let workspace = unique_feature_test_dir();
         let scenario_dir = workspace.join("scenarios").join("basic");
@@ -595,10 +782,8 @@ mod tests {
                 "image": "ubuntu:24.04"
             }),
             &workspace,
-        )
-        .expect("explicit image");
-        let default = scenario_base_image(&options, "scenarios/basic", &json!({}), &workspace)
-            .expect("default image");
+        );
+        let default = scenario_base_image(&options, "scenarios/basic", &json!({}), &workspace);
         let build = scenario_base_image(
             &options,
             "scenarios/basic",
@@ -609,8 +794,18 @@ mod tests {
                 }
             }),
             &workspace,
-        )
-        .expect("build image");
+        );
+        let absolute_dockerfile = std::env::temp_dir().join("absolute.Dockerfile");
+        let absolute = scenario_base_image(
+            &options,
+            "scenarios/basic",
+            &json!({
+                "build": {
+                    "dockerfile": absolute_dockerfile.to_string_lossy()
+                }
+            }),
+            &workspace,
+        );
         let escaped = scenario_base_image(
             &options,
             "../outside",
@@ -618,8 +813,15 @@ mod tests {
                 "build": {}
             }),
             &workspace,
-        )
-        .expect("escaped scenario");
+        );
+        let missing_scenario_dir = scenario_base_image(
+            &options,
+            "missing-scenario",
+            &json!({
+                "build": {}
+            }),
+            &workspace,
+        );
 
         assert_eq!(explicit, BaseImageSource::Image("ubuntu:24.04".to_string()));
         assert_eq!(
@@ -635,6 +837,20 @@ mod tests {
         );
         assert_eq!(
             escaped,
+            BaseImageSource::Build {
+                dockerfile_path: workspace.join("Dockerfile"),
+                context_path: workspace.join(".")
+            }
+        );
+        assert_eq!(
+            absolute,
+            BaseImageSource::Build {
+                dockerfile_path: absolute_dockerfile,
+                context_path: scenario_dir.join(".")
+            }
+        );
+        assert_eq!(
+            missing_scenario_dir,
             BaseImageSource::Build {
                 dockerfile_path: workspace.join("Dockerfile"),
                 context_path: workspace.join(".")
@@ -667,10 +883,10 @@ mod tests {
         .expect("configured features");
 
         assert_eq!(default.len(), 1);
-        assert!(matches!(
-            default[0].source,
-            FeatureInstallationSource::Local(_)
-        ));
+        assert_eq!(
+            &default[0].source,
+            &FeatureInstallationSource::Local(project.join("src").join("demo"))
+        );
         assert!(default[0]
             .env
             .contains(&("FLAG".to_string(), "false".to_string())));
@@ -799,6 +1015,130 @@ mod tests {
             error,
             "Unknown published feature: ghcr.io/example/notfeatures/missing"
         );
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn write_feature_test_dockerfile_reports_empty_published_feature_reference() {
+        let workspace = unique_feature_test_dir();
+        fs::create_dir_all(&workspace).expect("workspace");
+        let error = write_feature_test_dockerfile(
+            &workspace,
+            "debian:bookworm-slim",
+            &[FeatureInstallation {
+                source: FeatureInstallationSource::Published(String::new()),
+                env: Vec::new(),
+            }],
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "Unknown published feature: ");
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn write_feature_test_dockerfile_reports_dockerfile_write_errors() {
+        let workspace = unique_feature_test_dir();
+        fs::write(&workspace, "not a directory").expect("workspace file");
+
+        let error =
+            write_feature_test_dockerfile(&workspace, "debian:bookworm-slim", &[]).unwrap_err();
+
+        assert!(!error.is_empty());
+        let _ = fs::remove_file(workspace);
+    }
+
+    #[test]
+    fn write_feature_test_dockerfile_reports_published_destination_create_errors() {
+        let workspace = unique_feature_test_dir();
+        let build_context = workspace.join("build");
+        fs::create_dir_all(&build_context).expect("build context");
+        fs::write(build_context.join("feature-0-common-utils"), "blocked")
+            .expect("blocked destination");
+
+        let error = write_feature_test_dockerfile(
+            &build_context,
+            "debian:bookworm-slim",
+            &[FeatureInstallation {
+                source: FeatureInstallationSource::Published(
+                    "ghcr.io/devcontainers/features/common-utils:2".to_string(),
+                ),
+                env: Vec::new(),
+            }],
+        )
+        .unwrap_err();
+
+        assert!(!error.is_empty());
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn write_feature_test_dockerfile_reports_published_manifest_write_errors() {
+        let workspace = unique_feature_test_dir();
+        let build_context = workspace.join("build");
+        let destination = build_context.join("feature-0-common-utils");
+        fs::create_dir_all(destination.join("devcontainer-feature.json"))
+            .expect("blocked manifest destination");
+
+        let error = write_feature_test_dockerfile(
+            &build_context,
+            "debian:bookworm-slim",
+            &[FeatureInstallation {
+                source: FeatureInstallationSource::Published(
+                    "ghcr.io/devcontainers/features/common-utils:2".to_string(),
+                ),
+                env: Vec::new(),
+            }],
+        )
+        .unwrap_err();
+
+        assert!(!error.is_empty());
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn write_feature_test_dockerfile_reports_published_install_write_errors() {
+        let workspace = unique_feature_test_dir();
+        let build_context = workspace.join("build");
+        let destination = build_context.join("feature-0-common-utils");
+        fs::create_dir_all(destination.join("install.sh")).expect("blocked install destination");
+
+        let error = write_feature_test_dockerfile(
+            &build_context,
+            "debian:bookworm-slim",
+            &[FeatureInstallation {
+                source: FeatureInstallationSource::Published(
+                    "ghcr.io/devcontainers/features/common-utils:2".to_string(),
+                ),
+                env: Vec::new(),
+            }],
+        )
+        .unwrap_err();
+
+        assert!(!error.is_empty());
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn write_feature_test_dockerfile_reports_default_install_script_write_errors() {
+        let workspace = unique_feature_test_dir();
+        let build_context = workspace.join("build");
+        let local_feature = workspace.join("local-feature");
+        fs::create_dir_all(&build_context).expect("build context");
+        write_feature_manifest(&local_feature);
+        fs::create_dir(local_feature.join("install.sh")).expect("blocked install script");
+
+        let error = write_feature_test_dockerfile(
+            &build_context,
+            "debian:bookworm-slim",
+            &[FeatureInstallation {
+                source: FeatureInstallationSource::Local(local_feature),
+                env: Vec::new(),
+            }],
+        )
+        .unwrap_err();
+
+        assert!(!error.is_empty());
         let _ = fs::remove_dir_all(workspace);
     }
 }

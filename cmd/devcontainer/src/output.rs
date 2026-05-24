@@ -178,6 +178,28 @@ mod tests {
     }
 
     #[test]
+    fn command_logger_renders_all_text_levels() {
+        let logger = CommandLogger::new(LogFormat::Text, CommandLogLevel::Trace);
+
+        assert_eq!(
+            logger.render(CommandLogLevel::Trace, "traced"),
+            Some("[trace] traced".to_string())
+        );
+        assert_eq!(
+            logger.render(CommandLogLevel::Debug, "debugged"),
+            Some("[debug] debugged".to_string())
+        );
+        assert_eq!(
+            logger.render(CommandLogLevel::Info, "informed"),
+            Some("[info] informed".to_string())
+        );
+        assert_eq!(
+            logger.render(CommandLogLevel::Error, "errored"),
+            Some("[error] errored".to_string())
+        );
+    }
+
+    #[test]
     fn command_logger_renders_json_entries() {
         let logger = CommandLogger::new(LogFormat::Json, CommandLogLevel::Trace);
 
@@ -190,6 +212,27 @@ mod tests {
         assert_eq!(entry["level"], 2);
         assert_eq!(entry["text"], "quoted \"value\"");
         assert!(entry["timestamp"].as_i64().is_some(), "{entry:?}");
+    }
+
+    #[test]
+    fn command_logger_renders_json_trace_and_error_levels() {
+        let logger = CommandLogger::new(LogFormat::Json, CommandLogLevel::Trace);
+
+        let trace: Value = serde_json::from_str(
+            &logger
+                .render(CommandLogLevel::Trace, "trace")
+                .expect("trace log"),
+        )
+        .expect("trace json");
+        let error: Value = serde_json::from_str(
+            &logger
+                .render(CommandLogLevel::Error, "error")
+                .expect("error log"),
+        )
+        .expect("error json");
+
+        assert_eq!(trace["level"], 1);
+        assert_eq!(error["level"], 5);
     }
 
     #[test]
@@ -207,5 +250,20 @@ mod tests {
                 rows: 40,
             })
         );
+    }
+
+    #[test]
+    fn command_logger_public_methods_emit_without_panicking() {
+        let logger = CommandLogger::new(LogFormat::Text, CommandLogLevel::Trace)
+            .with_terminal_dimensions(Some(TerminalDimensions {
+                columns: 120,
+                rows: 40,
+            }));
+
+        logger.error("error");
+        logger.info("info");
+        logger.debug("debug");
+        logger.trace("trace");
+        logger.trace_terminal_dimensions();
     }
 }

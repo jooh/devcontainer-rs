@@ -410,8 +410,12 @@ fn unique_uid_update_build_context() -> PathBuf {
 }
 
 fn host_uid_gid() -> Result<(String, String), String> {
-    let uid = command_stdout("id", &["-u"])?;
-    let gid = command_stdout("id", &["-g"])?;
+    let id_program = ["/usr/bin/id", "/bin/id"]
+        .into_iter()
+        .find(|program| Path::new(program).exists())
+        .unwrap_or("id");
+    let uid = command_stdout(id_program, &["-u"])?;
+    let gid = command_stdout(id_program, &["-g"])?;
     Ok((uid, gid))
 }
 

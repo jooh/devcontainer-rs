@@ -129,6 +129,64 @@ fn features_test_quiet_suppresses_local_report_output() {
 }
 
 #[test]
+fn features_test_supports_build_scenarios_remote_user_and_duplicate_env() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.root.join("feature-project");
+    let src = workspace.join("src").join("demo");
+    let test = workspace.join("test").join("demo");
+    let scenario_dir = test.join("custom");
+    fs::create_dir_all(&src).expect("feature src");
+    fs::create_dir_all(&scenario_dir).expect("scenario dir");
+    fs::write(
+        src.join("devcontainer-feature.json"),
+        "{\n  \"id\": \"demo\",\n  \"name\": \"Demo Feature\",\n  \"version\": \"1.0.0\",\n  \"options\": {\n    \"color\": {\n      \"type\": \"string\",\n      \"enum\": [\"blue\", \"green\"],\n      \"default\": \"blue\"\n    }\n  }\n}\n",
+    )
+    .expect("manifest");
+    fs::write(src.join("install.sh"), "#!/bin/sh\nexit 0\n").expect("install script");
+    fs::write(
+        test.join("duplicate.sh"),
+        "#!/bin/sh\n[ \"$COLOR\" != \"blue\" ] && [ \"$COLOR__DEFAULT\" = \"blue\" ]\n",
+    )
+    .expect("duplicate script");
+    fs::write(test.join("custom.sh"), "#!/bin/sh\nexit 0\n").expect("scenario script");
+    fs::write(scenario_dir.join("Dockerfile.base"), "FROM scratch\n").expect("base dockerfile");
+    fs::write(
+        test.join("scenarios.json"),
+        "{\n  \"custom\": {\n    \"build\": {\n      \"dockerfile\": \"Dockerfile.base\",\n      \"context\": \".\"\n    }\n  }\n}\n",
+    )
+    .expect("scenarios");
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "features",
+            "test",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--project-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--remote-user",
+            "vscode",
+            "--permit-randomization",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let invocations = harness.read_invocations();
+    assert!(invocations.contains("build "), "{invocations}");
+    assert!(
+        invocations.contains("exec --workdir /workspace --user vscode -e COLOR=green"),
+        "{invocations}"
+    );
+    let dockerfiles =
+        fs::read_to_string(harness.log_dir.join("build-dockerfiles.log")).expect("dockerfiles");
+    assert!(dockerfiles.contains("FROM scratch"), "{dockerfiles}");
+
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[test]
 fn templates_apply_supports_published_template_ids() {
     let workspace = unique_temp_dir("devcontainer-cli-smoke");
     fs::create_dir_all(&workspace).expect("workspace");

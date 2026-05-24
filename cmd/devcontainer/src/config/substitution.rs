@@ -34,12 +34,14 @@ fn replace_variable(
             context.map(|value| value.workspace_folder.to_string_lossy().into_owned())
         }
         "localWorkspaceFolderBasename" => context.map(|value| {
-            value
+            match value
                 .workspace_folder
                 .file_name()
                 .and_then(|name| name.to_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| value.workspace_folder.to_string_lossy().into_owned())
+            {
+                Some(name) => name.to_string(),
+                None => value.workspace_folder.to_string_lossy().into_owned(),
+            }
         }),
         "containerWorkspaceFolder" => {
             context.and_then(|value| value.container_workspace_folder.clone())
@@ -220,5 +222,120 @@ pub fn substitute_container_env(value: &Value, env: &HashMap<String, String>) ->
                 .collect(),
         ),
         _ => value.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    use serde_json::json;
+
+    use super::{
+        encode_base32hex_lower, substitute_container_env, substitute_local_context, ConfigContext,
+    };
+
+    #[test]
+    fn local_substitution_preserves_unknown_and_unclosed_variables() {
+        let substituted = substitute_local_context(
+            &json!({
+                "known": "${localWorkspaceFolder}",
+                "unknown": "${unknown:value}",
+                "unclosed": "before-${localEnv:USER"
+            }),
+            &ConfigContext {
+                workspace_folder: PathBuf::from("/workspace/demo"),
+                env: HashMap::new(),
+                container_workspace_folder: None,
+                id_labels: HashMap::new(),
+            },
+        );
+
+        assert_eq!(substituted["known"], "/workspace/demo");
+        assert_eq!(substituted["unknown"], "${unknown:value}");
+        assert_eq!(substituted["unclosed"], "before-${localEnv:USER");
+    }
+
+    #[test]
+    fn local_substitution_preserves_non_string_values() {
+        let substituted = substitute_local_context(
+            &json!({
+                "number": 42,
+                "boolean": true,
+                "null": null
+            }),
+            &ConfigContext {
+                workspace_folder: PathBuf::from("/workspace/demo"),
+                env: HashMap::new(),
+                container_workspace_folder: None,
+                id_labels: HashMap::new(),
+            },
+        );
+
+        assert_eq!(substituted["number"], 42);
+        assert_eq!(substituted["boolean"], true);
+        assert!(substituted["null"].is_null());
+    }
+
+    #[test]
+    fn local_substitution_resolves_container_workspace_variables() {
+        let substituted = substitute_local_context(
+            &json!({
+                "folder": "${containerWorkspaceFolder}",
+                "basename": "${containerWorkspaceFolderBasename}",
+                "nested": "${containerWorkspaceFolder}/nested",
+                "local_basename": "${localWorkspaceFolderBasename}"
+            }),
+            &ConfigContext {
+                workspace_folder: PathBuf::from("/workspace/demo"),
+                env: HashMap::new(),
+                container_workspace_folder: Some("${localWorkspaceFolder}/container".to_string()),
+                id_labels: HashMap::new(),
+            },
+        );
+
+        assert_eq!(substituted["folder"], "/workspace/demo/container");
+        assert_eq!(substituted["basename"], "container");
+        assert_eq!(substituted["nested"], "/workspace/demo/container/nested");
+        assert_eq!(substituted["local_basename"], "demo");
+    }
+
+    #[test]
+    fn local_workspace_basename_falls_back_to_full_path_without_file_name() {
+        let substituted = substitute_local_context(
+            &json!("${localWorkspaceFolderBasename}"),
+            &ConfigContext {
+                workspace_folder: PathBuf::from("/"),
+                env: HashMap::new(),
+                container_workspace_folder: None,
+                id_labels: HashMap::new(),
+            },
+        );
+
+        assert_eq!(substituted, json!("/"));
+    }
+
+    #[test]
+    fn container_env_substitution_recurses_into_arrays_and_preserves_scalars() {
+        let substituted = substitute_container_env(
+            &json!([
+                "${containerEnv:PATH}",
+                42,
+                {
+                    "fallback": "${containerEnv:MISSING:fallback}"
+                }
+            ]),
+            &HashMap::from([("PATH".to_string(), "/usr/local/bin".to_string())]),
+        );
+
+        assert_eq!(substituted[0], "/usr/local/bin");
+        assert_eq!(substituted[1], 42);
+        assert_eq!(substituted[2]["fallback"], "fallback");
+    }
+
+    #[test]
+    fn base32hex_encoder_left_pads_short_inputs() {
+        assert_eq!(encode_base32hex_lower(&[]), "0".repeat(52));
     }
 }

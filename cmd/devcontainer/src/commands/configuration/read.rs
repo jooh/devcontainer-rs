@@ -26,7 +26,7 @@ pub(super) fn build_read_configuration_payload(args: &[String]) -> Result<Value,
         loaded
             .as_ref()
             .map(|loaded| {
-                super::features::resolve_feature_support_without_lockfile(
+                super::resolve_feature_support_without_lockfile(
                     args,
                     &loaded.workspace_folder,
                     &loaded.config_file,
@@ -49,10 +49,10 @@ pub(super) fn build_read_configuration_payload(args: &[String]) -> Result<Value,
     if include_features || (include_merged && inspected.is_none()) {
         payload.insert(
             "featuresConfiguration".to_string(),
-            resolved_features
-                .as_ref()
-                .map(|resolved| resolved.features_configuration.clone())
-                .unwrap_or_else(|| json!({ "featureSets": [] })),
+            match resolved_features.as_ref() {
+                Some(resolved) => resolved.features_configuration.clone(),
+                None => json!({ "featureSets": [] }),
+            },
         );
     }
 
@@ -134,4 +134,25 @@ pub(super) fn should_use_native_read_configuration(args: &[String]) -> bool {
         };
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_use_native_read_configuration;
+
+    #[test]
+    fn native_read_configuration_supports_empty_args_and_rejects_positionals() {
+        assert!(should_use_native_read_configuration(&[]));
+        assert!(!should_use_native_read_configuration(&[
+            "devcontainer.json".to_string(),
+        ]));
+        assert!(!should_use_native_read_configuration(&[
+            "--unknown".to_string(),
+            "value".to_string(),
+        ]));
+        assert!(should_use_native_read_configuration(&[
+            "--mount-workspace-git-root".to_string(),
+            "--include-merged-configuration".to_string(),
+        ]));
+    }
 }
