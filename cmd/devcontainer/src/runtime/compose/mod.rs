@@ -28,6 +28,14 @@ pub(crate) struct ComposeSpec {
     pub(crate) project_name: String,
 }
 
+#[derive(Debug)]
+pub(crate) struct ComposeUpResult {
+    pub(crate) project_name: String,
+    pub(crate) service: String,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+}
+
 pub(crate) fn uses_compose_config(configuration: &Value) -> bool {
     configuration.get("dockerComposeFile").is_some()
         && configuration
@@ -142,7 +150,7 @@ pub(crate) fn up_service(
     remote_workspace_folder: &str,
     image_name: &str,
     no_recreate: bool,
-) -> Result<(), String> {
+) -> Result<ComposeUpResult, String> {
     let spec = load_compose_spec(resolved)?
         .ok_or_else(|| "Compose configuration was expected but not found".to_string())?;
     let override_file = override_file::compose_metadata_override_file(
@@ -177,14 +185,32 @@ pub(crate) fn up_service(
     let result = engine::run_compose(
         args,
         args::compose_args_owned(&spec, "up", override_file.as_ref(), up_args),
-    )?;
+    );
     if let Some(override_file) = override_file {
         let _ = std::fs::remove_file(override_file);
     }
+    let result = result?;
     if result.status_code != 0 {
         return Err(engine::stderr_or_stdout(&result));
     }
-    Ok(())
+    Ok(ComposeUpResult {
+        project_name: spec.project_name,
+        service: spec.service,
+        stdout: result.stdout,
+        stderr: result.stderr,
+    })
+}
+
+pub(crate) fn service_logs(
+    resolved: &ResolvedConfig,
+    args: &[String],
+) -> Result<crate::process_runner::ProcessResult, String> {
+    let spec = load_compose_spec(resolved)?
+        .ok_or_else(|| "Compose configuration was expected but not found".to_string())?;
+    engine::run_compose(
+        args,
+        args::compose_args_owned(&spec, "logs", None, vec![spec.service.clone()]),
+    )
 }
 
 pub(crate) fn resolve_container_id(
