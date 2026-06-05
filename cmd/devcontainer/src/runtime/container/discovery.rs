@@ -180,9 +180,11 @@ fn create_compose_container(
     image_name: &str,
     remote_workspace_folder: &str,
 ) -> Result<UpContainer, String> {
-    compose::up_service(resolved, args, remote_workspace_folder, image_name, false)?;
-    let container_id = compose::resolve_container_id(resolved, args)?
-        .ok_or_else(|| "Dev container not found.".to_string())?;
+    let up_result =
+        compose::up_service(resolved, args, remote_workspace_folder, image_name, false)?;
+    let Some(container_id) = compose::resolve_container_id(resolved, args)? else {
+        return Err(compose_startup_failure_error(resolved, args, &up_result)?);
+    };
     Ok(UpContainer {
         container_id,
         matched_id_labels: None,
@@ -198,9 +200,10 @@ fn refresh_compose_container(
     previous_container_id: &str,
     unchanged_mode: LifecycleMode,
 ) -> Result<UpContainer, String> {
-    compose::up_service(resolved, args, remote_workspace_folder, image_name, true)?;
-    let updated_container_id = compose::resolve_container_id(resolved, args)?
-        .ok_or_else(|| "Dev container not found.".to_string())?;
+    let up_result = compose::up_service(resolved, args, remote_workspace_folder, image_name, true)?;
+    let Some(updated_container_id) = compose::resolve_container_id(resolved, args)? else {
+        return Err(compose_startup_failure_error(resolved, args, &up_result)?);
+    };
     let matched_id_labels = if updated_container_id == previous_container_id {
         inspect_matched_default_id_labels(
             args,
@@ -220,6 +223,77 @@ fn refresh_compose_container(
         container_id: updated_container_id,
         matched_id_labels,
     })
+}
+
+fn compose_startup_failure_error(
+    resolved: &ResolvedConfig,
+    args: &[String],
+    up_result: &compose::ComposeUpResult,
+) -> Result<String, String> {
+    let stopped_container_id = compose::resolve_container_id_including_stopped(resolved, args)?;
+    let mut message = if let Some(container_id) = stopped_container_id {
+        format!(
+            "Dev container service '{}' for compose project '{}' was created but is not running (container {}).",
+            up_result.service, up_result.project_name, container_id
+        )
+    } else {
+        format!(
+            "Dev container service '{}' for compose project '{}' was not found after compose up.",
+            up_result.service, up_result.project_name
+        )
+    };
+
+    append_diagnostic_section(&mut message, "Compose up stdout", &up_result.stdout);
+    append_diagnostic_section(&mut message, "Compose up stderr", &up_result.stderr);
+
+    match compose::service_logs(resolved, args) {
+        Ok(logs) => {
+            append_diagnostic_section(&mut message, "Compose logs stdout", &logs.stdout);
+            append_diagnostic_section(&mut message, "Compose logs stderr", &logs.stderr);
+            if logs.status_code != 0
+                && logs.stdout.trim().is_empty()
+                && logs.stderr.trim().is_empty()
+            {
+                message.push_str(&format!(
+                    "\nCompose logs exited with status {} without output.",
+                    logs.status_code
+                ));
+            }
+        }
+        Err(error) => {
+            append_diagnostic_section(&mut message, "Compose logs unavailable", &error);
+        }
+    }
+
+    Ok(message)
+}
+
+fn append_diagnostic_section(message: &mut String, title: &str, body: &str) {
+    let body = body.trim();
+    if body.is_empty() {
+        return;
+    }
+    message.push_str("\n\n");
+    message.push_str(title);
+    message.push_str(":\n");
+    message.push_str(&truncate_diagnostic(body));
+}
+
+fn truncate_diagnostic(body: &str) -> String {
+    const MAX_DIAGNOSTIC_CHARS: usize = 16 * 1024;
+    if body.len() <= MAX_DIAGNOSTIC_CHARS {
+        return body.to_string();
+    }
+
+    let mut end = MAX_DIAGNOSTIC_CHARS;
+    while !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n... truncated compose diagnostic output after {} bytes ...",
+        &body[..end],
+        MAX_DIAGNOSTIC_CHARS
+    )
 }
 
 fn create_engine_container(
@@ -590,14 +664,15 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        default_label_match_for_platform, ensure_up_container, find_normalized_default_label_match,
-        find_target_container_for_platform, inspect_matched_default_id_labels,
-        legacy_default_id_labels, list_container_ids_by_label_name,
-        matched_default_id_labels_for_platform, normalized_default_label_match,
-        parse_container_ids, probe_up_container_id_labels, ps_engine_args,
-        resolve_target_container_match, target_container_labels, DefaultLabelMatch,
+        compose_startup_failure_error, default_label_match_for_platform, ensure_up_container,
+        find_normalized_default_label_match, find_target_container_for_platform,
+        inspect_matched_default_id_labels, legacy_default_id_labels,
+        list_container_ids_by_label_name, matched_default_id_labels_for_platform,
+        normalized_default_label_match, parse_container_ids, probe_up_container_id_labels,
+        ps_engine_args, resolve_target_container_match, target_container_labels, DefaultLabelMatch,
     };
     use crate::commands::common;
+    use crate::runtime::compose::ComposeUpResult;
     use crate::runtime::context::ResolvedConfig;
     use crate::runtime::lifecycle::LifecycleMode;
     use crate::test_support::{unique_temp_dir, write_executable_script};
@@ -1946,6 +2021,412 @@ esac
         assert_eq!(up.container_id, "created-compose-container");
         assert_eq!(up.lifecycle_mode, LifecycleMode::UpCreated);
         assert_eq!(up.matched_id_labels, None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ensure_compose_container_reports_logs_when_created_service_is_not_running() {
+        let root = unique_temp_dir("devcontainer-discovery-compose-missing-after-up-test");
+        let config_root = root.join(".devcontainer");
+        fs::create_dir_all(&config_root).expect("config dir");
+        fs::write(
+            config_root.join("docker-compose.yml"),
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .expect("compose file");
+        let fake_engine = root.join("docker");
+        let up_marker = root.join("compose-up-called");
+        write_executable_script(
+            &fake_engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+case "$1" in
+  compose)
+    shift
+    case " $* " in
+      *" version "*)
+        echo "2.24.0"
+        ;;
+      *" up "*)
+        echo "compose up stdout: service dependencies started"
+        echo "compose up stderr: app failed during startup" >&2
+        : > "{up_marker}"
+        ;;
+      *" logs "*)
+        echo "app log: migration failed"
+        echo "app stderr: stack trace" >&2
+        ;;
+      *)
+        echo "unexpected compose command $*" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  ps)
+    if [ -f "{up_marker}" ]; then
+      case " $* " in
+        *" -a "*)
+          printf 'stopped-compose-container\n'
+          ;;
+        *)
+          exit 0
+          ;;
+      esac
+    fi
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+                up_marker = up_marker.display()
+            ),
+        );
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "dockerComposeFile": "docker-compose.yml",
+                "service": "app"
+            }),
+        );
+
+        let error = ensure_up_container(
+            &resolved,
+            &engine_args(&fake_engine),
+            "alpine:3.20",
+            "/workspace",
+        )
+        .err()
+        .expect("stopped service should report compose diagnostics");
+
+        assert!(
+            error.contains("Dev container service 'app' for compose project '"),
+            "{error}"
+        );
+        assert!(
+            error.contains(
+                "' was created but is not running (container stopped-compose-container)."
+            ),
+            "{error}"
+        );
+        assert!(
+            error.contains("Compose up stdout:\ncompose up stdout: service dependencies started"),
+            "{error}"
+        );
+        assert!(
+            error.contains("Compose up stderr:\ncompose up stderr: app failed during startup"),
+            "{error}"
+        );
+        assert!(
+            error.contains("Compose logs stdout:\napp log: migration failed"),
+            "{error}"
+        );
+        assert!(
+            error.contains("Compose logs stderr:\napp stderr: stack trace"),
+            "{error}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compose_startup_failure_reports_missing_service_and_empty_failing_logs() {
+        let root = unique_temp_dir("devcontainer-discovery-compose-missing-service-test");
+        let config_root = root.join(".devcontainer");
+        fs::create_dir_all(&config_root).expect("config dir");
+        fs::write(
+            config_root.join("docker-compose.yml"),
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .expect("compose file");
+        let fake_engine = root.join("docker");
+        write_executable_script(
+            &fake_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  compose)
+    shift
+    case " $* " in
+      *" version "*)
+        echo "2.24.0"
+        ;;
+      *" logs "*)
+        exit 7
+        ;;
+      *)
+        echo "unexpected compose command $*" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  ps)
+    exit 0
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+        );
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "dockerComposeFile": "docker-compose.yml",
+                "service": "app"
+            }),
+        );
+        let up_result = ComposeUpResult {
+            project_name: "missing-project".to_string(),
+            service: "app".to_string(),
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+
+        let error =
+            compose_startup_failure_error(&resolved, &engine_args(&fake_engine), &up_result)
+                .expect("diagnostic message");
+
+        assert_eq!(
+            error,
+            "Dev container service 'app' for compose project 'missing-project' was not found after compose up.\nCompose logs exited with status 7 without output."
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compose_startup_failure_reports_unavailable_logs() {
+        let root = unique_temp_dir("devcontainer-discovery-compose-logs-unavailable-test");
+        let config_root = root.join(".devcontainer");
+        fs::create_dir_all(&config_root).expect("config dir");
+        fs::write(
+            config_root.join("docker-compose.yml"),
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .expect("compose file");
+        let fake_engine = root.join("docker");
+        let missing_compose = root.join("missing-compose");
+        write_executable_script(
+            &fake_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  ps)
+    exit 0
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+        );
+        let mut args = engine_args(&fake_engine);
+        args.extend([
+            "--docker-compose-path".to_string(),
+            missing_compose.display().to_string(),
+        ]);
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "dockerComposeFile": "docker-compose.yml",
+                "service": "app"
+            }),
+        );
+        let up_result = ComposeUpResult {
+            project_name: "missing-project".to_string(),
+            service: "app".to_string(),
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+
+        let error = compose_startup_failure_error(&resolved, &args, &up_result)
+            .expect("diagnostic message");
+
+        assert!(
+            error.contains(
+                "Dev container service 'app' for compose project 'missing-project' was not found after compose up."
+            ),
+            "{error}"
+        );
+        assert!(
+            error.contains("Compose logs unavailable:\nContainer compose executable not found:"),
+            "{error}"
+        );
+        assert!(
+            error.contains("Verify --docker-compose-path or install the requested compose CLI."),
+            "{error}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compose_startup_failure_truncates_large_diagnostics() {
+        let root = unique_temp_dir("devcontainer-discovery-compose-truncate-diagnostics-test");
+        let config_root = root.join(".devcontainer");
+        fs::create_dir_all(&config_root).expect("config dir");
+        fs::write(
+            config_root.join("docker-compose.yml"),
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .expect("compose file");
+        let fake_engine = root.join("docker");
+        write_executable_script(
+            &fake_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  compose)
+    shift
+    case " $* " in
+      *" version "*)
+        echo "2.24.0"
+        ;;
+      *" logs "*)
+        exit 0
+        ;;
+      *)
+        echo "unexpected compose command $*" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  ps)
+    printf 'stopped-compose-container\n'
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+        );
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "dockerComposeFile": "docker-compose.yml",
+                "service": "app"
+            }),
+        );
+        let mut stdout = "x".repeat(16 * 1024 - 1);
+        stdout.push('🙂');
+        stdout.push_str("tail");
+        let up_result = ComposeUpResult {
+            project_name: "truncate-project".to_string(),
+            service: "app".to_string(),
+            stdout,
+            stderr: String::new(),
+        };
+
+        let error =
+            compose_startup_failure_error(&resolved, &engine_args(&fake_engine), &up_result)
+                .expect("diagnostic message");
+
+        assert!(
+            error.contains("was created but is not running (container stopped-compose-container)."),
+            "{error}"
+        );
+        assert!(
+            error.contains("... truncated compose diagnostic output after 16384 bytes ..."),
+            "{error}"
+        );
+        assert!(!error.contains('🙂'), "{error}");
+        assert!(error.len() < 17 * 1024, "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ensure_compose_container_reports_logs_when_refreshed_service_is_not_running() {
+        let root = unique_temp_dir("devcontainer-discovery-compose-refresh-missing-test");
+        let config_root = root.join(".devcontainer");
+        fs::create_dir_all(&config_root).expect("config dir");
+        fs::write(
+            config_root.join("docker-compose.yml"),
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .expect("compose file");
+        let fake_engine = root.join("docker");
+        let up_marker = root.join("compose-up-called");
+        write_executable_script(
+            &fake_engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+case "$1" in
+  compose)
+    shift
+    case " $* " in
+      *" version "*)
+        echo "2.24.0"
+        ;;
+      *" up "*)
+        echo "refresh up output"
+        : > "{up_marker}"
+        ;;
+      *" logs "*)
+        echo "refresh logs output"
+        ;;
+      *)
+        echo "unexpected compose command $*" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  ps)
+    if [ -f "{up_marker}" ]; then
+      case " $* " in
+        *" -a "*)
+          printf 'existing-compose-container\n'
+          ;;
+        *)
+          exit 0
+          ;;
+      esac
+    else
+      printf 'existing-compose-container\n'
+    fi
+    ;;
+  *)
+    echo "unexpected command $1" >&2
+    exit 2
+    ;;
+esac
+"#,
+                up_marker = up_marker.display()
+            ),
+        );
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "dockerComposeFile": "docker-compose.yml",
+                "service": "app"
+            }),
+        );
+
+        let error = ensure_up_container(
+            &resolved,
+            &engine_args(&fake_engine),
+            "alpine:3.20",
+            "/workspace",
+        )
+        .err()
+        .expect("refresh failure should report compose diagnostics");
+
+        assert!(
+            error
+                .contains("was created but is not running (container existing-compose-container)."),
+            "{error}"
+        );
+        assert!(
+            error.contains("Compose up stdout:\nrefresh up output"),
+            "{error}"
+        );
+        assert!(
+            error.contains("Compose logs stdout:\nrefresh logs output"),
+            "{error}"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
