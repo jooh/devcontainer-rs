@@ -21,7 +21,7 @@ use super::{
 };
 use crate::runtime::context::ResolvedConfig;
 use crate::test_support::{
-    init_git_repo, process_env_guard, run_git, unique_temp_dir, write_executable_script,
+    init_git_repo, process_env_guard, unique_temp_dir, write_executable_script,
 };
 
 static PATH_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -673,7 +673,7 @@ fn compose_build_override_file_renders_cache_from_values_with_version() {
 }
 
 #[test]
-fn metadata_override_file_mounts_workspace_by_default() {
+fn metadata_override_file_does_not_mount_workspace_by_default() {
     let root = unique_temp_dir("devcontainer-compose-test");
     fs::create_dir_all(&root).expect("workspace root");
     let resolved = crate::runtime::context::ResolvedConfig {
@@ -682,23 +682,20 @@ fn metadata_override_file_mounts_workspace_by_default() {
         configuration: json!({
             "dockerComposeFile": "docker-compose.yml",
             "service": "app",
+            "workspaceFolder": "/workspace/dataplattformen"
         }),
     };
 
-    let override_file = compose_metadata_override_file(&resolved, &[], "/workspaces/project", None)
-        .expect("override result")
-        .expect("override path");
+    let override_file =
+        compose_metadata_override_file(&resolved, &[], "/workspace/dataplattformen", None)
+            .expect("override result")
+            .expect("override path");
     let override_content = fs::read_to_string(&override_file).expect("override content");
-    let expected_mount_target = format!(
-        "/workspaces/{}",
-        root.file_name().unwrap().to_string_lossy()
-    );
 
-    assert!(override_content.contains("volumes:"));
-    assert!(override_content.contains(&format!(
-        "- '{}:{}'",
-        root.display(),
-        expected_mount_target
+    assert!(!override_content.contains("\n    volumes:\n"));
+    assert!(!override_content.contains(&format!(
+        "- '{}:/workspace/dataplattformen'",
+        root.display()
     )));
 
     let _ = fs::remove_file(override_file);
@@ -859,7 +856,7 @@ fn metadata_override_file_clears_command_when_compose_entrypoint_would_consume_i
 }
 
 #[test]
-fn metadata_override_file_mounts_nested_workspaces_from_the_git_root() {
+fn metadata_override_file_does_not_mount_nested_workspaces_from_the_git_root() {
     with_host_tool_path(|| {
         let root = unique_temp_dir("devcontainer-compose-test");
         let repo_root = root.join("repo");
@@ -887,12 +884,9 @@ fn metadata_override_file_mounts_nested_workspaces_from_the_git_root() {
                 .expect("override path");
         let override_content = fs::read_to_string(&override_file).expect("override content");
 
-        assert!(override_content.contains(&format!(
-            "- '{}:/workspaces/repo'",
-            expected_repo_root.display()
-        )));
+        assert!(!override_content.contains("\n    volumes:\n"));
         assert!(!override_content.contains(&format!(
-            "{}:/workspaces/repo/packages/app",
+            "- '{}:/workspaces/repo'",
             expected_repo_root.display()
         )));
 
@@ -902,79 +896,34 @@ fn metadata_override_file_mounts_nested_workspaces_from_the_git_root() {
 }
 
 #[test]
-fn metadata_override_file_rebases_worktree_common_dir_for_configured_workspace_folder() {
-    with_host_tool_path(|| {
-        let root = unique_temp_dir("devcontainer-compose-test");
-        let repo_root = root.join("repo");
-        let worktree_root = root.join("worktrees").join("feature");
-        fs::create_dir_all(&repo_root).expect("repo root");
-        init_git_repo(&repo_root);
-        fs::write(repo_root.join("README.md"), "hello\n").expect("readme");
-        run_git(&repo_root, &["add", "README.md"]);
-        run_git(
-            &repo_root,
-            &[
-                "-c",
-                "user.name=Devcontainer Tests",
-                "-c",
-                "user.email=devcontainer-tests@example.com",
-                "commit",
-                "-m",
-                "init",
-                "--quiet",
-            ],
-        );
-        if let Some(parent) = worktree_root.parent() {
-            fs::create_dir_all(parent).expect("worktree parent");
-        }
-        run_git(
-            &repo_root,
-            &[
-                "worktree",
-                "add",
-                "--relative-paths",
-                worktree_root.to_string_lossy().as_ref(),
-                "-b",
-                "feature",
-            ],
-        );
-        let expected_worktree_root = worktree_root
-            .canonicalize()
-            .unwrap_or_else(|_| worktree_root.clone());
-        let expected_repo_git_dir = repo_root
-            .join(".git")
-            .canonicalize()
-            .unwrap_or_else(|_| repo_root.join(".git"));
-        let resolved = crate::runtime::context::ResolvedConfig {
-            workspace_folder: expected_worktree_root.clone(),
-            config_file: expected_worktree_root.join(".devcontainer.json"),
-            configuration: json!({
-                "dockerComposeFile": "docker-compose.yml",
-                "service": "app",
-                "workspaceFolder": "/workspace",
-            }),
-        };
+fn metadata_override_file_does_not_add_workspace_or_git_common_dir_mounts() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    let resolved = crate::runtime::context::ResolvedConfig {
+        workspace_folder: root.clone(),
+        config_file: root.join(".devcontainer.json"),
+        configuration: json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app",
+            "workspaceFolder": "/workspace",
+        }),
+    };
 
-        let override_file = compose_metadata_override_file(
-            &resolved,
-            &["--mount-git-worktree-common-dir".to_string()],
-            "/workspace",
-            None,
-        )
-        .expect("override result")
-        .expect("override path");
-        let override_content = fs::read_to_string(&override_file).expect("override content");
+    let override_file = compose_metadata_override_file(
+        &resolved,
+        &["--mount-git-worktree-common-dir".to_string()],
+        "/workspace",
+        None,
+    )
+    .expect("override result")
+    .expect("override path");
+    let override_content = fs::read_to_string(&override_file).expect("override content");
 
-        assert!(override_content.contains(&format!(
-            "- '{}:/workspace'",
-            expected_worktree_root.display()
-        )));
-        assert!(override_content.contains(&expected_repo_git_dir.display().to_string()));
-        assert!(override_content.contains("/repo/.git"));
+    assert!(!override_content.contains("\n    volumes:\n"));
+    assert!(!override_content.contains(&format!("- '{}:/workspace'", root.display())));
 
-        let _ = fs::remove_file(override_file);
-        let _ = fs::remove_dir_all(root);
-    });
+    let _ = fs::remove_file(override_file);
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -1131,7 +1080,7 @@ fn metadata_override_file_declares_named_volumes_top_level() {
 }
 
 #[test]
-fn metadata_override_file_preserves_workspace_mount_options() {
+fn metadata_override_file_ignores_compose_workspace_mount() {
     let root = unique_temp_dir("devcontainer-compose-test");
     fs::create_dir_all(&root).expect("workspace root");
     let resolved = crate::runtime::context::ResolvedConfig {
@@ -1144,16 +1093,14 @@ fn metadata_override_file_preserves_workspace_mount_options() {
         }),
     };
 
-    let override_file = compose_metadata_override_file(&resolved, &[], "/workspaces/project", None)
+    let override_file = compose_metadata_override_file(&resolved, &[], "/", None)
         .expect("override result")
         .expect("override path");
     let override_content = fs::read_to_string(&override_file).expect("override content");
 
-    assert!(override_content.contains("type: 'bind'"));
-    assert!(override_content.contains("source: '/tmp/workspace'"));
-    assert!(override_content.contains("target: '/workspaces/project'"));
-    assert!(override_content.contains("consistency: 'delegated'"));
-    assert!(!override_content.contains("/tmp/workspace:/workspaces/project"));
+    assert!(!override_content.contains("\n    volumes:\n"));
+    assert!(!override_content.contains("/tmp/workspace"));
+    assert!(!override_content.contains("/workspaces/project"));
 
     let _ = fs::remove_file(override_file);
     let _ = fs::remove_dir_all(root);

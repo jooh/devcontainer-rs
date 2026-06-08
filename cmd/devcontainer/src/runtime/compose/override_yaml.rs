@@ -2,7 +2,7 @@
 
 use serde_json::{Map, Value};
 
-use super::override_mounts::{ComposeNamedVolume, ComposeVolumeEntry};
+use super::override_mounts::{ComposeMountDefinition, ComposeNamedVolume};
 
 pub(super) fn escape_compose_label(label: &str) -> String {
     label.replace('\'', "''").replace('$', "$$")
@@ -12,13 +12,8 @@ pub(super) fn escape_compose_scalar(value: &str) -> String {
     value.replace('\'', "''").replace('$', "$$")
 }
 
-pub(super) fn render_compose_volume_entry(entry: &ComposeVolumeEntry) -> String {
-    match entry {
-        ComposeVolumeEntry::Short(volume) => {
-            format!("      - '{}'\n", escape_compose_scalar(volume))
-        }
-        ComposeVolumeEntry::Long(definition) => render_yaml_mapping_list_entry(&definition.fields),
-    }
+pub(super) fn render_compose_volume_entry(definition: &ComposeMountDefinition) -> String {
+    render_yaml_mapping_list_entry(&definition.fields)
 }
 
 pub(super) fn render_compose_string_sequence(values: &[String]) -> Result<String, String> {
@@ -116,9 +111,7 @@ fn render_yaml_sequence_item(value: &Value, indent: usize) -> String {
 mod tests {
     use serde_json::{json, Map, Value};
 
-    use super::super::override_mounts::{
-        ComposeMountDefinition, ComposeNamedVolume, ComposeVolumeEntry,
-    };
+    use super::super::override_mounts::{ComposeMountDefinition, ComposeNamedVolume};
     use super::{
         escape_compose_label, escape_compose_scalar, render_compose_string_sequence,
         render_compose_volume_entry, render_named_volume_entry, render_yaml_key_value,
@@ -140,14 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn render_volume_entries_support_short_long_and_named_shapes() {
-        assert_eq!(
-            render_compose_volume_entry(&ComposeVolumeEntry::Short(
-                "/tmp/src:/tmp/dst:$cached".to_string()
-            )),
-            "      - '/tmp/src:/tmp/dst:$$cached'\n"
-        );
-
+    fn render_volume_entries_support_long_and_named_shapes() {
         let mut fields = Map::new();
         fields.insert("type".to_string(), Value::String("volume".to_string()));
         fields.insert("source".to_string(), Value::String("cache".to_string()));
@@ -166,10 +152,7 @@ mod tests {
             }),
         );
 
-        let rendered =
-            render_compose_volume_entry(&ComposeVolumeEntry::Long(ComposeMountDefinition {
-                fields,
-            }));
+        let rendered = render_compose_volume_entry(&ComposeMountDefinition { fields });
 
         assert!(rendered.contains("- optional: null"), "{rendered}");
         assert!(rendered.contains("type: 'volume'"), "{rendered}");
@@ -195,9 +178,7 @@ mod tests {
             "  scratch:\n"
         );
         assert_eq!(
-            render_compose_volume_entry(&ComposeVolumeEntry::Long(ComposeMountDefinition {
-                fields: Map::new(),
-            })),
+            render_compose_volume_entry(&ComposeMountDefinition { fields: Map::new() }),
             ""
         );
     }

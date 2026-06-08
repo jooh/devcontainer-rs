@@ -2,16 +2,9 @@
 
 use serde_json::{Map, Number, Value};
 
-use crate::runtime::context::{
-    additional_mounts_for_workspace_target, workspace_mount_for_args, ResolvedConfig,
-};
+use crate::runtime::context::ResolvedConfig;
 use crate::runtime::mounts::cli_mount_values;
 use crate::runtime::mounts::split_mount_options;
-
-pub(super) enum ComposeVolumeEntry {
-    Short(String),
-    Long(ComposeMountDefinition),
-}
 
 pub(super) struct ComposeNamedVolume {
     pub(super) name: String,
@@ -22,37 +15,11 @@ pub(super) struct ComposeMountDefinition {
     pub(super) fields: Map<String, Value>,
 }
 
-pub(super) fn compose_workspace_volume(
-    resolved: &ResolvedConfig,
-    args: &[String],
-    remote_workspace_folder: &str,
-) -> Option<ComposeVolumeEntry> {
-    let mount = workspace_mount_for_args(resolved, remote_workspace_folder, args);
-    let definition = compose_mount_definition_from_str(&mount)?;
-    if definition.mount_type().unwrap_or("bind") != "bind" {
-        return None;
-    }
-    definition
-        .short_syntax()
-        .map(ComposeVolumeEntry::Short)
-        .or(Some(ComposeVolumeEntry::Long(definition)))
-}
-
 pub(super) fn compose_additional_volumes(
     resolved: &ResolvedConfig,
     args: &[String],
-) -> Result<Vec<ComposeVolumeEntry>, String> {
+) -> Result<Vec<ComposeMountDefinition>, String> {
     let mut volumes = Vec::new();
-    if resolved.configuration.get("workspaceMount").is_none() {
-        let remote_workspace_folder =
-            crate::runtime::context::remote_workspace_folder_for_args(resolved, args);
-        volumes.extend(
-            additional_mounts_for_workspace_target(resolved, &remote_workspace_folder, args)
-                .iter()
-                .filter_map(|mount| compose_mount_definition_from_str(mount))
-                .map(ComposeVolumeEntry::Long),
-        );
-    }
     volumes.extend(
         resolved
             .configuration
@@ -69,18 +36,14 @@ pub(super) fn compose_additional_volumes(
     volumes.extend(
         cli_mount_values(args)?
             .iter()
-            .filter_map(|mount| compose_mount_definition_from_str(mount))
-            .map(ComposeVolumeEntry::Long),
+            .filter_map(|mount| compose_mount_definition_from_str(mount)),
     );
     Ok(volumes)
 }
 
-pub(super) fn compose_named_volumes(volumes: &[ComposeVolumeEntry]) -> Vec<ComposeNamedVolume> {
+pub(super) fn compose_named_volumes(volumes: &[ComposeMountDefinition]) -> Vec<ComposeNamedVolume> {
     let mut named_volumes: Vec<ComposeNamedVolume> = Vec::new();
-    for volume in volumes {
-        let ComposeVolumeEntry::Long(definition) = volume else {
-            continue;
-        };
+    for definition in volumes {
         if definition.mount_type().unwrap_or("bind") != "volume" {
             continue;
         }
@@ -114,11 +77,9 @@ pub(super) fn compose_named_volumes(volumes: &[ComposeVolumeEntry]) -> Vec<Compo
     named_volumes
 }
 
-fn compose_mount_definition(value: &Value) -> Option<ComposeVolumeEntry> {
+fn compose_mount_definition(value: &Value) -> Option<ComposeMountDefinition> {
     match value {
-        Value::String(text) => {
-            compose_mount_definition_from_str(text).map(ComposeVolumeEntry::Long)
-        }
+        Value::String(text) => compose_mount_definition_from_str(text),
         Value::Object(entries) => {
             let mut fields = Map::new();
             fields.insert(
@@ -177,7 +138,7 @@ fn compose_mount_definition(value: &Value) -> Option<ComposeVolumeEntry> {
                 }
                 merge_mount_value(&mut fields, key, value.clone());
             }
-            Some(ComposeVolumeEntry::Long(ComposeMountDefinition { fields }))
+            Some(ComposeMountDefinition { fields })
         }
         _ => None,
     }
@@ -239,31 +200,6 @@ fn compose_mount_definition_from_str(mount: &str) -> Option<ComposeMountDefiniti
 impl ComposeMountDefinition {
     pub(super) fn mount_type(&self) -> Option<&str> {
         self.fields.get("type").and_then(Value::as_str)
-    }
-
-    pub(super) fn short_syntax(&self) -> Option<String> {
-        if self.mount_type().unwrap_or("bind") != "bind" {
-            return None;
-        }
-        if self
-            .fields
-            .keys()
-            .any(|key| !matches!(key.as_str(), "type" | "source" | "target" | "read_only"))
-        {
-            return None;
-        }
-        let source = self.fields.get("source").and_then(Value::as_str)?;
-        let target = self.fields.get("target").and_then(Value::as_str)?;
-        let mut volume = format!("{source}:{target}");
-        if self
-            .fields
-            .get("read_only")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            volume.push_str(":ro");
-        }
-        Some(volume)
     }
 }
 
@@ -356,19 +292,11 @@ mod tests {
     use super::{
         compose_mount_definition, compose_mount_definition_from_str, compose_named_volumes,
         insert_nested_mount_value, merge_mount_scalar_or_object, parse_mount_option_scalar,
-        ComposeMountDefinition, ComposeVolumeEntry,
     };
-
-    fn long_definition(entry: Option<ComposeVolumeEntry>) -> Option<Map<String, Value>> {
-        match entry? {
-            ComposeVolumeEntry::Long(definition) => Some(definition.fields),
-            ComposeVolumeEntry::Short(_) => None,
-        }
-    }
 
     #[test]
     fn compose_mount_definition_accepts_object_aliases_and_read_only() {
-        let fields = long_definition(compose_mount_definition(&json!({
+        let fields = compose_mount_definition(&json!({
             "type": "volume",
             "src": "cache",
             "dst": "/cache",
@@ -380,8 +308,9 @@ mod tests {
                 }
             },
             "consistency": "cached"
-        })))
-        .expect("expected long compose mount definition");
+        }))
+        .expect("expected compose mount definition")
+        .fields;
 
         assert_eq!(fields.get("type"), Some(&json!("volume")));
         assert_eq!(fields.get("source"), Some(&json!("cache")));
@@ -404,20 +333,13 @@ mod tests {
         }))
         .is_none());
 
-        let definition = long_definition(compose_mount_definition(&json!({
+        let definition = compose_mount_definition(&json!({
             "type": "volume",
             "target": "/cache"
-        })))
-        .expect("expected long compose mount definition");
-        assert_eq!(
-            ComposeMountDefinition { fields: definition }.short_syntax(),
-            None
-        );
-        assert!(long_definition(None).is_none());
-        assert!(long_definition(Some(ComposeVolumeEntry::Short(
-            "/host:/workspace".to_string()
-        )))
-        .is_none());
+        }))
+        .expect("expected compose mount definition")
+        .fields;
+        assert_eq!(definition.get("source"), None);
     }
 
     #[test]
@@ -446,12 +368,6 @@ mod tests {
             Some(u64::MAX)
         );
         assert_eq!(definition.fields.get("ratio"), Some(&json!(1.5)));
-        assert_eq!(definition.short_syntax(), None);
-
-        let readonly = compose_mount_definition_from_str("source=/host,target=/work,readonly")
-            .expect("readonly bind mount should parse");
-        assert_eq!(readonly.short_syntax(), Some("/host:/work:ro".to_string()));
-
         let with_false_values = compose_mount_definition_from_str(
             "type=volume,src=cache,destination=/cache,external=false,enabled=false",
         )
@@ -461,21 +377,6 @@ mod tests {
             Some(&json!({ "external": false }))
         );
         assert_eq!(with_false_values.fields.get("enabled"), Some(&json!(false)));
-
-        let mut no_source = Map::new();
-        no_source.insert("type".to_string(), json!("bind"));
-        no_source.insert("target".to_string(), json!("/work"));
-        assert_eq!(
-            ComposeMountDefinition { fields: no_source }.short_syntax(),
-            None
-        );
-        let mut no_target = Map::new();
-        no_target.insert("type".to_string(), json!("bind"));
-        no_target.insert("source".to_string(), json!("/host"));
-        assert_eq!(
-            ComposeMountDefinition { fields: no_target }.short_syntax(),
-            None
-        );
     }
 
     #[test]
@@ -491,13 +392,7 @@ mod tests {
         let bind = compose_mount_definition_from_str("source=/host,target=/work")
             .expect("bind mount should parse");
 
-        let named = compose_named_volumes(&[
-            ComposeVolumeEntry::Short("/host:/work".to_string()),
-            ComposeVolumeEntry::Long(local),
-            ComposeVolumeEntry::Long(external),
-            ComposeVolumeEntry::Long(anonymous),
-            ComposeVolumeEntry::Long(bind),
-        ]);
+        let named = compose_named_volumes(&[local, external, anonymous, bind]);
 
         assert_eq!(named.len(), 1);
         assert_eq!(named[0].name, "cache");
