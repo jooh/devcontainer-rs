@@ -670,6 +670,53 @@ mod tests {
     }
 
     #[test]
+    fn compose_remote_workspace_folder_prefers_configured_workspace_folder() {
+        let resolved = ResolvedConfig {
+            workspace_folder: std::path::PathBuf::from("/tmp/example"),
+            config_file: std::path::PathBuf::from("/tmp/example/.devcontainer/devcontainer.json"),
+            configuration: json!({
+                "dockerComposeFile": "docker-compose.yml",
+                "service": "app",
+                "workspaceFolder": "/configured"
+            }),
+        };
+
+        assert_eq!(
+            remote_workspace_folder_for_args(&resolved, &[]),
+            "/configured"
+        );
+    }
+
+    #[test]
+    fn compose_remote_workspace_folder_defaults_to_root() {
+        let resolved = ResolvedConfig {
+            workspace_folder: std::path::PathBuf::from("/tmp/example"),
+            config_file: std::path::PathBuf::from("/tmp/example/.devcontainer/devcontainer.json"),
+            configuration: json!({
+                "dockerComposeFile": "docker-compose.yml",
+                "service": "app"
+            }),
+        };
+
+        assert_eq!(remote_workspace_folder_for_args(&resolved, &[]), "/");
+    }
+
+    #[test]
+    fn compose_remote_workspace_folder_ignores_workspace_mount() {
+        let resolved = ResolvedConfig {
+            workspace_folder: std::path::PathBuf::from("/tmp/example"),
+            config_file: std::path::PathBuf::from("/tmp/example/.devcontainer/devcontainer.json"),
+            configuration: json!({
+                "dockerComposeFile": "docker-compose.yml",
+                "service": "app",
+                "workspaceMount": "type=bind,source=/tmp/example,target=/mounted"
+            }),
+        };
+
+        assert_eq!(remote_workspace_folder_for_args(&resolved, &[]), "/");
+    }
+
+    #[test]
     fn remote_workspace_folder_prefers_configured_workspace_folder() {
         let resolved = ResolvedConfig {
             workspace_folder: std::path::PathBuf::from("/tmp/example"),

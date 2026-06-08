@@ -145,6 +145,8 @@ services:
   app:
     image: alpine:3.20
     command: sh -c "while sleep 3600; do :; done"
+    volumes:
+      - ..:/workspace
 EOF
 cat >"$compose_workspace/.devcontainer/devcontainer.json" <<'EOF'
 {

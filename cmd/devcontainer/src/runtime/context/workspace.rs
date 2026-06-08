@@ -46,11 +46,13 @@ pub(crate) fn remote_workspace_folder_for_args(
     resolved: &ResolvedConfig,
     args: &[String],
 ) -> String {
-    if compose::uses_compose_config(&resolved.configuration)
-        && resolved.configuration.get("workspaceFolder").is_none()
-        && resolved.configuration.get("workspaceMount").is_none()
-    {
-        return "/".to_string();
+    if compose::uses_compose_config(&resolved.configuration) {
+        return resolved
+            .configuration
+            .get("workspaceFolder")
+            .and_then(Value::as_str)
+            .unwrap_or("/")
+            .to_string();
     }
 
     if let Some(workspace_folder) = resolved

@@ -17,10 +17,7 @@ use super::super::metadata::serialized_container_metadata;
 use super::super::paths::unique_temp_path;
 use super::service::{self, ServiceDefinition};
 use super::ComposeSpec;
-use override_mounts::{
-    compose_additional_volumes, compose_environment, compose_named_volumes,
-    compose_workspace_volume,
-};
+use override_mounts::{compose_additional_volumes, compose_environment, compose_named_volumes};
 use override_yaml::{
     escape_compose_label, escape_compose_scalar, render_compose_string_sequence,
     render_compose_volume_entry, render_named_volume_entry,
@@ -96,11 +93,7 @@ pub(super) fn compose_metadata_override_file(
     if let Some(command) = compose_wrapper_command(resolved, service_definition.as_ref())? {
         content.push_str(&format!("    command: {command}\n"));
     }
-    let mut volumes = Vec::new();
-    if let Some(volume) = compose_workspace_volume(resolved, args, remote_workspace_folder) {
-        volumes.push(volume);
-    }
-    volumes.extend(compose_additional_volumes(resolved, args)?);
+    let volumes = compose_additional_volumes(resolved, args)?;
     let named_volumes = compose_named_volumes(&volumes);
     if !volumes.is_empty() {
         content.push_str("\n    volumes:\n");
