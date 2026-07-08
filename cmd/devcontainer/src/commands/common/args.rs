@@ -206,18 +206,18 @@ pub(crate) fn validate_runtime_env_defaults(args: &[String]) -> Result<(), Strin
 fn nonblank_env_value(env_var: &str) -> Option<String> {
     #[cfg(test)]
     {
-        return TEST_ENV_DEFAULTS.with(|defaults| {
+        TEST_ENV_DEFAULTS.with(|defaults| {
             defaults
                 .borrow()
                 .get(env_var)
                 .and_then(|value| nonblank_string(value))
-        });
+        })
     }
     #[cfg(not(test))]
     {
-        return env::var(env_var)
+        env::var(env_var)
             .ok()
-            .and_then(|value| nonblank_string(&value));
+            .and_then(|value| nonblank_string(&value))
     }
 }
 
