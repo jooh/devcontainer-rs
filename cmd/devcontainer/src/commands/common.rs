@@ -6,6 +6,8 @@ mod fs;
 mod labels;
 mod manifest;
 
+#[cfg(not(target_os = "linux"))]
+pub(crate) use args::DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY;
 pub(crate) use args::{
     env_default_bool_option, env_default_option_value, has_flag, parse_json_string_array_option,
     parse_option_value, parse_option_values, remote_env_overrides, runtime_options,
@@ -13,7 +15,6 @@ pub(crate) use args::{
     validate_option_values, validate_paired_options, validate_runtime_env_defaults,
     DEVCONTAINER_DOCKER_COMPOSE_PATH, DEVCONTAINER_DOCKER_PATH,
     DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR, DEVCONTAINER_MOUNT_WORKSPACE_GIT_ROOT,
-    DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY,
 };
 #[cfg(test)]
 pub(crate) use args::{

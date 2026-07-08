@@ -416,9 +416,11 @@ mod tests {
         git_worktree_common_dir_mount_for_workspace_target, join_container_path, normalize_path,
         remote_user, remote_workspace_folder_for_args, workspace_mount_for_args, ResolvedConfig,
     };
+    #[cfg(not(target_os = "linux"))]
+    use crate::commands::common::DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY;
     use crate::commands::common::{
         test_env_defaults, DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR,
-        DEVCONTAINER_MOUNT_WORKSPACE_GIT_ROOT, DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY,
+        DEVCONTAINER_MOUNT_WORKSPACE_GIT_ROOT,
     };
     use crate::test_support::{init_git_repo, unique_temp_dir};
 
