@@ -369,6 +369,51 @@ fn exec_accepts_custom_compose_binary_for_compose_workspaces() {
 }
 
 #[test]
+fn up_uses_env_backed_engine_and_compose_paths_for_compose_workspaces() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    let compose_wrapper = harness.root.join("podman-compose");
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    fs::write(
+        workspace.join(".devcontainer").join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"dockerComposeFile\": \"docker-compose.yml\",\n  \"service\": \"app\",\n  \"workspaceFolder\": \"/workspace\"\n}\n",
+    );
+    write_executable(
+        &compose_wrapper,
+        format!(
+            "#!/bin/sh\nexec \"{}\" compose \"$@\"\n",
+            harness.fake_podman.display()
+        ),
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let compose_path = compose_wrapper.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "up",
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+        ],
+        &[
+            ("DEVCONTAINER_DOCKER_PATH", fake_podman.as_str()),
+            ("DEVCONTAINER_DOCKER_COMPOSE_PATH", compose_path.as_str()),
+        ],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let payload = harness.parse_stdout_json(&output);
+    assert_eq!(payload["containerId"], "fake-compose-container-id");
+    let invocations = harness.read_invocations();
+    assert!(invocations.contains("compose --project-name workspace_devcontainer -f "));
+    assert!(invocations.contains(" up -d"));
+}
+
+#[test]
 fn exec_with_standalone_podman_compose_uses_engine_label_lookup() {
     let harness = RuntimeHarness::new();
     let workspace = harness.workspace();

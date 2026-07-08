@@ -44,6 +44,7 @@ fn effective_up_resolved_config(
 }
 
 pub fn run_build(args: &[String]) -> Result<Value, String> {
+    common::validate_runtime_env_defaults(args)?;
     configuration::validate_lockfile_options(args)?;
     configuration::warn_deprecated_lockfile_flags(args);
     let resolved = context::load_required_config(args)?;
@@ -76,6 +77,7 @@ pub fn run_build(args: &[String]) -> Result<Value, String> {
 }
 
 pub fn run_up(args: &[String]) -> Result<Value, String> {
+    common::validate_runtime_env_defaults(args)?;
     configuration::validate_lockfile_options(args)?;
     configuration::warn_deprecated_lockfile_flags(args);
     let _ = mounts::cli_mount_values(args)?;
@@ -138,6 +140,7 @@ pub fn run_up(args: &[String]) -> Result<Value, String> {
 }
 
 pub fn run_set_up(args: &[String]) -> Result<Value, String> {
+    common::validate_runtime_env_defaults(args)?;
     let context = context::resolve_existing_container_context(args)?;
     lifecycle::run_lifecycle_commands(
         &context.container_id,
@@ -158,6 +161,7 @@ pub fn run_set_up(args: &[String]) -> Result<Value, String> {
 }
 
 pub fn run_user_commands(args: &[String]) -> Result<Value, String> {
+    common::validate_runtime_env_defaults(args)?;
     let context = context::resolve_existing_container_context(args)?;
     lifecycle::run_lifecycle_commands(
         &context.container_id,
@@ -176,6 +180,7 @@ pub fn run_user_commands(args: &[String]) -> Result<Value, String> {
 }
 
 pub fn run_exec(args: &[String]) -> Result<i32, String> {
+    common::validate_runtime_env_defaults(args)?;
     let command_args = exec::exec_command_and_args(args)?;
     let context = context::resolve_existing_container_context(args)?;
     let engine_args = exec::exec_engine_args(

@@ -2256,7 +2256,9 @@ esac
             "{error}"
         );
         assert!(
-            error.contains("Verify --docker-compose-path or install the requested compose CLI."),
+            error.contains(
+                "Verify --docker-compose-path or DEVCONTAINER_DOCKER_COMPOSE_PATH, or install the requested compose CLI."
+            ),
             "{error}"
         );
         let _ = fs::remove_dir_all(root);

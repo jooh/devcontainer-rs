@@ -174,6 +174,7 @@ mod tests {
 
     use serde_json::json;
 
+    use crate::commands::common::{test_env_defaults, DEVCONTAINER_CONTAINER_DATA_FOLDER};
     use crate::process_runner::{ProcessLogLevel, ProcessRequest};
     use crate::test_support::{unique_temp_dir, write_executable_script};
 
@@ -599,6 +600,22 @@ mod tests {
         assert!(command.contains("'/home/dev/dot files'"));
         assert!(command.contains("install_path='./setup.sh'"));
         assert!(command.contains("Could not locate 'setup.sh'"));
+    }
+
+    #[test]
+    fn dotfiles_install_command_uses_env_container_data_folder_default() {
+        let _env = test_env_defaults(&[(
+            DEVCONTAINER_CONTAINER_DATA_FOLDER,
+            "/env/devcontainer-data/",
+        )]);
+
+        let command = dotfiles_install_command(&[
+            "--dotfiles-repository".to_string(),
+            "owner/repo".to_string(),
+        ])
+        .expect("dotfiles command");
+
+        assert!(command.contains("'/env/devcontainer-data/.dotfilesMarker'"));
     }
 
     #[test]

@@ -8,7 +8,7 @@ use crate::process_runner::{self, ProcessRequest, ProcessResult};
 
 pub(crate) fn engine_request(args: &[String], engine_args: Vec<String>) -> ProcessRequest {
     let mut request =
-        common::runtime_process_request(args, engine_program(args), engine_args, None);
+        common::runtime_process_request(args, effective_engine_program(args), engine_args, None);
     let request_args = request.args.clone();
     apply_buildkit_env(args, &request_args, &mut request);
     request
@@ -33,7 +33,7 @@ pub(crate) fn run_engine_streaming(
 }
 
 pub(crate) fn compose_request(args: &[String], compose_args: Vec<String>) -> ProcessRequest {
-    if let Some(compose_program) = common::parse_option_value(args, "--docker-compose-path") {
+    if let Some(compose_program) = requested_compose_program(args) {
         let mut request =
             common::runtime_process_request(args, compose_program, compose_args, None);
         let request_args = request.args.clone();
@@ -42,8 +42,12 @@ pub(crate) fn compose_request(args: &[String], compose_args: Vec<String>) -> Pro
     } else if default_compose_subcommand_available(args) {
         let mut args_with_subcommand = vec!["compose".to_string()];
         args_with_subcommand.extend(compose_args);
-        let mut request =
-            common::runtime_process_request(args, engine_program(args), args_with_subcommand, None);
+        let mut request = common::runtime_process_request(
+            args,
+            effective_engine_program(args),
+            args_with_subcommand,
+            None,
+        );
         let request_args = request.args.clone();
         apply_buildkit_env(args, &request_args, &mut request);
         request
@@ -73,14 +77,26 @@ pub(crate) fn stderr_or_stdout(result: &ProcessResult) -> String {
     }
 }
 
-fn engine_program(args: &[String]) -> String {
-    common::parse_option_value(args, "--docker-path").unwrap_or_else(|| "docker".to_string())
+pub(crate) fn requested_engine_program(args: &[String]) -> Option<String> {
+    common::env_default_option_value(args, "--docker-path", common::DEVCONTAINER_DOCKER_PATH)
+}
+
+pub(crate) fn effective_engine_program(args: &[String]) -> String {
+    requested_engine_program(args).unwrap_or_else(|| "docker".to_string())
+}
+
+pub(crate) fn requested_compose_program(args: &[String]) -> Option<String> {
+    common::env_default_option_value(
+        args,
+        "--docker-compose-path",
+        common::DEVCONTAINER_DOCKER_COMPOSE_PATH,
+    )
 }
 
 fn default_compose_subcommand_available(args: &[String]) -> bool {
     let request = common::runtime_process_request(
         args,
-        engine_program(args),
+        effective_engine_program(args),
         vec![
             "compose".to_string(),
             "version".to_string(),
@@ -99,7 +115,7 @@ fn normalize_process_error(args: &[String], request: &ProcessRequest, error: io:
     }
 
     let executable = request.program.as_str();
-    if common::parse_option_value(args, "--docker-compose-path")
+    if requested_compose_program(args)
         .as_deref()
         .is_some_and(|program| program == executable)
         || Path::new(executable)
@@ -108,22 +124,22 @@ fn normalize_process_error(args: &[String], request: &ProcessRequest, error: io:
             .is_some_and(|name| name.eq_ignore_ascii_case("docker-compose"))
     {
         return format!(
-            "Container compose executable not found: {executable}. Verify --docker-compose-path or install the requested compose CLI."
+            "Container compose executable not found: {executable}. Verify --docker-compose-path or DEVCONTAINER_DOCKER_COMPOSE_PATH, or install the requested compose CLI."
         );
     }
 
-    let requested_engine = common::parse_option_value(args, "--docker-path");
+    let requested_engine = requested_engine_program(args);
     if requested_engine.is_none()
         && Path::new(executable)
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.eq_ignore_ascii_case("docker"))
     {
-        return "Container engine executable not found: docker. Install Docker or rerun with --docker-path podman.".to_string();
+        return "Container engine executable not found: docker. Install Docker or rerun with --docker-path podman or set DEVCONTAINER_DOCKER_PATH=podman.".to_string();
     }
 
     format!(
-        "Container engine executable not found: {executable}. Verify --docker-path or install the requested container engine."
+        "Container engine executable not found: {executable}. Verify --docker-path or DEVCONTAINER_DOCKER_PATH, or install the requested container engine."
     )
 }
 
@@ -173,11 +189,15 @@ fn is_build_request(request_args: &[String]) -> bool {
 mod tests {
     use std::io;
 
+    use crate::commands::common::{
+        test_env_defaults, DEVCONTAINER_BUILDKIT, DEVCONTAINER_DOCKER_COMPOSE_PATH,
+        DEVCONTAINER_DOCKER_PATH,
+    };
     use crate::process_runner::{ProcessLogLevel, ProcessRequest, ProcessResult};
 
     use super::{
         compose_request, default_compose_subcommand_available, engine_request, is_build_request,
-        normalize_process_error, run_engine, run_engine_streaming, stderr_or_stdout,
+        normalize_process_error, run_compose, run_engine, run_engine_streaming, stderr_or_stdout,
     };
 
     #[test]
@@ -276,6 +296,91 @@ mod tests {
     }
 
     #[test]
+    fn engine_request_uses_env_engine_path_and_ignores_blank_env() {
+        let env = test_env_defaults(&[(DEVCONTAINER_DOCKER_PATH, "/env/bin/podman")]);
+        let request = engine_request(&[], vec!["ps".to_string()]);
+        assert_eq!(request.program, "/env/bin/podman");
+
+        drop(env);
+        let _env = test_env_defaults(&[(DEVCONTAINER_DOCKER_PATH, " \t ")]);
+        let request = engine_request(&[], vec!["ps".to_string()]);
+        assert_eq!(request.program, "docker");
+    }
+
+    #[test]
+    fn engine_request_prefers_cli_engine_path_over_env() {
+        let _env = test_env_defaults(&[(DEVCONTAINER_DOCKER_PATH, "/env/bin/podman")]);
+
+        let request = engine_request(
+            &["--docker-path".to_string(), "/cli/bin/docker".to_string()],
+            vec!["ps".to_string()],
+        );
+
+        assert_eq!(request.program, "/cli/bin/docker");
+    }
+
+    #[test]
+    fn compose_request_uses_env_compose_path_before_engine_probe() {
+        let _env = test_env_defaults(&[
+            (DEVCONTAINER_DOCKER_PATH, "/path/that/does/not/exist"),
+            (DEVCONTAINER_DOCKER_COMPOSE_PATH, "/env/bin/podman-compose"),
+        ]);
+
+        let request = compose_request(&[], vec!["ps".to_string()]);
+
+        assert_eq!(request.program, "/env/bin/podman-compose");
+        assert_eq!(request.args, vec!["ps".to_string()]);
+    }
+
+    #[test]
+    fn compose_request_prefers_cli_compose_path_over_env() {
+        let _env =
+            test_env_defaults(&[(DEVCONTAINER_DOCKER_COMPOSE_PATH, "/env/bin/podman-compose")]);
+
+        let request = compose_request(
+            &[
+                "--docker-compose-path".to_string(),
+                "/cli/bin/docker-compose".to_string(),
+            ],
+            vec!["ps".to_string()],
+        );
+
+        assert_eq!(request.program, "/cli/bin/docker-compose");
+    }
+
+    #[test]
+    fn engine_request_applies_buildkit_env_default_for_builds() {
+        let env = test_env_defaults(&[(DEVCONTAINER_BUILDKIT, "never")]);
+
+        let request = engine_request(&[], vec!["build".to_string(), "app".to_string()]);
+
+        assert_eq!(
+            request.env.get("DOCKER_BUILDKIT").map(String::as_str),
+            Some("0")
+        );
+
+        drop(env);
+        let _env = test_env_defaults(&[(DEVCONTAINER_BUILDKIT, " ")]);
+        let request = engine_request(&[], vec!["build".to_string(), "app".to_string()]);
+        assert_eq!(request.env.get("DOCKER_BUILDKIT"), None);
+    }
+
+    #[test]
+    fn engine_request_prefers_cli_buildkit_over_env() {
+        let _env = test_env_defaults(&[(DEVCONTAINER_BUILDKIT, "never")]);
+
+        let request = engine_request(
+            &["--buildkit".to_string(), "auto".to_string()],
+            vec!["build".to_string(), "app".to_string()],
+        );
+
+        assert_eq!(
+            request.env.get("DOCKER_BUILDKIT").map(String::as_str),
+            Some("1")
+        );
+    }
+
+    #[test]
     fn engine_request_applies_buildkit_never_for_builds() {
         let request = engine_request(
             &["--buildkit".to_string(), "never".to_string()],
@@ -329,7 +434,37 @@ mod tests {
 
         assert_eq!(
             error,
-            "Container engine executable not found: /path/that/does/not/exist. Verify --docker-path or install the requested container engine."
+            "Container engine executable not found: /path/that/does/not/exist. Verify --docker-path or DEVCONTAINER_DOCKER_PATH, or install the requested container engine."
+        );
+    }
+
+    #[test]
+    fn run_engine_reports_missing_env_requested_engine() {
+        let _env =
+            test_env_defaults(&[(DEVCONTAINER_DOCKER_PATH, "/path/that/does/not/exist-env")]);
+
+        let error = run_engine(&[], vec!["ps".to_string()])
+            .expect_err("missing env requested engine should fail");
+
+        assert_eq!(
+            error,
+            "Container engine executable not found: /path/that/does/not/exist-env. Verify --docker-path or DEVCONTAINER_DOCKER_PATH, or install the requested container engine."
+        );
+    }
+
+    #[test]
+    fn run_compose_reports_missing_env_requested_compose_binary() {
+        let _env = test_env_defaults(&[(
+            DEVCONTAINER_DOCKER_COMPOSE_PATH,
+            "/path/that/does/not/exist-compose-env",
+        )]);
+
+        let error = run_compose(&[], vec!["ps".to_string()])
+            .expect_err("missing env requested compose should fail");
+
+        assert_eq!(
+            error,
+            "Container compose executable not found: /path/that/does/not/exist-compose-env. Verify --docker-compose-path or DEVCONTAINER_DOCKER_COMPOSE_PATH, or install the requested compose CLI."
         );
     }
 
@@ -346,7 +481,7 @@ mod tests {
 
         assert_eq!(
             error,
-            "Container engine executable not found: /path/that/does/not/exist. Verify --docker-path or install the requested container engine."
+            "Container engine executable not found: /path/that/does/not/exist. Verify --docker-path or DEVCONTAINER_DOCKER_PATH, or install the requested container engine."
         );
     }
 
@@ -371,7 +506,7 @@ mod tests {
 
         assert_eq!(
             error,
-            "Container compose executable not found: /path/that/does/not/exist-compose. Verify --docker-compose-path or install the requested compose CLI."
+            "Container compose executable not found: /path/that/does/not/exist-compose. Verify --docker-compose-path or DEVCONTAINER_DOCKER_COMPOSE_PATH, or install the requested compose CLI."
         );
     }
 
@@ -412,7 +547,7 @@ mod tests {
 
         assert_eq!(
             error,
-            "Container engine executable not found: docker. Install Docker or rerun with --docker-path podman."
+            "Container engine executable not found: docker. Install Docker or rerun with --docker-path podman or set DEVCONTAINER_DOCKER_PATH=podman."
         );
     }
 }
