@@ -236,6 +236,7 @@ mod tests {
 
     use serde_json::json;
 
+    use crate::commands::common::{test_env_defaults, DEVCONTAINER_GPU_AVAILABILITY};
     use crate::runtime::context::ResolvedConfig;
     use crate::runtime::mounts::mount_value_to_engine_arg;
     use crate::test_support::{unique_temp_dir, write_executable_script};
@@ -651,6 +652,17 @@ esac
             &["--gpu-availability".to_string(), "none".to_string()],
         )
         .expect("explicit none"));
+        let env = test_env_defaults(&[(DEVCONTAINER_GPU_AVAILABILITY, "all")]);
+        assert!(should_add_gpu_capability(&gpu_config, &[]).expect("env all"));
+        assert!(!should_add_gpu_capability(
+            &gpu_config,
+            &["--gpu-availability".to_string(), "none".to_string()],
+        )
+        .expect("cli none overrides env all"));
+        drop(env);
+        let env = test_env_defaults(&[(DEVCONTAINER_GPU_AVAILABILITY, "none")]);
+        assert!(!should_add_gpu_capability(&gpu_config, &[]).expect("env none"));
+        drop(env);
 
         let root = unique_temp_dir("devcontainer-gpu-detection-test");
         fs::create_dir_all(&root).expect("root dir");

@@ -108,7 +108,7 @@ fn control_manifest(args: &[String]) -> Result<DevContainerControlManifest, Stri
 }
 
 fn control_manifest_path(args: &[String]) -> PathBuf {
-    let user_data_folder = match common::parse_option_value(args, "--user-data-folder") {
+    let user_data_folder = match common::runtime_options(args).user_data_folder {
         Some(path) => PathBuf::from(path),
         None => default_user_data_folder(),
     };
@@ -265,6 +265,7 @@ mod tests {
         feature_advisories_for_oci_features, feature_matches_prefix, feature_version_is_affected,
         parse_version, sanitize_control_manifest,
     };
+    use crate::commands::common::{test_env_defaults, DEVCONTAINER_USER_DATA_FOLDER};
     use crate::test_support::{unique_temp_dir, write_test_control_manifest};
 
     #[test]
@@ -412,6 +413,25 @@ mod tests {
 
         assert!(error.contains("problematic-feature:1"), "{error}");
         assert!(error.contains("https://containers.dev/"), "{error}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ensure_no_disallowed_features_uses_env_user_data_folder_default() {
+        let root = unique_temp_dir("devcontainer-control-manifest-test");
+        let user_data = root.join("user-data");
+        write_test_control_manifest(&user_data);
+        let user_data_path = user_data.display().to_string();
+        let _env = test_env_defaults(&[(DEVCONTAINER_USER_DATA_FOLDER, user_data_path.as_str())]);
+        let features = Map::from_iter([(
+            "ghcr.io/devcontainers/features/problematic-feature:1".to_string(),
+            Value::Object(Map::new()),
+        )]);
+
+        let error = ensure_no_disallowed_features(&[], &features)
+            .expect_err("env user-data control manifest");
+
+        assert!(error.contains("problematic-feature:1"), "{error}");
         let _ = std::fs::remove_dir_all(root);
     }
 

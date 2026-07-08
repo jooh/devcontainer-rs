@@ -66,6 +66,84 @@ fn up_starts_a_container_and_exec_runs_inside_it() {
 }
 
 #[test]
+fn up_succeeds_with_env_backed_runtime_defaults() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"alpine:3.20\",\n  \"workspaceFolder\": \"/workspace\"\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let user_data = harness.root.join("env-user-data");
+    let output = harness.run(
+        &[
+            "up",
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+        ],
+        &[
+            ("DEVCONTAINER_DOCKER_PATH", fake_podman.as_str()),
+            ("DEVCONTAINER_BUILDKIT", "never"),
+            (
+                "DEVCONTAINER_USER_DATA_FOLDER",
+                user_data.to_string_lossy().as_ref(),
+            ),
+            (
+                "DEVCONTAINER_CONTAINER_DATA_FOLDER",
+                "/tmp/env-container-data",
+            ),
+            ("DEVCONTAINER_GPU_AVAILABILITY", "none"),
+            ("DEVCONTAINER_UPDATE_REMOTE_USER_UID_DEFAULT", "never"),
+            ("DEVCONTAINER_MOUNT_WORKSPACE_GIT_ROOT", "false"),
+            ("DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR", "false"),
+            ("DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY", "delegated"),
+            ("FAKE_PODMAN_PS_DISABLE_DEFAULT", "1"),
+        ],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let payload = harness.parse_stdout_json(&output);
+    assert_eq!(payload["containerId"], "fake-container-id");
+    let invocations = harness.read_invocations();
+    assert!(invocations.contains("run "));
+}
+
+#[test]
+fn explicit_cli_runtime_flags_override_conflicting_env_defaults() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"image\": \"alpine:3.20\",\n  \"workspaceFolder\": \"/workspace\",\n  \"hostRequirements\": { \"gpu\": \"optional\" }\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--gpu-availability",
+            "none",
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+        ],
+        &[
+            ("DEVCONTAINER_DOCKER_PATH", "/path/that/does/not/exist"),
+            ("DEVCONTAINER_GPU_AVAILABILITY", "all"),
+            ("FAKE_PODMAN_PS_DISABLE_DEFAULT", "1"),
+        ],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let invocations = harness.read_invocations();
+    assert!(!invocations.contains("--gpus all"));
+}
+
+#[test]
 fn up_reports_missing_default_engine_with_actionable_guidance() {
     let harness = RuntimeHarness::new();
     let workspace = harness.workspace();

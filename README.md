@@ -27,6 +27,38 @@ devcontainer --version
 Homebrew resolves `jooh/devcontainer-rs` from the tap repository
 `jooh/homebrew-tap`.
 
+## Stable Runtime Environment Defaults
+
+`devcontainer-rs` supports convenience environment variables for stable local
+runtime defaults. These are repo-specific extensions: explicit CLI flags take
+precedence, and unset or blank environment variables preserve the current
+defaults.
+
+For Podman-based local use:
+
+```bash
+export DEVCONTAINER_DOCKER_PATH=podman
+export DEVCONTAINER_DOCKER_COMPOSE_PATH=podman-compose
+devcontainer up --workspace-folder .
+```
+
+Path values are executable paths, not shell command strings with arguments. Use
+`DEVCONTAINER_DOCKER_COMPOSE_PATH=podman-compose`, not
+`DEVCONTAINER_DOCKER_COMPOSE_PATH="podman compose"`.
+
+| CLI flag | Environment variable |
+| --- | --- |
+| `--docker-path` | `DEVCONTAINER_DOCKER_PATH` |
+| `--docker-compose-path` | `DEVCONTAINER_DOCKER_COMPOSE_PATH` |
+| `--buildkit` | `DEVCONTAINER_BUILDKIT` |
+| `--user-data-folder` | `DEVCONTAINER_USER_DATA_FOLDER` |
+| `--container-data-folder` | `DEVCONTAINER_CONTAINER_DATA_FOLDER` |
+| `--gpu-availability` | `DEVCONTAINER_GPU_AVAILABILITY` |
+| `--update-remote-user-uid-default` | `DEVCONTAINER_UPDATE_REMOTE_USER_UID_DEFAULT` |
+| `--mount-workspace-git-root` | `DEVCONTAINER_MOUNT_WORKSPACE_GIT_ROOT` |
+| `--mount-git-worktree-common-dir` | `DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR` |
+| `--workspace-mount-consistency` | `DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY` |
+
 ## Why
 
 The main point of all this is to distribute a fat binary that implements dev containers without bringing in the whole node stack. In enterprise contexts this can be helpful.

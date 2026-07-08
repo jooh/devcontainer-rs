@@ -7,6 +7,7 @@ use super::load::load_optional_config;
 use crate::commands::common;
 
 pub(super) fn build_read_configuration_payload(args: &[String]) -> Result<Value, String> {
+    common::validate_runtime_env_defaults(args)?;
     let include_merged = common::has_flag(args, "--include-merged-configuration");
     let include_features = common::has_flag(args, "--include-features-configuration");
     let loaded = load_optional_config(args)?;

@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
+use crate::commands::common::{
+    test_env_defaults, DEVCONTAINER_DOCKER_PATH, DEVCONTAINER_UPDATE_REMOTE_USER_UID_DEFAULT,
+};
 use crate::runtime::context::ResolvedConfig;
 
 use super::{
@@ -70,6 +73,19 @@ fn remote_user_uid_update_respects_never_default() {
             "--update-remote-user-uid-default".to_string(),
             "never".to_string(),
         ],
+        true,
+    ));
+}
+
+#[test]
+fn remote_user_uid_update_uses_env_default() {
+    let _env = test_env_defaults(&[(DEVCONTAINER_UPDATE_REMOTE_USER_UID_DEFAULT, "never")]);
+
+    assert!(!should_update_remote_user_uid(
+        &json!({
+            "remoteUser": "vscode"
+        }),
+        &[],
         true,
     ));
 }
@@ -661,6 +677,18 @@ fn uid_update_base_image_preserves_registry_hostnames() {
     );
     assert_eq!(
         uid_update_base_image(&fixture.args_with_podman_name(), "library/app:latest"),
+        "localhost/library/app:latest"
+    );
+}
+
+#[test]
+fn uid_update_base_image_detects_podman_from_env_engine_path() {
+    let fixture = FakeEngineFixture::new();
+    let podman_path = fixture.podman_engine_path.display().to_string();
+    let _env = test_env_defaults(&[(DEVCONTAINER_DOCKER_PATH, podman_path.as_str())]);
+
+    assert_eq!(
+        uid_update_base_image(&[], "library/app:latest"),
         "localhost/library/app:latest"
     );
 }

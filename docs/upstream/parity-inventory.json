@@ -116,7 +116,6 @@
 					"evidence": [
 						"cmd/devcontainer/src/commands/configuration/read.rs",
 						"cmd/devcontainer/src/commands/configuration/upgrade.rs",
-						"cmd/devcontainer/src/runtime/container/uid_update.rs",
 						"cmd/devcontainer/src/runtime/engine.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
@@ -363,7 +362,6 @@
 					"name": "user-data-folder",
 					"sourceReferenced": true,
 					"evidence": [
-						"cmd/devcontainer/src/commands/configuration/features/control.rs",
 						"cmd/devcontainer/src/commands/configuration/upgrade.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
@@ -455,7 +453,6 @@
 					"name": "docker-path",
 					"sourceReferenced": true,
 					"evidence": [
-						"cmd/devcontainer/src/runtime/container/uid_update.rs",
 						"cmd/devcontainer/src/runtime/engine.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
@@ -630,7 +627,6 @@
 					"evidence": [
 						"cmd/devcontainer/src/commands/configuration/read.rs",
 						"cmd/devcontainer/src/commands/configuration/upgrade.rs",
-						"cmd/devcontainer/src/runtime/container/uid_update.rs",
 						"cmd/devcontainer/src/runtime/engine.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
@@ -758,7 +754,6 @@
 					"name": "user-data-folder",
 					"sourceReferenced": true,
 					"evidence": [
-						"cmd/devcontainer/src/commands/configuration/features/control.rs",
 						"cmd/devcontainer/src/commands/configuration/upgrade.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
@@ -849,7 +844,6 @@
 					"name": "docker-path",
 					"sourceReferenced": true,
 					"evidence": [
-						"cmd/devcontainer/src/runtime/container/uid_update.rs",
 						"cmd/devcontainer/src/runtime/engine.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
@@ -1061,7 +1055,6 @@
 					"evidence": [
 						"cmd/devcontainer/src/commands/configuration/read.rs",
 						"cmd/devcontainer/src/commands/configuration/upgrade.rs",
-						"cmd/devcontainer/src/runtime/container/uid_update.rs",
 						"cmd/devcontainer/src/runtime/engine.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
@@ -1162,7 +1155,6 @@
 					"name": "user-data-folder",
 					"sourceReferenced": true,
 					"evidence": [
-						"cmd/devcontainer/src/commands/configuration/features/control.rs",
 						"cmd/devcontainer/src/commands/configuration/upgrade.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
@@ -1248,7 +1240,6 @@
 					"name": "user-data-folder",
 					"sourceReferenced": true,
 					"evidence": [
-						"cmd/devcontainer/src/commands/configuration/features/control.rs",
 						"cmd/devcontainer/src/commands/configuration/upgrade.rs"
 					]
 				},
@@ -1847,7 +1838,6 @@
 					"name": "docker-path",
 					"sourceReferenced": true,
 					"evidence": [
-						"cmd/devcontainer/src/runtime/container/uid_update.rs",
 						"cmd/devcontainer/src/runtime/engine.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]

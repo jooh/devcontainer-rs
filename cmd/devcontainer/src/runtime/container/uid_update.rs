@@ -373,13 +373,9 @@ fn uid_update_base_image(args: &[String], image_name: &str) -> String {
 }
 
 fn uses_podman_engine(args: &[String]) -> bool {
-    common::parse_option_value(args, "--docker-path")
-        .and_then(|value| {
-            Path::new(&value)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(str::to_string)
-        })
+    Path::new(&engine::effective_engine_program(args))
+        .file_name()
+        .and_then(|name| name.to_str())
         .is_some_and(|value| value.eq_ignore_ascii_case("podman"))
 }
 

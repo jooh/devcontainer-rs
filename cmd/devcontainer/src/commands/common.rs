@@ -6,11 +6,21 @@ mod fs;
 mod labels;
 mod manifest;
 
+#[cfg(not(target_os = "linux"))]
+pub(crate) use args::DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY;
 pub(crate) use args::{
-    has_flag, parse_bool_option, parse_json_string_array_option, parse_option_value,
-    parse_option_values, remote_env_overrides, runtime_options, runtime_process_request,
-    secrets_env, validate_choice_option, validate_number_option, validate_option_values,
-    validate_paired_options,
+    env_default_bool_option, env_default_option_value, has_flag, parse_json_string_array_option,
+    parse_option_value, parse_option_values, remote_env_overrides, runtime_options,
+    runtime_process_request, secrets_env, validate_choice_option, validate_number_option,
+    validate_option_values, validate_paired_options, validate_runtime_env_defaults,
+    DEVCONTAINER_DOCKER_COMPOSE_PATH, DEVCONTAINER_DOCKER_PATH,
+    DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR, DEVCONTAINER_MOUNT_WORKSPACE_GIT_ROOT,
+};
+#[cfg(test)]
+pub(crate) use args::{
+    test_env_defaults, DEVCONTAINER_BUILDKIT, DEVCONTAINER_CONTAINER_DATA_FOLDER,
+    DEVCONTAINER_GPU_AVAILABILITY, DEVCONTAINER_UPDATE_REMOTE_USER_UID_DEFAULT,
+    DEVCONTAINER_USER_DATA_FOLDER,
 };
 pub(crate) use config_resolution::{
     load_resolved_config, load_resolved_config_with_id_labels, resolve_override_config_path,

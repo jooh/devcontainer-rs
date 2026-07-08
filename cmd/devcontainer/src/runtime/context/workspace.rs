@@ -109,7 +109,12 @@ pub(crate) fn derived_workspace_mount(
     workspace_folder: &Path,
     args: &[String],
 ) -> Option<DerivedWorkspaceMount> {
-    let mount_git_root = common::parse_bool_option(args, "--mount-workspace-git-root", true);
+    let mount_git_root = env_bool_option_or_default(
+        args,
+        "--mount-workspace-git-root",
+        common::DEVCONTAINER_MOUNT_WORKSPACE_GIT_ROOT,
+        true,
+    );
     if !mount_git_root {
         let remote_workspace_folder = default_remote_workspace_folder(Some(workspace_folder));
         let container_mount_folder = remote_workspace_folder.clone();
@@ -131,7 +136,12 @@ pub(crate) fn derived_workspace_mount(
             .unwrap_or("workspace")
     );
     let mut additional_mounts = Vec::new();
-    if common::parse_bool_option(args, "--mount-git-worktree-common-dir", false) {
+    if env_bool_option_or_default(
+        args,
+        "--mount-git-worktree-common-dir",
+        common::DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR,
+        false,
+    ) {
         if let Some((updated_container_mount_folder, additional_mount)) =
             git_worktree_common_dir_mount(&host_mount_folder, args, &container_mount_folder)
         {
@@ -164,7 +174,12 @@ pub(crate) fn additional_mounts_for_workspace_target(
     }
 
     let mut additional_mounts = Vec::new();
-    if common::parse_bool_option(args, "--mount-git-worktree-common-dir", false) {
+    if env_bool_option_or_default(
+        args,
+        "--mount-git-worktree-common-dir",
+        common::DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR,
+        false,
+    ) {
         if let Some(additional_mount) = git_worktree_common_dir_mount_for_workspace_target(
             &derived.host_mount_folder,
             args,
@@ -351,9 +366,17 @@ fn append_workspace_mount_consistency(mount: &mut String, args: &[String]) {
         let _ = (mount, args);
     }
     #[cfg(not(target_os = "linux"))]
-    if let Some(consistency) = common::parse_option_value(args, "--workspace-mount-consistency") {
+    if let Some(consistency) = common::env_default_option_value(
+        args,
+        "--workspace-mount-consistency",
+        common::DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY,
+    ) {
         mount.push_str(&format!(",consistency={consistency}"));
     }
+}
+
+fn env_bool_option_or_default(args: &[String], option: &str, env_var: &str, default: bool) -> bool {
+    common::env_default_bool_option(args, option, env_var, default).unwrap_or(default)
 }
 
 fn find_git_root_folder(workspace_folder: &Path) -> Option<PathBuf> {
@@ -393,7 +416,13 @@ mod tests {
         git_worktree_common_dir_mount_for_workspace_target, join_container_path, normalize_path,
         remote_user, remote_workspace_folder_for_args, workspace_mount_for_args, ResolvedConfig,
     };
-    use crate::test_support::unique_temp_dir;
+    #[cfg(not(target_os = "linux"))]
+    use crate::commands::common::DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY;
+    use crate::commands::common::{
+        test_env_defaults, DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR,
+        DEVCONTAINER_MOUNT_WORKSPACE_GIT_ROOT,
+    };
+    use crate::test_support::{init_git_repo, unique_temp_dir};
 
     #[test]
     fn remote_user_prefers_remote_user_then_container_user_then_root() {
@@ -494,6 +523,42 @@ mod tests {
             workspace_mount_for_args(&resolved, "/ignored", &[]),
             "type=bind,source=/tmp/example,target=/workspace"
         );
+    }
+
+    #[test]
+    fn derived_workspace_mount_uses_env_git_root_default_and_cli_precedence() {
+        let root = unique_temp_dir("devcontainer-workspace-test");
+        let workspace = root.join("packages").join("app");
+        fs::create_dir_all(&workspace).expect("workspace dir");
+        init_git_repo(&root);
+        let canonical_root = fs::canonicalize(&root).expect("canonical root");
+
+        assert_eq!(
+            derived_workspace_mount(&workspace, &[])
+                .expect("default derived mount")
+                .host_mount_folder,
+            canonical_root
+        );
+
+        let env = test_env_defaults(&[(DEVCONTAINER_MOUNT_WORKSPACE_GIT_ROOT, "false")]);
+        assert_eq!(
+            derived_workspace_mount(&workspace, &[])
+                .expect("env derived mount")
+                .host_mount_folder,
+            workspace
+        );
+        assert_eq!(
+            derived_workspace_mount(
+                &workspace,
+                &["--mount-workspace-git-root".to_string(), "true".to_string()],
+            )
+            .expect("cli derived mount")
+            .host_mount_folder,
+            canonical_root
+        );
+        drop(env);
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -646,6 +711,79 @@ mod tests {
                 root.join("repo").join(".git").display()
             )]
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn additional_mounts_use_env_worktree_common_dir_default_and_cli_precedence() {
+        let root = unique_temp_dir("devcontainer-workspace-test");
+        let workspace = root.join("worktree");
+        fs::create_dir_all(&workspace).expect("workspace dir");
+        fs::write(
+            workspace.join(".git"),
+            "gitdir: ../repo/.git/worktrees/worktree\n",
+        )
+        .expect("git file");
+        let resolved = ResolvedConfig {
+            workspace_folder: workspace.clone(),
+            config_file: workspace.join(".devcontainer").join("devcontainer.json"),
+            configuration: json!({
+                "workspaceFolder": "/workspace"
+            }),
+        };
+
+        let env = test_env_defaults(&[(DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR, "true")]);
+        let additional_mounts =
+            additional_mounts_for_workspace_target(&resolved, "/workspace", &[]);
+        assert_eq!(
+            additional_mounts,
+            vec![format!(
+                "type=bind,source={},target=/repo/.git",
+                root.join("repo").join(".git").display()
+            )]
+        );
+
+        let additional_mounts = additional_mounts_for_workspace_target(
+            &resolved,
+            "/workspace",
+            &[
+                "--mount-git-worktree-common-dir".to_string(),
+                "false".to_string(),
+            ],
+        );
+        assert!(additional_mounts.is_empty());
+        drop(env);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn default_workspace_mount_uses_env_consistency_default_and_cli_precedence() {
+        let root = unique_temp_dir("devcontainer-workspace-test");
+        fs::create_dir_all(&root).expect("workspace dir");
+        let resolved = ResolvedConfig {
+            workspace_folder: root.clone(),
+            config_file: root.join(".devcontainer").join("devcontainer.json"),
+            configuration: json!({
+                "workspaceFolder": "/workspace"
+            }),
+        };
+        let env = test_env_defaults(&[(DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY, "delegated")]);
+
+        assert!(workspace_mount_for_args(&resolved, "/workspace", &[])
+            .ends_with(",consistency=delegated"));
+        assert!(workspace_mount_for_args(
+            &resolved,
+            "/workspace",
+            &[
+                "--workspace-mount-consistency".to_string(),
+                "consistent".to_string(),
+            ],
+        )
+        .ends_with(",consistency=consistent"));
+        drop(env);
 
         let _ = fs::remove_dir_all(root);
     }
