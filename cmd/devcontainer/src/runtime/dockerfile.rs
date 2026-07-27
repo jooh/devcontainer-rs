@@ -591,10 +591,9 @@ fn parse_variable_expression(content: &str) -> Option<VariableExpression<'_>> {
     }
     let (operator, word) = if let Some(word) = rest.strip_prefix(":-") {
         (VariableOperator::Default, word)
-    } else if let Some(word) = rest.strip_prefix(":+") {
-        (VariableOperator::Alternate, word)
     } else {
-        return None;
+        let word = rest.strip_prefix(":+")?;
+        (VariableOperator::Alternate, word)
     };
     Some(VariableExpression {
         name,
