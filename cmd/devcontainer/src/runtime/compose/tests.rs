@@ -987,6 +987,40 @@ fn metadata_override_file_can_pin_image_and_runtime_settings() {
 }
 
 #[test]
+fn metadata_override_file_expands_environment_from_the_service_image() {
+    let root = unique_temp_dir("devcontainer-compose-expanded-env-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    let engine = root.join("docker");
+    write_executable_script(&engine, "#!/bin/sh\nprintf '[\"PATH=/usr/bin\"]\\n'\n");
+    let resolved = ResolvedConfig {
+        workspace_folder: root.clone(),
+        config_file: root.join(".devcontainer.json"),
+        configuration: json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app",
+            "containerEnv": { "PATH": "/feature:$PATH" }
+        }),
+    };
+    let args = vec![
+        "--docker-path".to_string(),
+        engine.to_string_lossy().into_owned(),
+    ];
+
+    let override_file = compose_metadata_override_file(
+        &resolved,
+        &args,
+        "/workspaces/project",
+        Some("example/compose:test"),
+    )
+    .expect("override result")
+    .expect("override path");
+    let content = fs::read_to_string(&override_file).expect("override content");
+    assert!(content.contains("PATH: '/feature:/usr/bin'"));
+    let _ = fs::remove_file(override_file);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn metadata_override_file_wraps_entrypoints_with_a_keepalive_entrypoint() {
     let root = unique_temp_dir("devcontainer-compose-test");
     fs::create_dir_all(&root).expect("workspace root");

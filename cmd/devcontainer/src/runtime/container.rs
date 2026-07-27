@@ -13,6 +13,9 @@ pub(crate) use discovery::{
     ResolvedTargetContainer,
 };
 pub(crate) use engine_run::should_add_gpu_capability;
+pub(crate) use engine_run::{
+    contains_environment_reference, expand_environment_references, inspect_image_environment,
+};
 pub(crate) use uid_update::prepare_up_image;
 
 pub(crate) struct UpContainer {

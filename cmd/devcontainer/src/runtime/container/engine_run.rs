@@ -178,11 +178,11 @@ fn start_container_with_metadata(
     Ok(container_id)
 }
 
-fn inspect_image_environment(
+pub(crate) fn inspect_image_environment(
     args: &[String],
     image_name: &str,
 ) -> Result<HashMap<String, String>, String> {
-    let result = engine::run_engine(
+    let mut result = engine::run_engine(
         args,
         vec![
             "image".to_string(),
@@ -193,7 +193,27 @@ fn inspect_image_environment(
         ],
     )?;
     if result.status_code != 0 {
-        return Err(engine::stderr_or_stdout(&result));
+        let error = engine::stderr_or_stdout(&result);
+        if !is_missing_local_image_error(&error) {
+            return Err(error);
+        }
+        let pull = engine::run_engine(args, vec!["pull".to_string(), image_name.to_string()])?;
+        if pull.status_code != 0 {
+            return Err(engine::stderr_or_stdout(&pull));
+        }
+        result = engine::run_engine(
+            args,
+            vec![
+                "image".to_string(),
+                "inspect".to_string(),
+                "--format".to_string(),
+                "{{json .Config.Env}}".to_string(),
+                image_name.to_string(),
+            ],
+        )?;
+        if result.status_code != 0 {
+            return Err(engine::stderr_or_stdout(&result));
+        }
     }
     let entries: Option<Vec<String>> = serde_json::from_str(result.stdout.trim())
         .map_err(|error| format!("Failed to parse environment from image {image_name}: {error}"))?;
@@ -208,14 +228,17 @@ fn inspect_image_environment(
         .collect())
 }
 
-fn contains_environment_reference(value: &str) -> bool {
+pub(crate) fn contains_environment_reference(value: &str) -> bool {
     value.as_bytes().windows(2).any(|window| {
         window[0] == b'$'
             && (window[1] == b'{' || window[1].is_ascii_alphabetic() || window[1] == b'_')
     })
 }
 
-fn expand_environment_references(value: &str, environment: &HashMap<String, String>) -> String {
+pub(crate) fn expand_environment_references(
+    value: &str,
+    environment: &HashMap<String, String>,
+) -> String {
     let bytes = value.as_bytes();
     let mut expanded = String::with_capacity(value.len());
     let mut index = 0;
@@ -250,6 +273,11 @@ fn expand_environment_references(value: &str, environment: &HashMap<String, Stri
         index = reference_end;
     }
     expanded
+}
+
+fn is_missing_local_image_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("no such image") || error.contains("image not known")
 }
 
 pub(super) fn start_existing_container(args: &[String], container_id: &str) -> Result<(), String> {
@@ -572,6 +600,34 @@ esac
             inspect_image_environment(&engine_args(&invalid_engine), "example/image")
                 .expect_err("invalid image environment should fail");
         assert!(invalid_error.contains("Failed to parse environment from image example/image"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inspect_image_environment_pulls_and_retries_missing_images() {
+        let root = unique_temp_dir("devcontainer-inspect-missing-image-test");
+        fs::create_dir_all(&root).expect("root dir");
+        let engine = root.join("docker");
+        let marker = root.join("pulled");
+        write_executable_script(
+            &engine,
+            &format!(
+                r#"#!/bin/sh
+if [ "$1" = pull ]; then touch "{marker}"; exit 0; fi
+if [ ! -f "{marker}" ]; then echo 'Error: No such image: example/image' >&2; exit 1; fi
+printf '["PATH=/usr/bin"]\n'
+"#,
+                marker = marker.display()
+            ),
+        );
+
+        let environment = inspect_image_environment(&engine_args(&engine), "example/image")
+            .expect("missing image should be pulled");
+        assert_eq!(
+            environment.get("PATH").map(String::as_str),
+            Some("/usr/bin")
+        );
+        assert!(marker.exists());
         let _ = fs::remove_dir_all(root);
     }
 
