@@ -632,6 +632,45 @@ printf '["PATH=/usr/bin"]\n'
     }
 
     #[test]
+    fn inspect_image_environment_reports_pull_and_retry_errors() {
+        let root = unique_temp_dir("devcontainer-inspect-image-retry-errors-test");
+        fs::create_dir_all(&root).expect("root dir");
+
+        let pull_failure = root.join("pull-failure-docker");
+        write_executable_script(
+            &pull_failure,
+            "#!/bin/sh\nif [ \"$1\" = pull ]; then echo 'pull failed' >&2; exit 2; fi\necho 'No such image' >&2\nexit 1\n",
+        );
+        let error = inspect_image_environment(&engine_args(&pull_failure), "example/image")
+            .expect_err("pull failure should be reported");
+        assert_eq!(error, "pull failed");
+
+        let retry_failure = root.join("retry-failure-docker");
+        let marker = root.join("retry-pulled");
+        write_executable_script(
+            &retry_failure,
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = pull ]; then touch '{marker}'; exit 0; fi\nif [ -f '{marker}' ]; then echo 'retry failed' >&2; exit 3; fi\necho 'No such image' >&2\nexit 1\n",
+                marker = marker.display()
+            ),
+        );
+        let error = inspect_image_environment(&engine_args(&retry_failure), "example/image")
+            .expect_err("retry failure should be reported");
+        assert_eq!(error, "retry failed");
+
+        let missing_retry_engine = root.join("missing-retry-docker");
+        write_executable_script(
+            &missing_retry_engine,
+            "#!/bin/sh\nif [ \"$1\" = pull ]; then rm -- \"$0\"; exit 0; fi\necho 'No such image' >&2\nexit 1\n",
+        );
+        let error = inspect_image_environment(&engine_args(&missing_retry_engine), "example/image")
+            .expect_err("retry spawn failure should be reported");
+        assert!(error.contains("Container engine executable not found"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn start_container_includes_runtime_flags_mounts_gpu_and_git_common_dir() {
         let root = unique_temp_dir("devcontainer-start-container-flags-test");
         let workspace = root.join("worktree");

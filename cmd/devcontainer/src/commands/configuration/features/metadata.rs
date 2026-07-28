@@ -261,7 +261,7 @@ fn merge_lifecycle_value(merged: &mut Map<String, Value>, metadata: &Value, key:
 mod tests {
     use serde_json::json;
 
-    use super::{apply_feature_metadata, feature_metadata_entry};
+    use super::{apply_feature_metadata, feature_metadata_entry, replace_env_self_reference};
 
     #[test]
     fn feature_metadata_entry_ignores_non_object_manifests() {
@@ -399,6 +399,10 @@ mod tests {
         );
 
         assert_eq!(merged["containerEnv"]["PATH"], "/b:/a:$PATH");
+        assert_eq!(
+            replace_env_self_reference("$PATH:$PATH_SUFFIX:$", "PATH", "/previous"),
+            "/previous:$PATH_SUFFIX:$"
+        );
     }
 
     #[test]
