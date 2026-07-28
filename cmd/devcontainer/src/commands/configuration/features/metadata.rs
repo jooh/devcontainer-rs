@@ -84,7 +84,7 @@ fn merge_metadata_entry(
     merge_unique_array(merged, metadata, "securityOpt");
     merge_mounts(merged, metadata);
     merge_unique_array(merged, metadata, "forwardPorts");
-    merge_object(merged, metadata, "containerEnv");
+    merge_container_env(merged, metadata);
     merge_object(merged, metadata, "remoteEnv");
     merge_object(merged, metadata, "portsAttributes");
     if merge_customizations {
@@ -187,6 +187,54 @@ fn merge_object(merged: &mut Map<String, Value>, metadata: &Value, key: &str) {
     );
 }
 
+fn merge_container_env(merged: &mut Map<String, Value>, metadata: &Value) {
+    let Some(values) = metadata.get("containerEnv").and_then(Value::as_object) else {
+        return;
+    };
+    let target = merged
+        .entry("containerEnv".to_string())
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
+        .expect("object field");
+    for (name, value) in values {
+        let value = match (target.get(name).and_then(Value::as_str), value.as_str()) {
+            (Some(previous), Some(value)) => {
+                Value::String(replace_env_self_reference(value, name, previous))
+            }
+            _ => value.clone(),
+        };
+        target.insert(name.clone(), value);
+    }
+}
+
+fn replace_env_self_reference(value: &str, name: &str, replacement: &str) -> String {
+    let braced = format!("${{{name}}}");
+    let plain = format!("${name}");
+    let mut result = String::with_capacity(value.len() + replacement.len());
+    let mut remainder = value;
+    while let Some(index) = remainder.find('$') {
+        result.push_str(&remainder[..index]);
+        remainder = &remainder[index..];
+        if let Some(rest) = remainder.strip_prefix(&braced) {
+            result.push_str(replacement);
+            remainder = rest;
+        } else if remainder.starts_with(&plain)
+            && remainder[plain.len()..]
+                .chars()
+                .next()
+                .is_none_or(|character| !(character.is_ascii_alphanumeric() || character == '_'))
+        {
+            result.push_str(replacement);
+            remainder = &remainder[plain.len()..];
+        } else {
+            result.push('$');
+            remainder = &remainder[1..];
+        }
+    }
+    result.push_str(remainder);
+    result
+}
+
 fn merge_last_value(merged: &mut Map<String, Value>, metadata: &Value, key: &str) {
     if let Some(value) = metadata.get(key) {
         merged.insert(key.to_string(), value.clone());
@@ -213,7 +261,7 @@ fn merge_lifecycle_value(merged: &mut Map<String, Value>, metadata: &Value, key:
 mod tests {
     use serde_json::json;
 
-    use super::{apply_feature_metadata, feature_metadata_entry};
+    use super::{apply_feature_metadata, feature_metadata_entry, replace_env_self_reference};
 
     #[test]
     fn feature_metadata_entry_ignores_non_object_manifests() {
@@ -337,6 +385,24 @@ mod tests {
         assert_eq!(merged["postCreateCommand"], "echo three");
         assert_eq!(merged["postAttachCommand"], "echo config");
         assert!(merged.get("postStartCommand").is_none());
+    }
+
+    #[test]
+    fn apply_feature_metadata_preserves_sequential_container_env_updates() {
+        let merged = apply_feature_metadata(
+            &json!({}),
+            &[
+                json!({ "containerEnv": { "PATH": "/a:$PATH" } }),
+                json!({ "containerEnv": { "PATH": "/b:${PATH}" } }),
+            ],
+            false,
+        );
+
+        assert_eq!(merged["containerEnv"]["PATH"], "/b:/a:$PATH");
+        assert_eq!(
+            replace_env_self_reference("$PATH:$PATH_SUFFIX:$", "PATH", "/previous"),
+            "/previous:$PATH_SUFFIX:$"
+        );
     }
 
     #[test]

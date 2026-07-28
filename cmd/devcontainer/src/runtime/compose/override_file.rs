@@ -70,6 +70,11 @@ pub(super) fn compose_metadata_override_file(
     labels.extend(common::parse_option_values(args, "--id-label"));
 
     let (version_prefix, service_definition) = compose_override_context(resolved, service_name);
+    let environment_image_name = image_name.or_else(|| {
+        service_definition
+            .as_ref()
+            .and_then(|service| service.image.as_deref())
+    });
     let mut content = version_prefix;
     content.push_str("services:\n");
     content.push_str(&format!(
@@ -101,9 +106,19 @@ pub(super) fn compose_metadata_override_file(
             content.push_str(&render_compose_volume_entry(volume));
         }
     }
-    if let Some(environment) = compose_environment(&resolved.configuration) {
+    if let Some(mut environment) = compose_environment(&resolved.configuration) {
+        let image_environment = environment_image_name
+            .filter(|_| {
+                environment
+                    .iter()
+                    .any(|(_, value)| container::contains_environment_reference(value))
+            })
+            .map(|image_name| container::inspect_image_environment(args, image_name))
+            .transpose()?
+            .unwrap_or_default();
         content.push_str("    environment:\n");
-        for (key, value) in environment {
+        for (key, value) in environment.drain(..) {
+            let value = container::expand_environment_references(&value, &image_environment);
             content.push_str(&format!(
                 "      {}: '{}'\n",
                 key,

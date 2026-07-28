@@ -1,5 +1,6 @@
 //! Engine-run argument assembly and engine capability helpers for native containers.
 
+use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
 
@@ -42,6 +43,19 @@ fn start_container_with_metadata(
     remote_workspace_folder: &str,
     metadata: Result<String, String>,
 ) -> Result<String, String> {
+    let image_environment = resolved
+        .configuration
+        .get("containerEnv")
+        .and_then(Value::as_object)
+        .filter(|environment| {
+            environment
+                .values()
+                .filter_map(Value::as_str)
+                .any(contains_environment_reference)
+        })
+        .map(|_| inspect_image_environment(args, image_name))
+        .transpose()?
+        .unwrap_or_default();
     let default_labels =
         common::default_devcontainer_id_labels(&resolved.workspace_folder, &resolved.config_file);
     let metadata = metadata?;
@@ -115,7 +129,10 @@ fn start_container_with_metadata(
         for (key, value) in container_env {
             if let Some(value) = value.as_str() {
                 engine_args.push("-e".to_string());
-                engine_args.push(format!("{key}={value}"));
+                engine_args.push(format!(
+                    "{key}={}",
+                    expand_environment_references(value, &image_environment)
+                ));
             }
         }
     }
@@ -159,6 +176,108 @@ fn start_container_with_metadata(
     }
 
     Ok(container_id)
+}
+
+pub(crate) fn inspect_image_environment(
+    args: &[String],
+    image_name: &str,
+) -> Result<HashMap<String, String>, String> {
+    let mut result = engine::run_engine(
+        args,
+        vec![
+            "image".to_string(),
+            "inspect".to_string(),
+            "--format".to_string(),
+            "{{json .Config.Env}}".to_string(),
+            image_name.to_string(),
+        ],
+    )?;
+    if result.status_code != 0 {
+        let error = engine::stderr_or_stdout(&result);
+        if !is_missing_local_image_error(&error) {
+            return Err(error);
+        }
+        let pull = engine::run_engine(args, vec!["pull".to_string(), image_name.to_string()])?;
+        if pull.status_code != 0 {
+            return Err(engine::stderr_or_stdout(&pull));
+        }
+        result = engine::run_engine(
+            args,
+            vec![
+                "image".to_string(),
+                "inspect".to_string(),
+                "--format".to_string(),
+                "{{json .Config.Env}}".to_string(),
+                image_name.to_string(),
+            ],
+        )?;
+        if result.status_code != 0 {
+            return Err(engine::stderr_or_stdout(&result));
+        }
+    }
+    let entries: Option<Vec<String>> = serde_json::from_str(result.stdout.trim())
+        .map_err(|error| format!("Failed to parse environment from image {image_name}: {error}"))?;
+    Ok(entries
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| {
+            entry
+                .split_once('=')
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+        })
+        .collect())
+}
+
+pub(crate) fn contains_environment_reference(value: &str) -> bool {
+    value.as_bytes().windows(2).any(|window| {
+        window[0] == b'$'
+            && (window[1] == b'{' || window[1].is_ascii_alphabetic() || window[1] == b'_')
+    })
+}
+
+pub(crate) fn expand_environment_references(
+    value: &str,
+    environment: &HashMap<String, String>,
+) -> String {
+    let bytes = value.as_bytes();
+    let mut expanded = String::with_capacity(value.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'$' || index + 1 == bytes.len() {
+            let character = value[index..].chars().next().expect("non-empty remainder");
+            expanded.push(character);
+            index += character.len_utf8();
+            continue;
+        }
+        let (name_start, name_end, reference_end) = if bytes[index + 1] == b'{' {
+            let Some(closing) = bytes[index + 2..].iter().position(|byte| *byte == b'}') else {
+                expanded.push('$');
+                index += 1;
+                continue;
+            };
+            let name_end = index + 2 + closing;
+            (index + 2, name_end, name_end + 1)
+        } else {
+            let mut end = index + 1;
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+                end += 1;
+            }
+            (index + 1, end, end)
+        };
+        let name = &value[name_start..name_end];
+        if let Some(replacement) = environment.get(name) {
+            expanded.push_str(replacement);
+        } else {
+            expanded.push_str(&value[index..reference_end]);
+        }
+        index = reference_end;
+    }
+    expanded
+}
+
+fn is_missing_local_image_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("no such image") || error.contains("image not known")
 }
 
 pub(super) fn start_existing_container(args: &[String], container_id: &str) -> Result<(), String> {
@@ -231,6 +350,7 @@ fn detect_gpu_support(args: &[String]) -> Result<bool, String> {
 mod tests {
     //! Unit tests for engine-run mount conversion helpers.
 
+    use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
 
@@ -242,6 +362,7 @@ mod tests {
     use crate::test_support::{unique_temp_dir, write_executable_script};
 
     use super::{
+        contains_environment_reference, expand_environment_references, inspect_image_environment,
         remove_container, should_add_gpu_capability, start_container,
         start_container_with_metadata, start_existing_container,
     };
@@ -376,6 +497,176 @@ esac
         assert!(invocation.contains("-e EDITOR=vim"));
         assert!(invocation.contains("--cap-add SYS_PTRACE"));
         assert!(invocation.contains("--security-opt seccomp=unconfined"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn start_container_expands_container_env_from_the_built_image() {
+        let root = unique_temp_dir("devcontainer-start-container-expanded-env-test");
+        fs::create_dir_all(&root).expect("root dir");
+        let fake_engine = root.join("docker");
+        let invocation_log = root.join("invocations.log");
+        write_executable_script(
+            &fake_engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "{invocation_log}"
+case "$1 $2" in
+  "image inspect") printf '["PATH=/usr/local/bin:/usr/bin","HOME=/root"]\n' ;;
+  "run -d") printf 'created-container\n' ;;
+  *) echo "unexpected command $*" >&2; exit 2 ;;
+esac
+"#,
+                invocation_log = invocation_log.display()
+            ),
+        );
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace dir");
+        let resolved = resolved_config(
+            &workspace,
+            json!({ "containerEnv": {
+                "PATH": "/usr/local/share/codespace-shims:${PATH}"
+            } }),
+        );
+
+        start_container(
+            &resolved,
+            &engine_args(&fake_engine),
+            "example/devcontainer:features",
+            "/workspace",
+        )
+        .expect("container should start");
+
+        let invocation = fs::read_to_string(&invocation_log).expect("invocation log");
+        assert!(invocation
+            .contains("image inspect --format {{json .Config.Env}} example/devcontainer:features"));
+        assert!(
+            invocation.contains("-e PATH=/usr/local/share/codespace-shims:/usr/local/bin:/usr/bin")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn environment_expansion_supports_braced_and_plain_references() {
+        let environment = HashMap::from([
+            ("PATH".to_string(), "/usr/bin".to_string()),
+            ("HOME".to_string(), "/root".to_string()),
+        ]);
+
+        assert_eq!(
+            expand_environment_references("λ:${PATH}:$HOME:$UNKNOWN", &environment),
+            "λ:/usr/bin:/root:$UNKNOWN"
+        );
+        assert_eq!(
+            expand_environment_references("${UNKNOWN}", &environment),
+            "${UNKNOWN}"
+        );
+        assert_eq!(
+            expand_environment_references("unterminated-${PATH", &environment),
+            "unterminated-${PATH"
+        );
+        assert_eq!(
+            expand_environment_references("trailing-$", &environment),
+            "trailing-$"
+        );
+        assert!(contains_environment_reference("$HOME"));
+        assert!(contains_environment_reference("${PATH}"));
+        assert!(!contains_environment_reference("cost-$5"));
+    }
+
+    #[test]
+    fn inspect_image_environment_reports_engine_and_output_errors() {
+        let root = unique_temp_dir("devcontainer-inspect-image-environment-errors-test");
+        fs::create_dir_all(&root).expect("root dir");
+        let failing_engine = root.join("failing-docker");
+        write_executable_script(
+            &failing_engine,
+            "#!/bin/sh\necho 'image inspection failed' >&2\nexit 7\n",
+        );
+
+        let error = inspect_image_environment(&engine_args(&failing_engine), "example/image")
+            .expect_err("nonzero image inspection should fail");
+        assert_eq!(error, "image inspection failed");
+
+        let missing_error =
+            inspect_image_environment(&engine_args(&root.join("missing-docker")), "example/image")
+                .expect_err("missing engine should fail");
+        assert!(missing_error.contains("Container engine executable not found"));
+
+        let invalid_engine = root.join("invalid-output-docker");
+        write_executable_script(&invalid_engine, "#!/bin/sh\nprintf 'not-json\\n'\n");
+        let invalid_error =
+            inspect_image_environment(&engine_args(&invalid_engine), "example/image")
+                .expect_err("invalid image environment should fail");
+        assert!(invalid_error.contains("Failed to parse environment from image example/image"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inspect_image_environment_pulls_and_retries_missing_images() {
+        let root = unique_temp_dir("devcontainer-inspect-missing-image-test");
+        fs::create_dir_all(&root).expect("root dir");
+        let engine = root.join("docker");
+        let marker = root.join("pulled");
+        write_executable_script(
+            &engine,
+            &format!(
+                r#"#!/bin/sh
+if [ "$1" = pull ]; then touch "{marker}"; exit 0; fi
+if [ ! -f "{marker}" ]; then echo 'Error: No such image: example/image' >&2; exit 1; fi
+printf '["PATH=/usr/bin"]\n'
+"#,
+                marker = marker.display()
+            ),
+        );
+
+        let environment = inspect_image_environment(&engine_args(&engine), "example/image")
+            .expect("missing image should be pulled");
+        assert_eq!(
+            environment.get("PATH").map(String::as_str),
+            Some("/usr/bin")
+        );
+        assert!(marker.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inspect_image_environment_reports_pull_and_retry_errors() {
+        let root = unique_temp_dir("devcontainer-inspect-image-retry-errors-test");
+        fs::create_dir_all(&root).expect("root dir");
+
+        let pull_failure = root.join("pull-failure-docker");
+        write_executable_script(
+            &pull_failure,
+            "#!/bin/sh\nif [ \"$1\" = pull ]; then echo 'pull failed' >&2; exit 2; fi\necho 'No such image' >&2\nexit 1\n",
+        );
+        let error = inspect_image_environment(&engine_args(&pull_failure), "example/image")
+            .expect_err("pull failure should be reported");
+        assert_eq!(error, "pull failed");
+
+        let retry_failure = root.join("retry-failure-docker");
+        let marker = root.join("retry-pulled");
+        write_executable_script(
+            &retry_failure,
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = pull ]; then touch '{marker}'; exit 0; fi\nif [ -f '{marker}' ]; then echo 'retry failed' >&2; exit 3; fi\necho 'No such image' >&2\nexit 1\n",
+                marker = marker.display()
+            ),
+        );
+        let error = inspect_image_environment(&engine_args(&retry_failure), "example/image")
+            .expect_err("retry failure should be reported");
+        assert_eq!(error, "retry failed");
+
+        let missing_retry_engine = root.join("missing-retry-docker");
+        write_executable_script(
+            &missing_retry_engine,
+            "#!/bin/sh\nif [ \"$1\" = pull ]; then rm -- \"$0\"; exit 0; fi\necho 'No such image' >&2\nexit 1\n",
+        );
+        let error = inspect_image_environment(&engine_args(&missing_retry_engine), "example/image")
+            .expect_err("retry spawn failure should be reported");
+        assert!(error.contains("Container engine executable not found"));
+
         let _ = fs::remove_dir_all(root);
     }
 
