@@ -72,6 +72,13 @@ case "$COMMAND" in
       echo "UID update Dockerfile is not bundled: $dockerfile" >&2
       exit 1
     fi
+    case "$dockerfile" in
+      */devcontainer-update-uid-*/updateUID.Dockerfile) ;;
+      *)
+        echo "UID update Dockerfile is not in its generated build context: $dockerfile" >&2
+        exit 1
+        ;;
+    esac
     grep -Fq 'ARG BASE_IMAGE' "$dockerfile"
     ;;
   run)
