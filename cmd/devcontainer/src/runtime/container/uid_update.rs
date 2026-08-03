@@ -18,6 +18,7 @@ const UID_UPDATE_IMAGE_INSPECT_FORMAT: &str =
     "{{.Config.User}}\n{{.Os}}/{{.Architecture}}{{if .Variant}}/{{.Variant}}{{end}}";
 const UID_UPDATE_IMAGE_INSPECT_FORMAT_NO_VARIANT: &str =
     "{{.Config.User}}\n{{.Os}}/{{.Architecture}}";
+const UID_UPDATE_DOCKERFILE: &str = include_str!("uid_update/updateUID.Dockerfile");
 
 #[derive(Debug, Eq, PartialEq)]
 struct UidUpdateDetails {
@@ -74,7 +75,8 @@ fn prepare_up_image_for_platform(
     let (new_uid, new_gid) = host_uid_gid()?;
     let build_context = unique_uid_update_build_context();
     fs::create_dir_all(&build_context).map_err(|error| error.to_string())?;
-    let dockerfile = uid_update_dockerfile_path();
+    let dockerfile = build_context.join("updateUID.Dockerfile");
+    fs::write(&dockerfile, UID_UPDATE_DOCKERFILE).map_err(|error| error.to_string())?;
     let mut build_args = vec!["build".to_string()];
     if let Some(platform) = &update.platform {
         build_args.push("--platform".to_string());
@@ -390,15 +392,6 @@ fn has_registry_hostname(image_name: &str) -> bool {
 
 fn is_uid_update_platform_supported() -> bool {
     cfg!(target_os = "linux")
-}
-
-fn uid_update_dockerfile_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("upstream")
-        .join("scripts")
-        .join("updateUID.Dockerfile")
 }
 
 fn unique_uid_update_build_context() -> PathBuf {
