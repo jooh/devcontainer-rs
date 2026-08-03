@@ -23,7 +23,15 @@ assert_file_contains() {
 }
 
 tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT
+repo_uid_dockerfile="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)/upstream/scripts/updateUID.Dockerfile"
+uid_dockerfile_backup="$tmp_dir/updateUID.Dockerfile"
+cleanup() {
+  if [[ -f "$uid_dockerfile_backup" ]]; then
+    mv "$uid_dockerfile_backup" "$repo_uid_dockerfile"
+  fi
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
 
 workspace="$tmp_dir/workspace"
 fake_bin="$tmp_dir/fake-bin"
@@ -54,6 +62,26 @@ shift || true
 printf '%s %s\n' "$COMMAND" "$*" >> "$LOG_DIR/invocations.log"
 
 case "$COMMAND" in
+  image)
+    if [ "${1:-}" = "inspect" ]; then
+      printf 'vscode\nlinux/amd64\n'
+    fi
+    ;;
+  build)
+    dockerfile=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "-f" ]; then
+        dockerfile="${2:-}"
+        break
+      fi
+      shift
+    done
+    if [ ! -f "$dockerfile" ]; then
+      echo "UID update Dockerfile is not bundled: $dockerfile" >&2
+      exit 1
+    fi
+    grep -Fq 'ARG BASE_IMAGE' "$dockerfile"
+    ;;
   run)
     : > "$STATE_FILE"
     echo "fake-container-id"
@@ -91,7 +119,7 @@ case "$COMMAND" in
   inspect)
     printf '[{"Config":{"Labels":{}},"Mounts":[]}]'
     ;;
-  build|push|start|rm)
+  push|start|rm)
     ;;
   *)
     echo "unsupported fake podman command: $COMMAND" >&2
@@ -162,3 +190,20 @@ assert_file_contains "$log_dir/exec.log" "/bin/sh -lc echo update-content"
 assert_file_contains "$log_dir/exec.log" "/bin/sh -lc echo post-create"
 assert_file_contains "$log_dir/exec.log" "/bin/sh -lc echo post-start"
 assert_file_contains "$log_dir/exec.log" "/bin/sh -lc echo post-attach"
+
+# A published binary must not depend on its build checkout remaining available.
+mv "$repo_uid_dockerfile" "$uid_dockerfile_backup"
+uid_workspace="$tmp_dir/uid-workspace"
+mkdir -p "$uid_workspace/.devcontainer"
+cat >"$uid_workspace/.devcontainer/devcontainer.json" <<'EOF'
+{
+  "image": "alpine:3.20",
+  "remoteUser": "vscode"
+}
+EOF
+rm -f "$log_dir/container-created"
+FAKE_PODMAN_LOG_DIR="$log_dir" \
+  "$binary" up --docker-path "$fake_bin/podman" --workspace-folder "$uid_workspace" \
+  >"$tmp_dir/uid-up.json"
+assert_file_contains "$tmp_dir/uid-up.json" '"outcome":"success"'
+assert_file_contains "$log_dir/invocations.log" "build "
