@@ -23,15 +23,7 @@ assert_file_contains() {
 }
 
 tmp_dir="$(mktemp -d)"
-repo_uid_dockerfile="$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)/upstream/scripts/updateUID.Dockerfile"
-uid_dockerfile_backup="$tmp_dir/updateUID.Dockerfile"
-cleanup() {
-  if [[ -f "$uid_dockerfile_backup" ]]; then
-    mv "$uid_dockerfile_backup" "$repo_uid_dockerfile"
-  fi
-  rm -rf "$tmp_dir"
-}
-trap cleanup EXIT
+trap 'rm -rf "$tmp_dir"' EXIT
 
 workspace="$tmp_dir/workspace"
 fake_bin="$tmp_dir/fake-bin"
@@ -191,8 +183,7 @@ assert_file_contains "$log_dir/exec.log" "/bin/sh -lc echo post-create"
 assert_file_contains "$log_dir/exec.log" "/bin/sh -lc echo post-start"
 assert_file_contains "$log_dir/exec.log" "/bin/sh -lc echo post-attach"
 
-# A published binary must not depend on its build checkout remaining available.
-mv "$repo_uid_dockerfile" "$uid_dockerfile_backup"
+# Exercise the UID update path in the published binary.
 uid_workspace="$tmp_dir/uid-workspace"
 mkdir -p "$uid_workspace/.devcontainer"
 cat >"$uid_workspace/.devcontainer/devcontainer.json" <<'EOF'

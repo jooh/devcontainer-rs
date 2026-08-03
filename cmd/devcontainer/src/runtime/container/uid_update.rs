@@ -18,8 +18,7 @@ const UID_UPDATE_IMAGE_INSPECT_FORMAT: &str =
     "{{.Config.User}}\n{{.Os}}/{{.Architecture}}{{if .Variant}}/{{.Variant}}{{end}}";
 const UID_UPDATE_IMAGE_INSPECT_FORMAT_NO_VARIANT: &str =
     "{{.Config.User}}\n{{.Os}}/{{.Architecture}}";
-const UID_UPDATE_DOCKERFILE: &str =
-    include_str!("../../../../../upstream/scripts/updateUID.Dockerfile");
+const UID_UPDATE_DOCKERFILE: &str = include_str!("uid_update/updateUID.Dockerfile");
 
 #[derive(Debug, Eq, PartialEq)]
 struct UidUpdateDetails {
