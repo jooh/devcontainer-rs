@@ -23,7 +23,7 @@ assert_file_contains() {
 }
 
 tmp_dir="$(mktemp -d)"
-repo_uid_dockerfile="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)/upstream/scripts/updateUID.Dockerfile"
+repo_uid_dockerfile="$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)/upstream/scripts/updateUID.Dockerfile"
 uid_dockerfile_backup="$tmp_dir/updateUID.Dockerfile"
 cleanup() {
   if [[ -f "$uid_dockerfile_backup" ]]; then
