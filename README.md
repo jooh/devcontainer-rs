@@ -42,12 +42,24 @@ export DEVCONTAINER_DOCKER_COMPOSE_PATH=podman-compose
 devcontainer up --workspace-folder .
 ```
 
-Path values are executable paths, not shell command strings with arguments. Use
+To use the same non-standard config path across commands:
+
+```bash
+export DEVCONTAINER_CONFIG=.devcontainer/podman/devcontainer.json
+devcontainer up --workspace-folder .
+devcontainer exec uv sync
+```
+
+`DEVCONTAINER_CONFIG` accepts the same absolute or relative paths as `--config`.
+Relative paths resolve against `--workspace-folder` when it is provided, or the
+current directory otherwise. Container engine path values are executable paths,
+not shell command strings with arguments. Use
 `DEVCONTAINER_DOCKER_COMPOSE_PATH=podman-compose`, not
 `DEVCONTAINER_DOCKER_COMPOSE_PATH="podman compose"`.
 
 | CLI flag | Environment variable |
 | --- | --- |
+| `--config` | `DEVCONTAINER_CONFIG` |
 | `--docker-path` | `DEVCONTAINER_DOCKER_PATH` |
 | `--docker-compose-path` | `DEVCONTAINER_DOCKER_COMPOSE_PATH` |
 | `--buildkit` | `DEVCONTAINER_BUILDKIT` |
