@@ -18,6 +18,7 @@
 - `node build/check-upstream-submodule.js`
 - `node build/check-native-only.js`
 - `node build/check-no-node-runtime.js`
+- `node build/check-artifact-smoke-workflows.js`
 - `node build/check-parity-harness.js`
 - `node build/generate-command-matrix.js --check`
 - `node build/generate-cli-reference.js --check`

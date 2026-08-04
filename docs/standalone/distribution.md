@@ -14,6 +14,12 @@
 - PyPI publishes the same native CLI as the `devcontainer-rs` package. Installing it exposes the `devcontainer` executable on `PATH`.
 - Homebrew publishes the `devcontainer-rs` formula to the `jooh/devcontainer-rs` tap, backed by the `jooh/homebrew-tap` repository. The formula installs the same native `devcontainer` executable from GitHub Release archives.
 
+## Artifact isolation contract
+
+Package smoke tests run after the build job uploads its cargo-dist archive, wheel, and self-contained smoke harness. The smoke job starts on a fresh runner, does not check out the repository, downloads the bundle under the runner's temporary directory, and fails if repository source markers are present. This catches runtime dependencies on compile-time or checkout-relative paths that an in-repository smoke test can hide.
+
+Pull requests exercise representative Linux x64 GNU and macOS arm64 packages through this boundary. The release workflow exercises every supported archive and wheel before publication; musl packages run inside Alpine with only the downloaded bundle mounted. GitHub Release, PyPI, and npm publication cannot start until those jobs pass.
+
 ## npm install flow
 
 The npm wrappers ship JavaScript launchers only. They resolve the correct prebuilt native package for the host OS, CPU, and Linux libc at install/run time without downloading binaries after installation.
@@ -62,12 +68,15 @@ Homebrew maps the backing repository `jooh/homebrew-tap` to the tap shorthand `j
 
 - `scripts/standalone/build.sh <target>` builds the Rust release binary and places it under `dist/standalone/`. Supported Linux targets are `linux-x64`, `linux-x64-musl`, `linux-arm64`, and `linux-arm64-musl`.
 - `scripts/standalone/build-linux-x64-musl.sh` and `scripts/standalone/build-linux-arm64-musl.sh` build musl artifacts for older-glibc distro compatibility.
-- `scripts/standalone/smoke.sh <binary>` runs the repo-owned smoke commands against a built artifact.
+- `scripts/standalone/smoke.sh <binary>` runs the repo-owned smoke commands from temporary working, home, and temp directories rather than the checkout.
+- `scripts/standalone/archive-smoke.sh <archive>` extracts a cargo-dist archive, requires exactly one packaged `devcontainer` executable, and runs the standalone smoke against it.
 - `~/.cargo/bin/dist build --artifacts=local --target <triple> --allow-dirty` builds the cargo-dist archive into `target/distrib/`.
 - `node build/prepare-npm-packages.js --artifacts-dir target/distrib --output-dir dist/npm` stages the publishable npm wrapper/native packages from dist outputs.
 - `make npm-package-smoke` verifies the wrapper/native tarballs with local `npm pack` installs and command execution.
-- `make pypi-wheel-smoke` builds a local wheel with `uv`, installs it into an isolated environment, and runs the standalone smoke against the installed `devcontainer` executable.
+- `make pypi-wheel-smoke` builds a local wheel with `uv`, installs it into an isolated environment, verifies its package-metadata version, and runs the standalone smoke against the installed `devcontainer` executable. `scripts/standalone/pypi-wheel-smoke.sh <wheel>` performs the install-and-smoke phase for an existing wheel without reading repository metadata.
 - `make homebrew-distribution-check` verifies that this repository delegates formula publishing to the tap. The tap-owned formula renderer and workflow checks live under `tap/`.
+
+Local smoke targets keep the feedback loop fast and isolate process state, but the source checkout still exists elsewhere on the machine. The fresh CI job is the authoritative guard against absolute paths embedded at compile time.
 
 ## Current limitations
 
