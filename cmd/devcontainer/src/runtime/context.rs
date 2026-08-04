@@ -64,7 +64,7 @@ pub(crate) fn load_required_config_with_id_labels(
 }
 
 pub(crate) fn load_optional_config(args: &[String]) -> Result<Option<ResolvedConfig>, String> {
-    let explicit_config = common::parse_option_value(args, "--config");
+    let explicit_config = common::config_option_value(args);
     match load_required_config(args) {
         Ok(config) => Ok(Some(config)),
         Err(error)
@@ -85,8 +85,13 @@ pub(crate) fn resolve_existing_container_context(
     if let Some(resolved) = &resolved {
         if explicit_container_id.is_none() && compose::uses_compose_config(&resolved.configuration)
         {
-            let container_id = compose::resolve_container_id(resolved, args)?
-                .ok_or_else(|| "Dev container not found.".to_string())?;
+            let container_id = compose::resolve_container_id(resolved, args)?.ok_or_else(|| {
+                container::dev_container_not_found_message(
+                    args,
+                    Some(&resolved.workspace_folder),
+                    Some(&resolved.config_file),
+                )
+            })?;
             let configuration = configuration_with_feature_metadata(args, resolved)?;
             return Ok(ExistingContainerContext {
                 container_id,
@@ -185,7 +190,9 @@ mod tests {
 
     use serde_json::json;
 
-    use crate::commands::common::DEVCONTAINER_LOCAL_FOLDER_LABEL;
+    use crate::commands::common::{
+        test_env_defaults, DEVCONTAINER_CONFIG, DEVCONTAINER_LOCAL_FOLDER_LABEL,
+    };
     use crate::runtime::mounts::split_mount_options;
     use crate::test_support::{unique_temp_dir, write_executable_script};
 
@@ -295,6 +302,17 @@ mod tests {
 
         assert!(error.starts_with("Unable to locate a dev container config at "));
 
+        let missing_env_config = root.join("missing-env.json");
+        let _env = test_env_defaults(&[(
+            DEVCONTAINER_CONFIG,
+            missing_env_config.to_string_lossy().as_ref(),
+        )]);
+        let error =
+            load_optional_config(&["--container-id".to_string(), "container-id".to_string()])
+                .expect_err("environment missing config should fail");
+        assert!(error.starts_with("Unable to locate a dev container config at "));
+        assert!(error.contains("missing-env.json"), "{error}");
+
         let _ = fs::remove_dir_all(root);
     }
 
@@ -395,7 +413,18 @@ mod tests {
             resolve_existing_container_context(&empty_args),
             "missing compose container",
         );
-        assert_eq!(missing, "Dev container not found.");
+        assert_eq!(
+            missing,
+            format!(
+                "Dev container not found for workspace folder '{}' and config file '{}'. If the container was created with a different config file, pass --config <path> or set DEVCONTAINER_CONFIG.",
+                fs::canonicalize(&root)
+                    .expect("canonical workspace")
+                    .display(),
+                fs::canonicalize(&config_file)
+                    .expect("canonical config")
+                    .display()
+            )
+        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -489,7 +518,7 @@ mod tests {
     fn resolve_existing_container_context_reports_missing_matched_container() {
         let root = unique_temp_dir("devcontainer-runtime-context");
         fs::create_dir_all(&root).expect("workspace");
-        write_workspace_config(&root, "{\n  \"image\": \"alpine:3.20\"\n}\n");
+        let config_file = write_workspace_config(&root, "{\n  \"image\": \"alpine:3.20\"\n}\n");
         let engine = root.join("engine");
         write_engine_script(
             &engine,
@@ -501,7 +530,21 @@ mod tests {
         let error =
             resolve_existing_container_context(&args).expect_err("missing container should fail");
 
-        assert_eq!(error, "Dev container not found.");
+        assert_eq!(
+            error,
+            format!(
+                "Dev container not found for workspace folder '{}' and config file '{}'. If the container was created with a different config file, pass --config <path> or set DEVCONTAINER_CONFIG.",
+                fs::canonicalize(&root)
+                    .expect("canonical workspace")
+                    .display(),
+                config_file.display()
+            )
+        );
+
+        args.extend(["--id-label".to_string(), "custom=value".to_string()]);
+        let custom_label_error = resolve_existing_container_context(&args)
+            .expect_err("missing custom-label container should fail");
+        assert_eq!(custom_label_error, "Dev container not found.");
 
         let _ = fs::remove_dir_all(root);
     }

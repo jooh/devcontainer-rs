@@ -22,7 +22,7 @@ pub(crate) fn resolve_read_configuration_path(
     )?;
 
     let explicit_workspace = parse_option_value(args, "--workspace-folder").map(PathBuf::from);
-    let explicit_config = parse_option_value(args, "--config").map(PathBuf::from);
+    let explicit_config = super::config_option_value(args).map(PathBuf::from);
     let override_config = resolve_override_config_path(args)?;
 
     let initial_workspace = match explicit_workspace.clone() {
@@ -31,6 +31,13 @@ pub(crate) fn resolve_read_configuration_path(
             env::current_dir().map_err(|_| "Unable to determine workspace folder".to_string())?
         }
     };
+    let explicit_config = explicit_config.map(|config_file| {
+        if explicit_workspace.is_none() && config_file.is_relative() {
+            initial_workspace.join(config_file)
+        } else {
+            config_file
+        }
+    });
 
     let workspace_folder = if explicit_workspace.is_some() {
         initial_workspace.clone()
@@ -193,13 +200,83 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
 
-    use crate::commands::common::DEVCONTAINER_LOCAL_FOLDER_LABEL;
+    use crate::commands::common::{
+        test_env_defaults, DEVCONTAINER_CONFIG, DEVCONTAINER_LOCAL_FOLDER_LABEL,
+    };
     use crate::test_support::unique_temp_dir;
 
     use super::{
         load_resolved_config, load_resolved_config_with_id_labels, resolve_override_config_path,
         resolve_read_configuration_path, resolved_workspace_path,
     };
+
+    #[test]
+    fn environment_config_selects_relative_path_and_cli_takes_precedence() {
+        let workspace = unique_temp_dir("devcontainer-config-resolution-env");
+        let default_config = workspace.join(".devcontainer").join("devcontainer.json");
+        let env_config = workspace
+            .join(".devcontainer")
+            .join("podman")
+            .join("devcontainer.json");
+        fs::create_dir_all(default_config.parent().expect("default config parent"))
+            .expect("default config dir");
+        fs::create_dir_all(env_config.parent().expect("env config parent"))
+            .expect("env config dir");
+        fs::write(&default_config, r#"{"image":"default"}"#).expect("default config");
+        fs::write(&env_config, r#"{"image":"env"}"#).expect("env config");
+
+        let env = test_env_defaults(&[(
+            DEVCONTAINER_CONFIG,
+            ".devcontainer/podman/devcontainer.json",
+        )]);
+        let workspace_args = vec![
+            "--workspace-folder".to_string(),
+            workspace.display().to_string(),
+        ];
+        let (_, selected_config, selected) =
+            load_resolved_config(&workspace_args).expect("environment config");
+        assert_eq!(
+            selected_config,
+            fs::canonicalize(&env_config).expect("canonical env config")
+        );
+        assert_eq!(selected["image"], "env");
+
+        let cli_args = vec![
+            "--workspace-folder".to_string(),
+            workspace.display().to_string(),
+            "--config".to_string(),
+            ".devcontainer/devcontainer.json".to_string(),
+        ];
+        let (_, selected_config, selected) = load_resolved_config(&cli_args).expect("CLI config");
+        assert_eq!(
+            selected_config,
+            fs::canonicalize(&default_config).expect("canonical default config")
+        );
+        assert_eq!(selected["image"], "default");
+
+        drop(env);
+        let absolute_config =
+            test_env_defaults(&[(DEVCONTAINER_CONFIG, env_config.to_string_lossy().as_ref())]);
+        let (_, selected_config, selected) =
+            load_resolved_config(&workspace_args).expect("absolute environment config");
+        assert_eq!(
+            selected_config,
+            fs::canonicalize(&env_config).expect("canonical env config")
+        );
+        assert_eq!(selected["image"], "env");
+
+        drop(absolute_config);
+        let _blank_env = test_env_defaults(&[(DEVCONTAINER_CONFIG, "  ")]);
+        let (_, selected_config, selected) =
+            load_resolved_config(&workspace_args).expect("default config");
+        assert_eq!(
+            selected_config,
+            fs::canonicalize(&default_config).expect("canonical default config")
+        );
+        assert_eq!(selected["image"], "default");
+
+        let _ = fs::remove_dir_all(workspace);
+    }
 
     #[test]
     fn load_resolved_config_with_id_labels_recomputes_devcontainer_id_from_override_labels() {

@@ -109,6 +109,117 @@ fn nested_config_exec_uses_workspace_root_and_config_label() {
 }
 
 #[test]
+fn environment_config_exec_uses_nested_config_identity() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    let nested_config_dir = workspace.join(".devcontainer").join("podman");
+    fs::create_dir_all(&nested_config_dir).expect("nested config dir");
+    let config_path = nested_config_dir.join("devcontainer.json");
+    fs::write(
+        &config_path,
+        "{\n  \"image\": \"alpine:3.20\",\n  \"workspaceFolder\": \"/environment-workspace\"\n}\n",
+    )
+    .expect("config write");
+    let expected_workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.clone());
+    let expected_config = config_path
+        .canonicalize()
+        .unwrap_or_else(|_| config_path.clone());
+    let required_labels = format!(
+        "devcontainer.local_folder={}\ndevcontainer.config_file={}",
+        expected_workspace.display(),
+        expected_config.display()
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run_in_dir(
+        &[
+            "exec",
+            "--docker-path",
+            fake_podman.as_str(),
+            "/bin/echo",
+            "hello-from-environment-config",
+        ],
+        &[
+            (
+                "DEVCONTAINER_CONFIG",
+                ".devcontainer/podman/devcontainer.json",
+            ),
+            ("FAKE_PODMAN_PS_REQUIRE_LABELS", required_labels.as_str()),
+        ],
+        Some(&workspace),
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("utf8 stdout"),
+        "hello-from-environment-config\n"
+    );
+    let invocations = harness.read_invocations();
+    assert!(invocations.contains(&format!(
+        "--filter label=devcontainer.config_file={}",
+        expected_config.display()
+    )));
+    assert!(invocations.contains("exec -i --workdir /environment-workspace"));
+}
+
+#[test]
+fn exec_reports_attempted_workspace_and_config_when_labels_do_not_match() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    let default_config =
+        write_devcontainer_config(&workspace, "{\n  \"image\": \"alpine:3.20\"\n}\n");
+    let expected_workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.clone());
+    let expected_config = default_config
+        .canonicalize()
+        .unwrap_or_else(|_| default_config.clone());
+    let actual_config = expected_workspace
+        .join(".devcontainer")
+        .join("podman")
+        .join("devcontainer.json");
+    let actual_labels = format!(
+        "devcontainer.local_folder={}\ndevcontainer.config_file={}",
+        expected_workspace.display(),
+        actual_config.display()
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run_in_dir(
+        &[
+            "exec",
+            "--docker-path",
+            fake_podman.as_str(),
+            "/bin/echo",
+            "unreachable",
+        ],
+        &[("FAKE_PODMAN_PS_REQUIRE_LABELS", actual_labels.as_str())],
+        Some(&workspace),
+    );
+
+    assert!(!output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("utf8 stderr"),
+        format!(
+            "Dev container not found for workspace folder '{}' and config file '{}'. If the container was created with a different config file, pass --config <path> or set DEVCONTAINER_CONFIG.\n",
+            expected_workspace.display(),
+            expected_config.display()
+        )
+    );
+    let invocations = harness.read_invocations();
+    assert_eq!(
+        invocations
+            .lines()
+            .filter(|line| line.starts_with("ps "))
+            .count(),
+        1,
+        "diagnostic must not add discovery probes: {invocations}"
+    );
+}
+
+#[test]
 fn exec_from_workspace_directory_loads_local_config() {
     let harness = RuntimeHarness::new();
     let workspace = harness.workspace();

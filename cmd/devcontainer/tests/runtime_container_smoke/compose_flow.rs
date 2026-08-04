@@ -547,10 +547,12 @@ fn up_expect_existing_compose_container_fails_when_missing() {
         "services:\n  app:\n    image: alpine:3.20\n",
     )
     .expect("compose");
-    write_devcontainer_config(
+    let config_file = write_devcontainer_config(
         &workspace,
         "{\n  \"dockerComposeFile\": \"docker-compose.yml\",\n  \"service\": \"app\",\n  \"workspaceFolder\": \"/workspace\"\n}\n",
     );
+    let expected_workspace = fs::canonicalize(&workspace).expect("canonical workspace");
+    let expected_config = fs::canonicalize(&config_file).expect("canonical config");
 
     let fake_podman = harness.fake_podman.to_string_lossy().to_string();
     let output = harness.run(
@@ -570,7 +572,11 @@ fn up_expect_existing_compose_container_fails_when_missing() {
         String::from_utf8(output.stderr)
             .expect("utf8 stderr")
             .trim(),
-        "Dev container not found."
+        format!(
+            "Dev container not found for workspace folder '{}' and config file '{}'. If the container was created with a different config file, pass --config <path> or set DEVCONTAINER_CONFIG.",
+            expected_workspace.display(),
+            expected_config.display()
+        )
     );
 }
 

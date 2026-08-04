@@ -8,6 +8,72 @@ use std::path::Path;
 use support::runtime_harness::{write_devcontainer_config, RuntimeHarness};
 
 #[test]
+fn read_configuration_uses_environment_config_path() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    let default_config = workspace.join(".devcontainer").join("devcontainer.json");
+    let env_config = workspace
+        .join(".devcontainer")
+        .join("podman")
+        .join("devcontainer.json");
+    fs::create_dir_all(default_config.parent().expect("default config parent"))
+        .expect("default config dir");
+    fs::create_dir_all(env_config.parent().expect("env config parent")).expect("env config dir");
+    fs::write(&default_config, r#"{"image":"default"}"#).expect("default config");
+    fs::write(&env_config, r#"{"image":"environment"}"#).expect("environment config");
+
+    let output = harness.run(
+        &[
+            "read-configuration",
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+        ],
+        &[(
+            "DEVCONTAINER_CONFIG",
+            ".devcontainer/podman/devcontainer.json",
+        )],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let payload = harness.parse_stdout_json(&output);
+    assert_eq!(payload["configuration"]["image"], "environment");
+    assert_eq!(
+        payload["configuration"]["configFilePath"],
+        fs::canonicalize(&env_config)
+            .expect("canonical environment config")
+            .display()
+            .to_string()
+    );
+}
+
+#[test]
+fn read_configuration_resolves_relative_environment_config_from_current_directory() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    let env_config = workspace.join("configs").join("devcontainer.json");
+    fs::create_dir_all(env_config.parent().expect("environment config parent"))
+        .expect("environment config dir");
+    fs::write(&env_config, r#"{"image":"environment"}"#).expect("environment config");
+
+    let output = harness.run_in_dir(
+        &["read-configuration"],
+        &[("DEVCONTAINER_CONFIG", "configs/devcontainer.json")],
+        Some(&workspace),
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let payload = harness.parse_stdout_json(&output);
+    assert_eq!(payload["configuration"]["image"], "environment");
+    assert_eq!(
+        payload["configuration"]["configFilePath"],
+        fs::canonicalize(&env_config)
+            .expect("canonical environment config")
+            .display()
+            .to_string()
+    );
+}
+
+#[test]
 fn read_configuration_with_container_id_merges_config_and_container_metadata() {
     let harness = RuntimeHarness::new();
     let workspace = harness.workspace();

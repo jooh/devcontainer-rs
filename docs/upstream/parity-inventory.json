@@ -65,10 +65,9 @@
 					"name": "config",
 					"sourceReferenced": true,
 					"evidence": [
-						"cmd/devcontainer/src/commands/configuration/load.rs",
 						"cmd/devcontainer/src/commands/configuration/read.rs",
 						"cmd/devcontainer/src/commands/configuration/upgrade.rs",
-						"cmd/devcontainer/src/runtime/context.rs",
+						"cmd/devcontainer/src/runtime/container.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
 				},
@@ -186,6 +185,7 @@
 					"evidence": [
 						"cmd/devcontainer/src/commands/configuration/read.rs",
 						"cmd/devcontainer/src/runtime/compose/override_file.rs",
+						"cmd/devcontainer/src/runtime/container.rs",
 						"cmd/devcontainer/src/runtime/container/discovery.rs",
 						"cmd/devcontainer/src/runtime/container/engine_run.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
@@ -408,7 +408,7 @@
 					"name": "config",
 					"sourceReferenced": true,
 					"evidence": [
-						"cmd/devcontainer/src/runtime/context.rs",
+						"cmd/devcontainer/src/runtime/container.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
 				},
@@ -604,10 +604,9 @@
 					"name": "config",
 					"sourceReferenced": true,
 					"evidence": [
-						"cmd/devcontainer/src/commands/configuration/load.rs",
 						"cmd/devcontainer/src/commands/configuration/read.rs",
 						"cmd/devcontainer/src/commands/configuration/upgrade.rs",
-						"cmd/devcontainer/src/runtime/context.rs",
+						"cmd/devcontainer/src/runtime/container.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
 				},
@@ -791,7 +790,7 @@
 					"name": "config",
 					"sourceReferenced": true,
 					"evidence": [
-						"cmd/devcontainer/src/runtime/context.rs",
+						"cmd/devcontainer/src/runtime/container.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
 				},
@@ -877,6 +876,7 @@
 					"sourceReferenced": true,
 					"evidence": [
 						"cmd/devcontainer/src/runtime/compose/override_file.rs",
+						"cmd/devcontainer/src/runtime/container.rs",
 						"cmd/devcontainer/src/runtime/container/discovery.rs",
 						"cmd/devcontainer/src/runtime/container/engine_run.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
@@ -1021,10 +1021,9 @@
 					"name": "config",
 					"sourceReferenced": true,
 					"evidence": [
-						"cmd/devcontainer/src/commands/configuration/load.rs",
 						"cmd/devcontainer/src/commands/configuration/read.rs",
 						"cmd/devcontainer/src/commands/configuration/upgrade.rs",
-						"cmd/devcontainer/src/runtime/context.rs",
+						"cmd/devcontainer/src/runtime/container.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
 				},
@@ -1065,6 +1064,7 @@
 					"evidence": [
 						"cmd/devcontainer/src/commands/configuration/read.rs",
 						"cmd/devcontainer/src/runtime/compose/override_file.rs",
+						"cmd/devcontainer/src/runtime/container.rs",
 						"cmd/devcontainer/src/runtime/container/discovery.rs",
 						"cmd/devcontainer/src/runtime/container/engine_run.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
@@ -1192,7 +1192,6 @@
 					"name": "config",
 					"sourceReferenced": true,
 					"evidence": [
-						"cmd/devcontainer/src/commands/configuration/load.rs",
 						"cmd/devcontainer/src/commands/configuration/read.rs",
 						"cmd/devcontainer/src/commands/configuration/upgrade.rs"
 					]
@@ -1272,7 +1271,6 @@
 					"name": "config",
 					"sourceReferenced": true,
 					"evidence": [
-						"cmd/devcontainer/src/commands/configuration/load.rs",
 						"cmd/devcontainer/src/commands/configuration/read.rs",
 						"cmd/devcontainer/src/commands/configuration/upgrade.rs"
 					]
@@ -1792,7 +1790,7 @@
 					"name": "config",
 					"sourceReferenced": true,
 					"evidence": [
-						"cmd/devcontainer/src/runtime/context.rs",
+						"cmd/devcontainer/src/runtime/container.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
 				},
@@ -1847,6 +1845,7 @@
 					"sourceReferenced": true,
 					"evidence": [
 						"cmd/devcontainer/src/runtime/compose/override_file.rs",
+						"cmd/devcontainer/src/runtime/container.rs",
 						"cmd/devcontainer/src/runtime/container/discovery.rs",
 						"cmd/devcontainer/src/runtime/container/engine_run.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"

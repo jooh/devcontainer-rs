@@ -119,7 +119,11 @@ fn ensure_compose_up_container(
     }
 
     if common::has_flag(args, "--expect-existing-container") {
-        return Err("Dev container not found.".to_string());
+        return Err(super::dev_container_not_found_message(
+            args,
+            Some(&resolved.workspace_folder),
+            Some(&resolved.config_file),
+        ));
     }
 
     create_compose_container(resolved, args, image_name, remote_workspace_folder)
@@ -167,7 +171,11 @@ fn ensure_engine_up_container(
                 })
             }
             None if common::has_flag(args, "--expect-existing-container") => {
-                Err("Dev container not found.".to_string())
+                Err(super::dev_container_not_found_message(
+                    args,
+                    Some(&resolved.workspace_folder),
+                    Some(&resolved.config_file),
+                ))
             }
             None => create_engine_container(resolved, args, image_name, remote_workspace_folder),
         },
@@ -327,7 +335,11 @@ pub(crate) fn resolve_target_container_match(
 
     match find_target_container(args, workspace_folder, config_file, false)? {
         Some(target) => Ok(target),
-        None => Err("Dev container not found.".to_string()),
+        None => Err(super::dev_container_not_found_message(
+            args,
+            workspace_folder,
+            config_file,
+        )),
     }
 }
 
@@ -978,7 +990,15 @@ esac
         )
         .expect_err("missing container should fail");
 
-        assert_eq!(error, "Dev container not found.");
+        assert_eq!(
+            error,
+            "Dev container not found for workspace folder '/workspace' and config file '/workspace/.devcontainer/devcontainer.json'. If the container was created with a different config file, pass --config <path> or set DEVCONTAINER_CONFIG."
+        );
+
+        let workspace_only_error =
+            resolve_target_container_match(&args, Some(Path::new("/workspace")), None)
+                .expect_err("missing workspace-only container should fail");
+        assert_eq!(workspace_only_error, "Dev container not found.");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1583,7 +1603,11 @@ esac
             ensure_up_container(&resolved, &expect_error_args, "alpine:3.20", "/workspace")
                 .err()
                 .expect("expect existing should reject missing containers"),
-            "Dev container not found."
+            format!(
+                "Dev container not found for workspace folder '{}' and config file '{}'. If the container was created with a different config file, pass --config <path> or set DEVCONTAINER_CONFIG.",
+                resolved.workspace_folder.display(),
+                resolved.config_file.display()
+            )
         );
         let _ = fs::remove_dir_all(root);
     }
@@ -2008,7 +2032,14 @@ esac
         let error = ensure_up_container(&resolved, &expect_args, "alpine:3.20", "/workspace")
             .err()
             .expect("expect existing should reject missing compose containers");
-        assert_eq!(error, "Dev container not found.");
+        assert_eq!(
+            error,
+            format!(
+                "Dev container not found for workspace folder '{}' and config file '{}'. If the container was created with a different config file, pass --config <path> or set DEVCONTAINER_CONFIG.",
+                resolved.workspace_folder.display(),
+                resolved.config_file.display()
+            )
+        );
 
         let up = ensure_up_container(
             &resolved,
