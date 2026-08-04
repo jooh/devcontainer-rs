@@ -64,7 +64,7 @@ pub(crate) fn load_required_config_with_id_labels(
 }
 
 pub(crate) fn load_optional_config(args: &[String]) -> Result<Option<ResolvedConfig>, String> {
-    let explicit_config = common::parse_option_value(args, "--config");
+    let explicit_config = common::config_option_value(args);
     match load_required_config(args) {
         Ok(config) => Ok(Some(config)),
         Err(error)
@@ -185,7 +185,9 @@ mod tests {
 
     use serde_json::json;
 
-    use crate::commands::common::DEVCONTAINER_LOCAL_FOLDER_LABEL;
+    use crate::commands::common::{
+        test_env_defaults, DEVCONTAINER_CONFIG, DEVCONTAINER_LOCAL_FOLDER_LABEL,
+    };
     use crate::runtime::mounts::split_mount_options;
     use crate::test_support::{unique_temp_dir, write_executable_script};
 
@@ -294,6 +296,17 @@ mod tests {
         .expect_err("explicit missing config should fail");
 
         assert!(error.starts_with("Unable to locate a dev container config at "));
+
+        let missing_env_config = root.join("missing-env.json");
+        let _env = test_env_defaults(&[(
+            DEVCONTAINER_CONFIG,
+            missing_env_config.to_string_lossy().as_ref(),
+        )]);
+        let error =
+            load_optional_config(&["--container-id".to_string(), "container-id".to_string()])
+                .expect_err("environment missing config should fail");
+        assert!(error.starts_with("Unable to locate a dev container config at "));
+        assert!(error.contains("missing-env.json"), "{error}");
 
         let _ = fs::remove_dir_all(root);
     }

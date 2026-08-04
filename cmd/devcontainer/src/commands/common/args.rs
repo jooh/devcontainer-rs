@@ -15,6 +15,7 @@ use crate::process_runner::{ProcessLogLevel, ProcessRequest};
 
 pub(crate) const DEVCONTAINER_DOCKER_PATH: &str = "DEVCONTAINER_DOCKER_PATH";
 pub(crate) const DEVCONTAINER_DOCKER_COMPOSE_PATH: &str = "DEVCONTAINER_DOCKER_COMPOSE_PATH";
+pub(crate) const DEVCONTAINER_CONFIG: &str = "DEVCONTAINER_CONFIG";
 pub(crate) const DEVCONTAINER_BUILDKIT: &str = "DEVCONTAINER_BUILDKIT";
 pub(crate) const DEVCONTAINER_USER_DATA_FOLDER: &str = "DEVCONTAINER_USER_DATA_FOLDER";
 pub(crate) const DEVCONTAINER_CONTAINER_DATA_FOLDER: &str = "DEVCONTAINER_CONTAINER_DATA_FOLDER";
@@ -93,6 +94,10 @@ pub(crate) fn env_default_option_value(
     env_var: &str,
 ) -> Option<String> {
     parse_option_value(args, option).or_else(|| nonblank_env_value(env_var))
+}
+
+pub(crate) fn config_option_value(args: &[String]) -> Option<String> {
+    env_default_option_value(args, "--config", DEVCONTAINER_CONFIG)
 }
 
 pub(crate) fn env_default_choice_value(

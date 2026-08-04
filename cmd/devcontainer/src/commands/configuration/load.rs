@@ -28,7 +28,7 @@ pub(super) fn load_optional_config(args: &[String]) -> Result<Option<LoadedConfi
 
 fn missing_config_is_optional_for_container_inspection(args: &[String], error: &str) -> bool {
     common::parse_option_value(args, "--container-id").is_some()
-        && common::parse_option_value(args, "--config").is_none()
+        && common::config_option_value(args).is_none()
         && common::parse_option_value(args, "--workspace-folder").is_none()
         && error.starts_with("Unable to locate a dev container config at ")
 }
@@ -36,6 +36,7 @@ fn missing_config_is_optional_for_container_inspection(args: &[String], error: &
 #[cfg(test)]
 mod tests {
     use super::missing_config_is_optional_for_container_inspection;
+    use crate::commands::common::{test_env_defaults, DEVCONTAINER_CONFIG};
 
     #[test]
     fn missing_config_is_optional_only_for_container_inspection_without_explicit_sources() {
@@ -70,6 +71,15 @@ mod tests {
             ),
             "explicit config must not ignore missing config"
         );
+        let env = test_env_defaults(&[(DEVCONTAINER_CONFIG, "missing-devcontainer.json")]);
+        assert!(
+            !missing_config_is_optional_for_container_inspection(
+                &args(&["--container-id", "container-123"]),
+                missing_error
+            ),
+            "environment config must not be ignored"
+        );
+        drop(env);
         assert!(
             !missing_config_is_optional_for_container_inspection(&args(&[]), missing_error),
             "missing config without container inspection must remain an error"
