@@ -31,6 +31,13 @@ pub(crate) fn resolve_read_configuration_path(
             env::current_dir().map_err(|_| "Unable to determine workspace folder".to_string())?
         }
     };
+    let explicit_config = explicit_config.map(|config_file| {
+        if explicit_workspace.is_none() && config_file.is_relative() {
+            initial_workspace.join(config_file)
+        } else {
+            config_file
+        }
+    });
 
     let workspace_folder = if explicit_workspace.is_some() {
         initial_workspace.clone()
