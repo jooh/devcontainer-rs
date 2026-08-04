@@ -327,7 +327,11 @@ pub(crate) fn resolve_target_container_match(
 
     match find_target_container(args, workspace_folder, config_file, false)? {
         Some(target) => Ok(target),
-        None => Err("Dev container not found.".to_string()),
+        None => Err(super::dev_container_not_found_message(
+            args,
+            workspace_folder,
+            config_file,
+        )),
     }
 }
 
@@ -978,7 +982,15 @@ esac
         )
         .expect_err("missing container should fail");
 
-        assert_eq!(error, "Dev container not found.");
+        assert_eq!(
+            error,
+            "Dev container not found for workspace folder '/workspace' and config file '/workspace/.devcontainer/devcontainer.json'. If the container was created with a different config file, pass --config <path> or set DEVCONTAINER_CONFIG."
+        );
+
+        let workspace_only_error =
+            resolve_target_container_match(&args, Some(Path::new("/workspace")), None)
+                .expect_err("missing workspace-only container should fail");
+        assert_eq!(workspace_only_error, "Dev container not found.");
         let _ = fs::remove_dir_all(root);
     }
 
