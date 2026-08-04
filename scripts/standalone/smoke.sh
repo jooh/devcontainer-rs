@@ -22,6 +22,16 @@ assert_file_contains() {
   fi
 }
 
+assert_file_not_contains() {
+  local file="$1"
+  local unexpected="$2"
+  if grep -Fq -- "$unexpected" "$file"; then
+    echo "did not expect '$unexpected' in $file" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -199,9 +209,14 @@ cat >"$uid_workspace/.devcontainer/devcontainer.json" <<'EOF'
   "remoteUser": "vscode"
 }
 EOF
+: > "$log_dir/invocations.log"
 rm -f "$log_dir/container-created"
 FAKE_PODMAN_LOG_DIR="$log_dir" \
   "$binary" up --docker-path "$fake_bin/podman" --workspace-folder "$uid_workspace" \
   >"$tmp_dir/uid-up.json"
 assert_file_contains "$tmp_dir/uid-up.json" '"outcome":"success"'
-assert_file_contains "$log_dir/invocations.log" "build "
+if [[ "$(uname -s)" == "Linux" ]]; then
+  assert_file_contains "$log_dir/invocations.log" "build "
+else
+  assert_file_not_contains "$log_dir/invocations.log" "build "
+fi
