@@ -11,6 +11,8 @@ if [[ ! -x "$binary" ]]; then
   echo "standalone binary not found or not executable: $binary" >&2
   exit 2
 fi
+binary_dir="$(cd "$(dirname "$binary")" && pwd -P)"
+binary="$binary_dir/$(basename "$binary")"
 
 assert_file_contains() {
   local file="$1"
@@ -38,7 +40,20 @@ trap 'rm -rf "$tmp_dir"' EXIT
 workspace="$tmp_dir/workspace"
 fake_bin="$tmp_dir/fake-bin"
 log_dir="$tmp_dir/logs"
-mkdir -p "$workspace/.devcontainer" "$fake_bin" "$log_dir"
+runtime_home="$tmp_dir/home"
+runtime_tmp="$tmp_dir/tmp"
+runtime_workdir="$tmp_dir/runtime-workdir"
+mkdir -p \
+  "$workspace/.devcontainer" \
+  "$fake_bin" \
+  "$log_dir" \
+  "$runtime_home" \
+  "$runtime_tmp" \
+  "$runtime_workdir"
+
+export HOME="$runtime_home"
+export TMPDIR="$runtime_tmp"
+cd "$runtime_workdir"
 
 cat >"$workspace/.devcontainer/devcontainer.json" <<'EOF'
 {
@@ -62,6 +77,7 @@ STATE_FILE="$LOG_DIR/container-created"
 COMMAND="${1:-}"
 shift || true
 printf '%s %s\n' "$COMMAND" "$*" >> "$LOG_DIR/invocations.log"
+printf 'cwd=%s\n' "$PWD" >> "$LOG_DIR/invocations.log"
 
 case "$COMMAND" in
   image)
@@ -194,6 +210,7 @@ assert_file_contains "$tmp_dir/set-up.json" '"outcome":"success"'
 
 assert_file_contains "$log_dir/invocations.log" "run "
 assert_file_contains "$log_dir/invocations.log" "ps -q"
+assert_file_contains "$log_dir/invocations.log" "cwd=$runtime_workdir"
 assert_file_contains "$log_dir/exec.log" "/bin/sh -lc echo on-create"
 assert_file_contains "$log_dir/exec.log" "/bin/sh -lc echo update-content"
 assert_file_contains "$log_dir/exec.log" "/bin/sh -lc echo post-create"
