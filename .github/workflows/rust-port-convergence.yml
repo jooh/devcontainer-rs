@@ -89,6 +89,20 @@ jobs:
       - name: No Node runtime bridge
         run: node build/check-no-node-runtime.js
 
+  standalone-artifact-smoke-macos:
+    if: github.event_name == 'pull_request'
+    name: Standalone Artifact Smoke (macOS)
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Standalone artifact smoke
+        run: make standalone-artifact-smoke
+
   network-smoke:
     name: Outbound Network Smoke
     runs-on: ubuntu-latest
