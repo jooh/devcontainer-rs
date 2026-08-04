@@ -62,15 +62,6 @@ jobs:
       - name: Dependency policy
         run: make cargo-deny-check
 
-      - name: Build release binary
-        run: cargo build --release --manifest-path cmd/devcontainer/Cargo.toml
-
-      - name: Standalone artifact smoke
-        run: ./scripts/standalone/smoke.sh ./cmd/devcontainer/target/release/devcontainer
-
-      - name: PyPI wheel smoke
-        run: make pypi-wheel-smoke
-
       - name: Rust coverage
         run: make rust-coverage
 
@@ -89,19 +80,144 @@ jobs:
       - name: No Node runtime bridge
         run: node build/check-no-node-runtime.js
 
-  standalone-artifact-smoke-macos:
+  artifact-build:
     if: github.event_name == 'pull_request'
-    name: Standalone Artifact Smoke (macOS)
-    runs-on: macos-15
+    name: Package Artifacts (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            pypi_wheel_builder: manylinux
+          - target: darwin-arm64
+            runner: macos-15
+            rust_target: aarch64-apple-darwin
+            pypi_wheel_builder: host
+    runs-on: ${{ matrix.runner }}
+    env:
+      DIST_VERSION: 0.31.0
+      DIST_ARTIFACT_DIR: target/distrib
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
-      - name: Standalone artifact smoke
-        run: make standalone-artifact-smoke
+      - name: Setup uv
+        if: matrix.pypi_wheel_builder == 'host'
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install cargo-dist
+        shell: bash
+        run: cargo install cargo-dist --locked --version "$DIST_VERSION"
+
+      - name: Build cargo-dist archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -nE 's/^version = "([^"]+)"/\1/p' cmd/devcontainer/Cargo.toml | head -n 1)"
+          ~/.cargo/bin/dist build \
+            --artifacts=local \
+            --target '${{ matrix.rust_target }}' \
+            --tag "devcontainer-v${version}" \
+            --allow-dirty
+
+      - name: Build PyPI wheel (manylinux)
+        if: matrix.pypi_wheel_builder == 'manylinux'
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          target: ${{ matrix.rust_target }}
+          manylinux: 2014
+          container: quay.io/pypa/manylinux2014_x86_64
+          args: --release --out dist/wheels --compatibility pypi
+
+      - name: Build PyPI wheel (host)
+        if: matrix.pypi_wheel_builder == 'host'
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv tool run --from maturin maturin build \
+            --release \
+            --target '${{ matrix.rust_target }}' \
+            --out dist/wheels \
+            --compatibility pypi
+
+      - name: Upload artifact smoke bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-smoke-${{ matrix.target }}
+          path: |
+            ${{ env.DIST_ARTIFACT_DIR }}/devcontainer-${{ matrix.rust_target }}.tar.gz
+            ${{ env.DIST_ARTIFACT_DIR }}/devcontainer-${{ matrix.rust_target }}.tar.gz.sha256
+            dist/wheels/*.whl
+            scripts/standalone/archive-smoke.sh
+            scripts/standalone/pypi-wheel-smoke.sh
+            scripts/standalone/smoke.sh
+          if-no-files-found: error
+
+  artifact-smoke:
+    if: github.event_name == 'pull_request'
+    name: Isolated Package Smoke (${{ matrix.target }})
+    needs: artifact-build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+          - target: darwin-arm64
+            runner: macos-15
+            rust_target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Download artifact smoke bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: pr-smoke-${{ matrix.target }}
+          path: ${{ runner.temp }}/devcontainer-artifact-smoke
+
+      - name: Verify source checkout is absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          for source_path in .git Cargo.toml cmd; do
+            if [[ -e "$GITHUB_WORKSPACE/$source_path" ]]; then
+              echo "isolated smoke workspace contains repository path: $source_path" >&2
+              exit 1
+            fi
+          done
+
+      - name: Smoke packaged archive and wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="$RUNNER_TEMP/devcontainer-artifact-smoke"
+          harness="$bundle/scripts/standalone"
+          archive="$bundle/target/distrib/devcontainer-${{ matrix.rust_target }}.tar.gz"
+          wheels=("$bundle"/dist/wheels/*.whl)
+
+          if [[ ! -f "$archive" ]]; then
+            echo "expected cargo-dist archive not found: $archive" >&2
+            exit 1
+          fi
+          if [[ "${#wheels[@]}" -ne 1 || ! -f "${wheels[0]}" ]]; then
+            echo "expected exactly one wheel in $bundle/dist/wheels" >&2
+            exit 1
+          fi
+
+          chmod +x "$harness"/*.sh
+          "$harness/archive-smoke.sh" "$archive"
+          "$harness/pypi-wheel-smoke.sh" "${wheels[0]}"
 
   network-smoke:
     name: Outbound Network Smoke

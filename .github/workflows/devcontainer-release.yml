@@ -134,21 +134,6 @@ jobs:
             --tag '${{ needs.prepare.outputs.tag }}' \
             --allow-dirty
 
-      - name: Standalone smoke
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive_path="$DIST_ARTIFACT_DIR/devcontainer-${{ matrix.rust_target }}.tar.gz"
-          if [[ ! -f "$archive_path" ]]; then
-            echo "missing dist archive: $archive_path" >&2
-            exit 1
-          fi
-
-          smoke_dir="$(mktemp -d)"
-          trap 'rm -rf "$smoke_dir"' EXIT
-          tar -xzf "$archive_path" -C "$smoke_dir"
-          ./scripts/standalone/smoke.sh "$smoke_dir/devcontainer-${{ matrix.rust_target }}/devcontainer"
-
       - name: Build PyPI wheel (manylinux)
         if: matrix.pypi_wheel_builder == 'manylinux'
         uses: PyO3/maturin-action@v1
@@ -174,17 +159,144 @@ jobs:
             --out dist/wheels \
             --compatibility '${{ matrix.pypi_compatibility }}'
 
-      - name: Upload release artifact
+      - name: Upload release smoke bundle
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
+          name: release-smoke-${{ matrix.target }}
           path: |
             ${{ env.DIST_ARTIFACT_DIR }}/devcontainer-${{ matrix.rust_target }}.tar.gz
             ${{ env.DIST_ARTIFACT_DIR }}/devcontainer-${{ matrix.rust_target }}.tar.gz.sha256
             dist/wheels/*.whl
+            scripts/standalone/archive-smoke.sh
+            scripts/standalone/pypi-wheel-smoke.sh
+            scripts/standalone/smoke.sh
+          if-no-files-found: error
+
+  artifact-smoke:
+    needs: [prepare, build]
+    name: Isolated Release Smoke (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+          - target: darwin-x64
+            runner: macos-15-intel
+            rust_target: x86_64-apple-darwin
+          - target: darwin-arm64
+            runner: macos-15
+            rust_target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Download release smoke bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: release-smoke-${{ matrix.target }}
+          path: ${{ runner.temp }}/devcontainer-artifact-smoke
+
+      - name: Verify source checkout is absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          for source_path in .git Cargo.toml cmd; do
+            if [[ -e "$GITHUB_WORKSPACE/$source_path" ]]; then
+              echo "isolated smoke workspace contains repository path: $source_path" >&2
+              exit 1
+            fi
+          done
+
+      - name: Smoke packaged archive and wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="$RUNNER_TEMP/devcontainer-artifact-smoke"
+          harness="$bundle/scripts/standalone"
+          archive="$bundle/target/distrib/devcontainer-${{ matrix.rust_target }}.tar.gz"
+          wheels=("$bundle"/dist/wheels/*.whl)
+
+          if [[ ! -f "$archive" ]]; then
+            echo "expected cargo-dist archive not found: $archive" >&2
+            exit 1
+          fi
+          if [[ "${#wheels[@]}" -ne 1 || ! -f "${wheels[0]}" ]]; then
+            echo "expected exactly one wheel in $bundle/dist/wheels" >&2
+            exit 1
+          fi
+
+          chmod +x "$harness"/*.sh
+          "$harness/archive-smoke.sh" "$archive"
+          "$harness/pypi-wheel-smoke.sh" "${wheels[0]}"
+
+  artifact-smoke-musl:
+    needs: [prepare, build]
+    name: Isolated Release Smoke (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64-musl
+            runner: ubuntu-latest
+            rust_target: x86_64-unknown-linux-musl
+          - target: linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Download release smoke bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: release-smoke-${{ matrix.target }}
+          path: ${{ runner.temp }}/devcontainer-artifact-smoke
+
+      - name: Verify source checkout is absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          for source_path in .git Cargo.toml cmd; do
+            if [[ -e "$GITHUB_WORKSPACE/$source_path" ]]; then
+              echo "isolated smoke workspace contains repository path: $source_path" >&2
+              exit 1
+            fi
+          done
+
+      - name: Smoke packaged archive and wheel in Alpine
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="$RUNNER_TEMP/devcontainer-artifact-smoke"
+          harness="$bundle/scripts/standalone"
+          archive="$bundle/target/distrib/devcontainer-${{ matrix.rust_target }}.tar.gz"
+          wheels=("$bundle"/dist/wheels/*.whl)
+
+          if [[ ! -f "$archive" ]]; then
+            echo "expected cargo-dist archive not found: $archive" >&2
+            exit 1
+          fi
+          if [[ "${#wheels[@]}" -ne 1 || ! -f "${wheels[0]}" ]]; then
+            echo "expected exactly one wheel in $bundle/dist/wheels" >&2
+            exit 1
+          fi
+
+          chmod +x "$harness"/*.sh
+          docker run --rm \
+            --volume "$bundle:/bundle:ro" \
+            ghcr.io/astral-sh/uv:python3.12-alpine \
+            sh -c 'apk add --no-cache bash >/dev/null && \
+              /bin/bash /bundle/scripts/standalone/archive-smoke.sh \
+                /bundle/target/distrib/devcontainer-${{ matrix.rust_target }}.tar.gz && \
+              wheel=$(find /bundle/dist/wheels -type f -name "*.whl" -print -quit) && \
+              /bin/bash /bundle/scripts/standalone/pypi-wheel-smoke.sh "$wheel"'
 
   release:
-    needs: [prepare, build]
+    needs: [prepare, build, artifact-smoke, artifact-smoke-musl]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -198,6 +310,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: release-smoke-*
 
       - name: Check release artifact names
         shell: bash
@@ -215,7 +328,11 @@ jobs:
             if [[ "$name" == *.whl ]]; then
               unzip -t "$file" >/dev/null
             fi
-          done < <(find artifacts -type f -print0)
+          done < <(
+            find artifacts -type f \
+              \( -name '*.tar.gz' -o -name '*.tar.gz.sha256' -o -name '*.whl' \) \
+              -print0
+          )
 
       - name: Create GitHub release
         shell: bash
@@ -223,7 +340,11 @@ jobs:
           set -euo pipefail
           version='${{ needs.prepare.outputs.version }}'
           tag='${{ needs.prepare.outputs.tag }}'
-          mapfile -t release_files < <(find artifacts -type f | sort)
+          mapfile -t release_files < <(
+            find artifacts -type f \
+              \( -name '*.tar.gz' -o -name '*.tar.gz.sha256' -o -name '*.whl' \) \
+              | sort
+          )
 
           if [[ "${#release_files[@]}" -eq 0 ]]; then
             echo "no release artifacts found" >&2
@@ -252,6 +373,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: release-smoke-*
 
       - name: Collect PyPI wheels
         shell: bash
@@ -347,6 +469,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: release-smoke-*
 
       - name: Prepare npm packages
         shell: bash
