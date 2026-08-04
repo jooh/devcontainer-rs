@@ -119,7 +119,11 @@ fn ensure_compose_up_container(
     }
 
     if common::has_flag(args, "--expect-existing-container") {
-        return Err("Dev container not found.".to_string());
+        return Err(super::dev_container_not_found_message(
+            args,
+            Some(&resolved.workspace_folder),
+            Some(&resolved.config_file),
+        ));
     }
 
     create_compose_container(resolved, args, image_name, remote_workspace_folder)
@@ -167,7 +171,11 @@ fn ensure_engine_up_container(
                 })
             }
             None if common::has_flag(args, "--expect-existing-container") => {
-                Err("Dev container not found.".to_string())
+                Err(super::dev_container_not_found_message(
+                    args,
+                    Some(&resolved.workspace_folder),
+                    Some(&resolved.config_file),
+                ))
             }
             None => create_engine_container(resolved, args, image_name, remote_workspace_folder),
         },
@@ -1595,7 +1603,11 @@ esac
             ensure_up_container(&resolved, &expect_error_args, "alpine:3.20", "/workspace")
                 .err()
                 .expect("expect existing should reject missing containers"),
-            "Dev container not found."
+            format!(
+                "Dev container not found for workspace folder '{}' and config file '{}'. If the container was created with a different config file, pass --config <path> or set DEVCONTAINER_CONFIG.",
+                resolved.workspace_folder.display(),
+                resolved.config_file.display()
+            )
         );
         let _ = fs::remove_dir_all(root);
     }
@@ -2020,7 +2032,14 @@ esac
         let error = ensure_up_container(&resolved, &expect_args, "alpine:3.20", "/workspace")
             .err()
             .expect("expect existing should reject missing compose containers");
-        assert_eq!(error, "Dev container not found.");
+        assert_eq!(
+            error,
+            format!(
+                "Dev container not found for workspace folder '{}' and config file '{}'. If the container was created with a different config file, pass --config <path> or set DEVCONTAINER_CONFIG.",
+                resolved.workspace_folder.display(),
+                resolved.config_file.display()
+            )
+        );
 
         let up = ensure_up_container(
             &resolved,
