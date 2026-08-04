@@ -11,26 +11,23 @@ const workflowPath = path.join(
 );
 
 const workflow = fs.readFileSync(workflowPath, "utf8");
-const buildJobMatch = workflow.match(/^  build:\n([\s\S]+?)^  release:/m);
-const releaseJobMatch = workflow.match(/^  release:\n([\s\S]+?)^  pypi:/m);
-const pypiJobMatch = workflow.match(/^  pypi:\n([\s\S]+?)^  npm:/m);
-const npmJobMatch = workflow.match(/^  npm:\n([\s\S]+)$/m);
 
-assert.ok(
-  buildJobMatch,
-  "expected build release job in devcontainer-release workflow",
-);
-assert.ok(
-  releaseJobMatch,
-  "expected GitHub release job in devcontainer-release workflow",
-);
-assert.ok(npmJobMatch, "expected npm release job in devcontainer-release workflow");
-assert.ok(pypiJobMatch, "expected PyPI release job in devcontainer-release workflow");
+function workflowJob(source, name) {
+  const heading = `  ${name}:\n`;
+  const start = source.indexOf(heading);
+  assert.notEqual(start, -1, `expected ${name} job in devcontainer-release workflow`);
+  const remainder = source.slice(start + heading.length);
+  const nextJobOffset = remainder.search(/^  [a-zA-Z0-9_-]+:\n/m);
+  return source.slice(
+    start,
+    nextJobOffset === -1 ? source.length : start + heading.length + nextJobOffset,
+  );
+}
 
-const buildJob = buildJobMatch[0];
-const releaseJob = releaseJobMatch[0];
-const pypiJob = pypiJobMatch[0];
-const npmJob = npmJobMatch[0];
+const buildJob = workflowJob(workflow, "build");
+const releaseJob = workflowJob(workflow, "release");
+const pypiJob = workflowJob(workflow, "pypi");
+const npmJob = workflowJob(workflow, "npm");
 const arm64MuslMatrixEntryMatch = buildJob.match(
   /- target:\s*linux-arm64-musl\n([\s\S]+?)(?=\n\s+- target:|\n\s+runs-on:)/,
 );
@@ -42,15 +39,20 @@ assert.ok(
 
 const arm64MuslMatrixEntry = arm64MuslMatrixEntryMatch[0];
 
-assert.match(
-  buildJob,
-  /tar -xzf "\$archive_path" -C "\$smoke_dir"\n\s+\.\/scripts\/standalone\/smoke\.sh "\$smoke_dir\/devcontainer-\$\{\{ matrix\.rust_target \}\}\/devcontainer"/,
-  "cargo-dist smoke should run the binary inside the extracted top-level archive directory",
-);
 assert.doesNotMatch(
   buildJob,
-  /\.\/scripts\/standalone\/smoke\.sh "\$smoke_dir\/devcontainer"/,
-  "cargo-dist smoke should not assume the binary is extracted directly at the temp root",
+  /- name:\s*Standalone smoke/,
+  "release build jobs should not smoke packages while the checkout is present",
+);
+assert.match(
+  buildJob,
+  /name:\s*release-smoke-\$\{\{ matrix\.target \}\}/,
+  "release builds should upload per-target smoke bundles",
+);
+assert.match(
+  releaseJob,
+  /needs:\s*\[prepare, build, artifact-smoke, artifact-smoke-musl\]/,
+  "release publication should wait for every isolated smoke job",
 );
 assert.doesNotMatch(
   workflow,

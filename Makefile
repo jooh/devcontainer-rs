@@ -25,6 +25,7 @@
 	npm-wrapper-check \
 	npm-publish-script-check \
 	npm-package-smoke \
+	artifact-smoke-workflow-check \
 	tap-check \
 	homebrew-distribution-check \
 	npm-publish-workflow-check \
@@ -42,7 +43,7 @@ ACTIONLINT := uv tool run --from actionlint-py actionlint
 SHELLCHECK := uv tool run --from shellcheck-py shellcheck
 SHELLCHECK_FILES := $(shell git ls-files -- '*.sh' '.githooks/pre-commit' ':(exclude)upstream/**' ':(exclude)spec/**' ':(exclude)target/**' ':(exclude)node_modules/**')
 
-tests: rust-fmt rust-tests rust-clippy rust-check rust-doc rust-coverage cargo-deny-check actionlint-check shellcheck build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check check-upstream-submodule command-matrix-drift-check check-cli-reference schema-drift-check parity-harness no-node-runtime npm-wrapper-check npm-publish-script-check npm-package-smoke tap-check homebrew-distribution-check npm-publish-workflow-check check-parity-inventory check-cli-metadata check-compatibility-dashboard check-upstream-test-coverage check-devcontainer-config upstream-compatibility
+tests: rust-fmt rust-tests rust-clippy rust-check rust-doc rust-coverage cargo-deny-check actionlint-check shellcheck build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check check-upstream-submodule command-matrix-drift-check check-cli-reference schema-drift-check parity-harness no-node-runtime npm-wrapper-check npm-publish-script-check npm-package-smoke artifact-smoke-workflow-check tap-check homebrew-distribution-check npm-publish-workflow-check check-parity-inventory check-cli-metadata check-compatibility-dashboard check-upstream-test-coverage check-devcontainer-config upstream-compatibility
 
 rust-fmt:
 	cargo fmt --manifest-path $(RUST_MANIFEST) --all -- --check
@@ -121,6 +122,9 @@ npm-publish-script-check:
 npm-package-smoke:
 	node --test build/test-npm-package-smoke.js
 	node build/check-npm-packages.js
+
+artifact-smoke-workflow-check:
+	node build/check-artifact-smoke-workflows.js
 
 tap-check:
 	npm --prefix tap test
