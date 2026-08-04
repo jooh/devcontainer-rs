@@ -124,7 +124,8 @@ jobs:
           ~/.cargo/bin/dist build \
             --artifacts=local \
             --target '${{ matrix.rust_target }}' \
-            --tag "devcontainer-v${version}"
+            --tag "devcontainer-v${version}" \
+            --allow-dirty
 
       - name: Build PyPI wheel (manylinux)
         if: matrix.pypi_wheel_builder == 'manylinux'

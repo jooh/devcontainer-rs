@@ -69,6 +69,11 @@ assert.match(
 );
 assert.match(
   prBuildJob,
+  /~\/\.cargo\/bin\/dist build[\s\S]*--allow-dirty/,
+  "PR artifact builds should allow the custom release workflow",
+);
+assert.match(
+  prBuildJob,
   /dist\/wheels\/\*\.whl/,
   "PR artifact builds should produce wheels",
 );
