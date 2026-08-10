@@ -4,7 +4,7 @@
 		"context": "..",
 		"dockerfile": "Containerfile"
 	},
-	"postCreateCommand": "git config --global --add safe.directory ${containerWorkspaceFolder} && git submodule update --init --recursive",
+	"postCreateCommand": "git config --global --add safe.directory ${containerWorkspaceFolder} && git submodule update --init --recursive && COREPACK_ENABLE_PROJECT_SPEC=0 corepack yarn --cwd upstream install --frozen-lockfile --modules-folder ../node_modules",
 	"remoteUser": "dev",
 	"updateRemoteUserUID": true
 }
