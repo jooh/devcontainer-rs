@@ -41,5 +41,16 @@ RUN set -eux \
 	&& mkdir -p /workspaces \
 	&& chown -R "${USERNAME}:${USERNAME}" /workspaces
 
+ARG UV_VERSION=0.12.3
+ARG CARGO_DENY_VERSION=0.20.2
+ARG CARGO_LLVM_COV_VERSION=0.8.7
+
+RUN set -eux \
+	&& curl --fail --silent --show-error --location "https://astral.sh/uv/${UV_VERSION}/install.sh" \
+		| env UV_INSTALL_DIR=/usr/local/bin sh \
+	&& rustup component add llvm-tools-preview \
+	&& cargo install --locked --version "${CARGO_DENY_VERSION}" cargo-deny \
+	&& cargo install --locked --version "${CARGO_LLVM_COV_VERSION}" cargo-llvm-cov
+
 USER ${USERNAME}
 WORKDIR /workspaces/devcontainer-rs
