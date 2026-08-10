@@ -53,6 +53,54 @@ fn up_installs_dotfiles_between_post_create_and_post_start() {
 }
 
 #[test]
+fn up_installs_dotfiles_from_environment_defaults() {
+    let harness = RuntimeHarness::new();
+    let workspace = WorkspaceFixture::new(harness.workspace());
+    workspace.init_dotfiles_repo(
+        "dotfiles-env-repo",
+        "#!/bin/sh\nset -eu\nprintf 'env-dotfiles\\n' >> ../env-order.log\n",
+    );
+    let order_log = workspace.root().join("env-order.log");
+    write_devcontainer_config(
+        workspace.root(),
+        "{\n  \"image\": \"alpine:3.20\",\n  \"postCreateCommand\": \"printf 'post-create\\\\n' > /workspaces/workspace/env-order.log\",\n  \"postStartCommand\": \"printf 'post-start\\\\n' >> /workspaces/workspace/env-order.log\"\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.root().to_string_lossy().as_ref(),
+            "--container-data-folder",
+            "./.devcontainer-data",
+        ],
+        &[
+            ("DEVCONTAINER_DOTFILES_REPOSITORY", "./dotfiles-env-repo"),
+            ("DEVCONTAINER_DOTFILES_INSTALL_COMMAND", "install.sh"),
+            (
+                "DEVCONTAINER_DOTFILES_TARGET_PATH",
+                "./env-applied-dotfiles",
+            ),
+            ("FAKE_PODMAN_PS_DISABLE_DEFAULT", "1"),
+        ],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(order_log).expect("environment order log"),
+        "post-create\nenv-dotfiles\npost-start\n"
+    );
+    let exec_log = harness.read_exec_log();
+    assert!(exec_log.contains("./dotfiles-env-repo"), "{exec_log}");
+    assert!(exec_log.contains("./env-applied-dotfiles"), "{exec_log}");
+    assert!(exec_log.contains("if [ -f './install.sh' ]"), "{exec_log}");
+    assert!(!exec_log.contains("for f in install.sh"), "{exec_log}");
+}
+
+#[test]
 fn dotfiles_marker_skips_reinstall_on_followup_lifecycle_runs() {
     let harness = RuntimeHarness::new();
     let workspace = WorkspaceFixture::new(harness.workspace());
