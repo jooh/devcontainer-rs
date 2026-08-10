@@ -98,8 +98,8 @@ function main() {
 	assert.equal(config.updateRemoteUserUID, true, 'devcontainer should keep host UID/GID alignment enabled');
 	assert.equal(
 		config.postCreateCommand,
-		'git config --global --add safe.directory ${containerWorkspaceFolder} && git submodule update --init --recursive',
-		'postCreateCommand should trust the mounted workspace before initializing pinned submodules',
+		'git config --global --add safe.directory ${containerWorkspaceFolder} && git submodule update --init --recursive && COREPACK_ENABLE_PROJECT_SPEC=0 corepack yarn --cwd upstream install --frozen-lockfile --modules-folder ../node_modules',
+		'postCreateCommand should initialize submodules and install pinned upstream tooling dependencies',
 	);
 	assert(!('features' in config), 'devcontainer should not depend on external devcontainer features');
 	assert(!('customizations' in config), 'devcontainer should not carry editor-specific customizations');

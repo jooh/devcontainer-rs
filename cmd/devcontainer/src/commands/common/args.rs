@@ -19,6 +19,10 @@ pub(crate) const DEVCONTAINER_CONFIG: &str = "DEVCONTAINER_CONFIG";
 pub(crate) const DEVCONTAINER_BUILDKIT: &str = "DEVCONTAINER_BUILDKIT";
 pub(crate) const DEVCONTAINER_USER_DATA_FOLDER: &str = "DEVCONTAINER_USER_DATA_FOLDER";
 pub(crate) const DEVCONTAINER_CONTAINER_DATA_FOLDER: &str = "DEVCONTAINER_CONTAINER_DATA_FOLDER";
+pub(crate) const DEVCONTAINER_DOTFILES_REPOSITORY: &str = "DEVCONTAINER_DOTFILES_REPOSITORY";
+pub(crate) const DEVCONTAINER_DOTFILES_INSTALL_COMMAND: &str =
+    "DEVCONTAINER_DOTFILES_INSTALL_COMMAND";
+pub(crate) const DEVCONTAINER_DOTFILES_TARGET_PATH: &str = "DEVCONTAINER_DOTFILES_TARGET_PATH";
 pub(crate) const DEVCONTAINER_GPU_AVAILABILITY: &str = "DEVCONTAINER_GPU_AVAILABILITY";
 pub(crate) const DEVCONTAINER_UPDATE_REMOTE_USER_UID_DEFAULT: &str =
     "DEVCONTAINER_UPDATE_REMOTE_USER_UID_DEFAULT";
@@ -279,9 +283,21 @@ pub(crate) fn runtime_options(args: &[String]) -> RuntimeOptions {
             "--update-remote-user-uid-default",
             DEVCONTAINER_UPDATE_REMOTE_USER_UID_DEFAULT,
         ),
-        dotfiles_repository: parse_option_value(args, "--dotfiles-repository"),
-        dotfiles_install_command: parse_option_value(args, "--dotfiles-install-command"),
-        dotfiles_target_path: parse_option_value(args, "--dotfiles-target-path"),
+        dotfiles_repository: env_default_option_value(
+            args,
+            "--dotfiles-repository",
+            DEVCONTAINER_DOTFILES_REPOSITORY,
+        ),
+        dotfiles_install_command: env_default_option_value(
+            args,
+            "--dotfiles-install-command",
+            DEVCONTAINER_DOTFILES_INSTALL_COMMAND,
+        ),
+        dotfiles_target_path: env_default_option_value(
+            args,
+            "--dotfiles-target-path",
+            DEVCONTAINER_DOTFILES_TARGET_PATH,
+        ),
         user_data_folder: env_default_option_value(
             args,
             "--user-data-folder",
@@ -504,10 +520,11 @@ mod tests {
         runtime_options, runtime_process_request, secrets_env, test_env_defaults,
         validate_choice_option, validate_number_option, validate_option_values,
         validate_paired_options, validate_runtime_env_defaults, DEVCONTAINER_BUILDKIT,
-        DEVCONTAINER_CONTAINER_DATA_FOLDER, DEVCONTAINER_GPU_AVAILABILITY,
-        DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR, DEVCONTAINER_MOUNT_WORKSPACE_GIT_ROOT,
-        DEVCONTAINER_UPDATE_REMOTE_USER_UID_DEFAULT, DEVCONTAINER_USER_DATA_FOLDER,
-        DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY,
+        DEVCONTAINER_CONTAINER_DATA_FOLDER, DEVCONTAINER_DOTFILES_INSTALL_COMMAND,
+        DEVCONTAINER_DOTFILES_REPOSITORY, DEVCONTAINER_DOTFILES_TARGET_PATH,
+        DEVCONTAINER_GPU_AVAILABILITY, DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR,
+        DEVCONTAINER_MOUNT_WORKSPACE_GIT_ROOT, DEVCONTAINER_UPDATE_REMOTE_USER_UID_DEFAULT,
+        DEVCONTAINER_USER_DATA_FOLDER, DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY,
     };
 
     #[test]
@@ -707,6 +724,9 @@ mod tests {
             (DEVCONTAINER_BUILDKIT, "never"),
             (DEVCONTAINER_GPU_AVAILABILITY, "all"),
             (DEVCONTAINER_UPDATE_REMOTE_USER_UID_DEFAULT, "off"),
+            (DEVCONTAINER_DOTFILES_REPOSITORY, "owner/dotfiles"),
+            (DEVCONTAINER_DOTFILES_INSTALL_COMMAND, "bootstrap.sh"),
+            (DEVCONTAINER_DOTFILES_TARGET_PATH, "/env/dotfiles"),
             (DEVCONTAINER_USER_DATA_FOLDER, "/env/user-data"),
             (DEVCONTAINER_CONTAINER_DATA_FOLDER, "/env/container-data"),
         ]);
@@ -719,11 +739,69 @@ mod tests {
             options.update_remote_user_uid_default.as_deref(),
             Some("off")
         );
+        assert_eq!(
+            options.dotfiles_repository.as_deref(),
+            Some("owner/dotfiles")
+        );
+        assert_eq!(
+            options.dotfiles_install_command.as_deref(),
+            Some("bootstrap.sh")
+        );
+        assert_eq!(
+            options.dotfiles_target_path.as_deref(),
+            Some("/env/dotfiles")
+        );
         assert_eq!(options.user_data_folder.as_deref(), Some("/env/user-data"));
         assert_eq!(
             options.container_data_folder.as_deref(),
             Some("/env/container-data")
         );
+    }
+
+    #[test]
+    fn runtime_options_prefer_dotfiles_cli_values_over_env_defaults() {
+        let _env = test_env_defaults(&[
+            (DEVCONTAINER_DOTFILES_REPOSITORY, "env/repository"),
+            (DEVCONTAINER_DOTFILES_INSTALL_COMMAND, "env-install.sh"),
+            (DEVCONTAINER_DOTFILES_TARGET_PATH, "/env/dotfiles"),
+        ]);
+
+        let options = runtime_options(&[
+            "--dotfiles-repository".to_string(),
+            "cli/repository".to_string(),
+            "--dotfiles-install-command".to_string(),
+            "cli-install.sh".to_string(),
+            "--dotfiles-target-path".to_string(),
+            "/cli/dotfiles".to_string(),
+        ]);
+
+        assert_eq!(
+            options.dotfiles_repository.as_deref(),
+            Some("cli/repository")
+        );
+        assert_eq!(
+            options.dotfiles_install_command.as_deref(),
+            Some("cli-install.sh")
+        );
+        assert_eq!(
+            options.dotfiles_target_path.as_deref(),
+            Some("/cli/dotfiles")
+        );
+    }
+
+    #[test]
+    fn runtime_options_ignore_blank_dotfiles_env_defaults() {
+        let _env = test_env_defaults(&[
+            (DEVCONTAINER_DOTFILES_REPOSITORY, "  "),
+            (DEVCONTAINER_DOTFILES_INSTALL_COMMAND, "\t"),
+            (DEVCONTAINER_DOTFILES_TARGET_PATH, "\n"),
+        ]);
+
+        let options = runtime_options(&[]);
+
+        assert_eq!(options.dotfiles_repository, None);
+        assert_eq!(options.dotfiles_install_command, None);
+        assert_eq!(options.dotfiles_target_path, None);
     }
 
     #[test]

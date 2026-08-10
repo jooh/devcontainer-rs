@@ -65,6 +65,9 @@ not shell command strings with arguments. Use
 | `--buildkit` | `DEVCONTAINER_BUILDKIT` |
 | `--user-data-folder` | `DEVCONTAINER_USER_DATA_FOLDER` |
 | `--container-data-folder` | `DEVCONTAINER_CONTAINER_DATA_FOLDER` |
+| `--dotfiles-repository` | `DEVCONTAINER_DOTFILES_REPOSITORY` |
+| `--dotfiles-install-command` | `DEVCONTAINER_DOTFILES_INSTALL_COMMAND` |
+| `--dotfiles-target-path` | `DEVCONTAINER_DOTFILES_TARGET_PATH` |
 | `--gpu-availability` | `DEVCONTAINER_GPU_AVAILABILITY` |
 | `--update-remote-user-uid-default` | `DEVCONTAINER_UPDATE_REMOTE_USER_UID_DEFAULT` |
 | `--mount-workspace-git-root` | `DEVCONTAINER_MOUNT_WORKSPACE_GIT_ROOT` |
