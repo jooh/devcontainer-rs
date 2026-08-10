@@ -41,16 +41,34 @@ RUN set -eux \
 	&& mkdir -p /workspaces \
 	&& chown -R "${USERNAME}:${USERNAME}" /workspaces
 
+ARG GIT_VERSION=2.55.0
+ARG GIT_SHA256=457fdb04dc8728e007d4688695e6912e6f680727920f2a40bf11eacc17505357
 ARG UV_VERSION=0.12.3
 ARG CARGO_DENY_VERSION=0.20.2
 ARG CARGO_LLVM_COV_VERSION=0.8.7
 
 RUN set -eux \
+	&& apt-get update \
+	&& apt-get install --yes --no-install-recommends \
+		libcurl4-openssl-dev \
+		libexpat1-dev \
+		libssl-dev \
+		zlib1g-dev \
+	&& curl --fail --silent --show-error --location \
+		"https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.xz" \
+		--output /tmp/git.tar.xz \
+	&& echo "${GIT_SHA256}  /tmp/git.tar.xz" | sha256sum --check - \
+	&& tar --extract --xz --file /tmp/git.tar.xz --directory /tmp \
+	&& make -C "/tmp/git-${GIT_VERSION}" prefix=/usr/local NO_GETTEXT=YesPlease NO_TCLTK=YesPlease -j"$(nproc)" all \
+	&& make -C "/tmp/git-${GIT_VERSION}" prefix=/usr/local NO_GETTEXT=YesPlease NO_TCLTK=YesPlease install \
+	&& rm -rf /tmp/git.tar.xz "/tmp/git-${GIT_VERSION}" \
+	&& rm -rf /var/lib/apt/lists/* \
 	&& curl --fail --silent --show-error --location "https://astral.sh/uv/${UV_VERSION}/install.sh" \
 		| env UV_INSTALL_DIR=/usr/local/bin sh \
 	&& rustup component add llvm-tools-preview \
 	&& cargo install --locked --version "${CARGO_DENY_VERSION}" cargo-deny \
-	&& cargo install --locked --version "${CARGO_LLVM_COV_VERSION}" cargo-llvm-cov
+	&& cargo install --locked --version "${CARGO_LLVM_COV_VERSION}" cargo-llvm-cov \
+	&& chown -R "${USERNAME}:${USERNAME}" /usr/local/cargo /usr/local/rustup
 
 USER ${USERNAME}
 WORKDIR /workspaces/devcontainer-rs
