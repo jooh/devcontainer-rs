@@ -48,6 +48,20 @@ const nativeOptionsByCommand = {
 			description: 'Build without using cached layers. Native extension.  [boolean]',
 		},
 	],
+	'set-up': [
+		{
+			name: 'workspace-folder',
+			aliases: [],
+			description: 'Workspace folder used to resolve the devcontainer configuration. Native extension.  [string]',
+		},
+	],
+	exec: [
+		{
+			name: 'secrets-file',
+			aliases: [],
+			description: 'Path to a JSON file containing secret environment variables. Native extension.  [string]',
+		},
+	],
 	'features test': [
 		{
 			name: 'docker-path',

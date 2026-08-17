@@ -951,6 +951,13 @@
 						"include-merged-configuration"
 					],
 					"positionalNames": []
+				},
+				{
+					"text": "  --workspace-folder                Workspace folder used to resolve the devcontainer configuration. Native extension.  [string]",
+					"optionNames": [
+						"workspace-folder"
+					],
+					"positionalNames": []
 				}
 			],
 			"options": [
@@ -1072,6 +1079,12 @@
 					"name": "user-data-folder",
 					"aliases": [],
 					"description": "Host path to a directory that is intended to be persisted and share state between sessions.  [string]",
+					"visible": true
+				},
+				{
+					"name": "workspace-folder",
+					"aliases": [],
+					"description": "Workspace folder used to resolve the devcontainer configuration. Native extension.  [string]",
 					"visible": true
 				},
 				{
@@ -4441,6 +4454,13 @@
 						"remote-env"
 					],
 					"positionalNames": []
+				},
+				{
+					"text": "  --secrets-file                    Path to a JSON file containing secret environment variables. Native extension.  [string]",
+					"optionNames": [
+						"secrets-file"
+					],
+					"positionalNames": []
 				}
 			],
 			"options": [
@@ -4556,6 +4576,12 @@
 					"name": "workspace-folder",
 					"aliases": [],
 					"description": "Workspace folder path. The devcontainer.json will be looked up relative to this path. If --container-id, --id-label, and --workspace-folder are not provided, this defaults to the current directory.  [string]",
+					"visible": true
+				},
+				{
+					"name": "secrets-file",
+					"aliases": [],
+					"description": "Path to a JSON file containing secret environment variables. Native extension.  [string]",
 					"visible": true
 				},
 				{
