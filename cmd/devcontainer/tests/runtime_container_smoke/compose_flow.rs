@@ -138,6 +138,42 @@ fn up_starts_compose_services_and_exec_uses_compose_container_lookup() {
 }
 
 #[test]
+fn up_pull_always_forwards_the_compose_pull_policy() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    fs::write(
+        workspace.join(".devcontainer").join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"dockerComposeFile\": \"docker-compose.yml\",\n  \"service\": \"app\"\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--pull-always",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let invocations = harness.read_invocations();
+    assert!(
+        invocations.contains(" up -d --pull always"),
+        "{invocations}"
+    );
+}
+
+#[test]
 fn up_generated_override_preserves_compose_version_prefix() {
     let harness = RuntimeHarness::new();
     let workspace = harness.workspace();
@@ -398,6 +434,7 @@ fn up_uses_env_backed_engine_and_compose_paths_for_compose_workspaces() {
             "up",
             "--workspace-folder",
             workspace.to_string_lossy().as_ref(),
+            "--pull-always",
         ],
         &[
             ("DEVCONTAINER_DOCKER_PATH", fake_podman.as_str()),
@@ -410,7 +447,10 @@ fn up_uses_env_backed_engine_and_compose_paths_for_compose_workspaces() {
     assert_eq!(payload["containerId"], "fake-compose-container-id");
     let invocations = harness.read_invocations();
     assert!(invocations.contains("compose --project-name workspace_devcontainer -f "));
-    assert!(invocations.contains(" up -d"));
+    assert!(
+        invocations.contains(" up -d --pull-always"),
+        "{invocations}"
+    );
 }
 
 #[test]

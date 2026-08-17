@@ -164,6 +164,9 @@ pub(crate) fn up_service(
         },
     )?;
     let mut up_args = vec!["-d".to_string()];
+    if common::has_flag(args, "--pull-always") {
+        up_args.extend(engine::compose_pull_always_args(args));
+    }
     if no_recreate {
         up_args.push("--no-recreate".to_string());
     }

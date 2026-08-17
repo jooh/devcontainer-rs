@@ -59,9 +59,12 @@ fn start_container_with_metadata(
     let default_labels =
         common::default_devcontainer_id_labels(&resolved.workspace_folder, &resolved.config_file);
     let metadata = metadata?;
-    let mut engine_args = vec![
-        "run".to_string(),
-        "-d".to_string(),
+    let mut engine_args = vec!["run".to_string(), "-d".to_string()];
+    if common::has_flag(args, "--pull-always") {
+        engine_args.push("--pull".to_string());
+        engine_args.push("always".to_string());
+    }
+    engine_args.extend([
         "--label".to_string(),
         default_labels[0].clone(),
         "--label".to_string(),
@@ -70,7 +73,7 @@ fn start_container_with_metadata(
         format!("devcontainer.metadata={metadata}"),
         "--mount".to_string(),
         workspace_mount_for_args(resolved, remote_workspace_folder, args),
-    ];
+    ]);
     if resolved.configuration.get("workspaceMount").is_none() {
         for mount in additional_mounts_for_workspace_target(resolved, remote_workspace_folder, args)
         {

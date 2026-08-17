@@ -66,6 +66,34 @@ fn up_starts_a_container_and_exec_runs_inside_it() {
 }
 
 #[test]
+fn up_pull_always_forwards_the_engine_pull_policy() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    write_devcontainer_config(&workspace, "{\n  \"image\": \"alpine:3.20\"\n}\n");
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--pull-always",
+        ],
+        &[("FAKE_PODMAN_PS_DISABLE_DEFAULT", "1")],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let invocations = harness.read_invocations();
+    assert!(
+        invocations.contains("run -d --pull always"),
+        "{invocations}"
+    );
+}
+
+#[test]
 fn up_succeeds_with_env_backed_runtime_defaults() {
     let harness = RuntimeHarness::new();
     let workspace = harness.workspace();

@@ -93,6 +93,28 @@ pub(crate) fn requested_compose_program(args: &[String]) -> Option<String> {
     )
 }
 
+pub(crate) fn compose_pull_always_args(args: &[String]) -> Vec<String> {
+    if requested_compose_program(args)
+        .as_deref()
+        .is_some_and(is_standalone_podman_compose)
+    {
+        vec!["--pull-always".to_string()]
+    } else {
+        vec!["--pull".to_string(), "always".to_string()]
+    }
+}
+
+fn is_standalone_podman_compose(program: &str) -> bool {
+    let filename = program
+        .rsplit(|character| matches!(character, '/' | '\\'))
+        .next()
+        .unwrap_or(program);
+    Path::new(filename)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("podman-compose"))
+}
+
 fn default_compose_subcommand_available(args: &[String]) -> bool {
     let request = common::runtime_process_request(
         args,
@@ -196,8 +218,9 @@ mod tests {
     use crate::process_runner::{ProcessLogLevel, ProcessRequest, ProcessResult};
 
     use super::{
-        compose_request, default_compose_subcommand_available, engine_request, is_build_request,
-        normalize_process_error, run_compose, run_engine, run_engine_streaming, stderr_or_stdout,
+        compose_pull_always_args, compose_request, default_compose_subcommand_available,
+        engine_request, is_build_request, normalize_process_error, run_compose, run_engine,
+        run_engine_streaming, stderr_or_stdout,
     };
 
     #[test]
@@ -317,6 +340,28 @@ mod tests {
         );
 
         assert_eq!(request.program, "/cli/bin/docker");
+    }
+
+    #[test]
+    fn compose_pull_always_args_match_the_selected_compose_provider() {
+        assert_eq!(
+            compose_pull_always_args(&[]),
+            vec!["--pull".to_string(), "always".to_string()]
+        );
+        assert_eq!(
+            compose_pull_always_args(&[
+                "--docker-compose-path".to_string(),
+                "/opt/bin/podman-compose".to_string(),
+            ]),
+            vec!["--pull-always".to_string()]
+        );
+        assert_eq!(
+            compose_pull_always_args(&[
+                "--docker-compose-path".to_string(),
+                "C:\\bin\\podman-compose.exe".to_string(),
+            ]),
+            vec!["--pull-always".to_string()]
+        );
     }
 
     #[test]
