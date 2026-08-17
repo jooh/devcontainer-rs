@@ -105,10 +105,7 @@ pub(crate) fn compose_pull_always_args(args: &[String]) -> Vec<String> {
 }
 
 fn is_standalone_podman_compose(program: &str) -> bool {
-    let filename = program
-        .rsplit(|character| matches!(character, '/' | '\\'))
-        .next()
-        .unwrap_or(program);
+    let filename = program.rsplit(['/', '\\']).next().unwrap_or(program);
     Path::new(filename)
         .file_stem()
         .and_then(|name| name.to_str())
