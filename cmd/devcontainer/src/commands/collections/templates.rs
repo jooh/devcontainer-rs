@@ -422,10 +422,8 @@ fn template_path_is_omitted(relative_path: &Path, omit_paths: &[String]) -> bool
             if relative == prefix || relative.starts_with(&format!("{prefix}/")) {
                 return true;
             }
-        } else {
-            if relative == *pattern {
-                return true;
-            }
+        } else if relative == *pattern {
+            return true;
         }
     }
     false
