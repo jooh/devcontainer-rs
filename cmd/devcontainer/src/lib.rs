@@ -33,7 +33,6 @@ pub fn run_from_env() -> ExitCode {
     run(env::args().skip(1).collect())
 }
 
-#[cfg(test)]
 fn unsupported_argument_exit_code(error: Option<String>) -> Option<ExitCode> {
     match error {
         Some(error) => {
@@ -104,6 +103,13 @@ pub fn run(raw_args: Vec<String>) -> ExitCode {
         resolved_help.path,
         resolved_args,
     ));
+
+    if let Some(exit_code) = unsupported_argument_exit_code(cli::unsupported_argument_error(
+        resolved_help.path,
+        &normalized_command_args,
+    )) {
+        return exit_code;
+    }
 
     match commands::dispatch(command, &normalized_command_args) {
         commands::DispatchResult::Complete(code) => code,
@@ -210,7 +216,7 @@ mod tests {
                 "up".to_string(),
                 "--definitely-unsupported".to_string()
             ]),
-            ExitCode::from(1)
+            ExitCode::from(2)
         );
         assert_eq!(
             run(vec!["read-configuration".to_string()]),

@@ -455,6 +455,13 @@
 						"include-merged-configuration"
 					],
 					"positionalNames": []
+				},
+				{
+					"text": "  --pull-always                     Always pull images before creating the dev container. Native extension.  [boolean]",
+					"optionNames": [
+						"pull-always"
+					],
+					"positionalNames": []
 				}
 			],
 			"options": [
@@ -726,6 +733,12 @@
 					"name": "workspace-mount-consistency",
 					"aliases": [],
 					"description": "Workspace mount consistency.  [choices: \"consistent\", \"cached\", \"delegated\"] [default: \"cached\"]",
+					"visible": true
+				},
+				{
+					"name": "pull-always",
+					"aliases": [],
+					"description": "Always pull images before creating the dev container. Native extension.  [boolean]",
 					"visible": true
 				},
 				{

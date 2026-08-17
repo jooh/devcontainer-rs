@@ -33,6 +33,16 @@ const outputPath = path.join(
 	'cli_metadata.json',
 );
 
+const nativeOptionsByCommand = {
+	up: [
+		{
+			name: 'pull-always',
+			aliases: [],
+			description: 'Always pull images before creating the dev container. Native extension.  [boolean]',
+		},
+	],
+};
+
 function readJson(filePath) {
 	return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
@@ -161,6 +171,18 @@ function parseDisplayedEntries(lines) {
 	};
 }
 
+function nativeOptionsForCommand(commandPath) {
+	return nativeOptionsByCommand[commandPath] || [];
+}
+
+function nativeOptionLines(options) {
+	return options.map(option => ({
+		text: `  --${option.name.padEnd(32)}${option.description}`,
+		optionNames: [option.name],
+		positionalNames: [],
+	}));
+}
+
 function mergeOptions(allOptionNames, displayedOptions) {
 	const displayedByName = new Map(displayedOptions.map(option => [option.name, option]));
 	const merged = allOptionNames.map(name => {
@@ -218,14 +240,18 @@ function generateCliMetadata() {
 			runUpstreamHelp(command.path.split(' ')),
 		);
 		const parsed = parseDisplayedEntries(commandLines);
+		const nativeOptions = nativeOptionsForCommand(command.path);
 		return {
 			path: command.path,
 			group: command.group,
 			tokenPath: command.path.split(' '),
 			description: command.description,
 			subcommands: groupChildren(matrix, command.path),
-			lines: parsed.lines,
-			options: mergeOptions(command.options, parsed.displayedOptions),
+			lines: [...parsed.lines, ...nativeOptionLines(nativeOptions)],
+			options: mergeOptions(
+				[...command.options, ...nativeOptions.map(option => option.name)],
+				[...parsed.displayedOptions, ...nativeOptions],
+			),
 			positionals: parsed.displayedPositionals,
 			unsupportedOptions: unsupportedOptionsForCommand(
 				parityInventory,

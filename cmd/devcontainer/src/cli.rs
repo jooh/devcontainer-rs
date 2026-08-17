@@ -316,17 +316,6 @@ fn unsupported_argument_error_for(
     command_path: &str,
     args: &[String],
 ) -> Option<String> {
-    let mut unsupported_flags = Vec::new();
-
-    for option in &command.options {
-        if command.unsupported_options.contains(&option.name) {
-            unsupported_flags.push((format!("--{}", option.name), option.name.as_str()));
-            for alias in &option.aliases {
-                unsupported_flags.push((format!("-{alias}"), option.name.as_str()));
-            }
-        }
-    }
-
     for arg in args {
         if arg == "--" {
             break;
@@ -336,16 +325,33 @@ fn unsupported_argument_error_for(
             break;
         }
 
+        if !arg.starts_with('-') {
+            continue;
+        }
+
         let flag = match arg.split_once('=') {
             Some((name, _)) => name,
             None => arg.as_str(),
         };
-        for (candidate, _) in &unsupported_flags {
-            if candidate == flag {
-                return Some(format!(
-                    "Option {candidate} {UNSUPPORTED_ARGUMENT_MESSAGE}: devcontainer {command_path}"
-                ));
+        let short_alias = match flag.strip_prefix('-') {
+            Some(alias) if !alias.starts_with('-') => Some(alias),
+            _ => None,
+        };
+        let Some(option) = find_command_option(command, flag, short_alias) else {
+            if command_path == "up" && flag == "--pull" {
+                return Some(
+                    "Option --pull is not supported by devcontainer up. Use --pull-always instead."
+                        .to_string(),
+                );
             }
+            return Some(format!(
+                "Unknown option: {flag}: devcontainer {command_path}"
+            ));
+        };
+        if command.unsupported_options.contains(&option.name) {
+            return Some(format!(
+                "Option {flag} {UNSUPPORTED_ARGUMENT_MESSAGE}: devcontainer {command_path}"
+            ));
         }
     }
 
