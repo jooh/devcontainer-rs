@@ -71,6 +71,18 @@ impl CommandOption {
             None => false,
         }
     }
+
+    fn accepts_explicit_boolean_value(&self, value: Option<&String>) -> bool {
+        self.description
+            .as_deref()
+            .is_none_or(|description| description.contains("[boolean]"))
+            && value.is_some_and(|value| {
+                matches!(
+                    value.as_str(),
+                    "false" | "0" | "no" | "off" | "true" | "1" | "yes" | "on"
+                )
+            })
+    }
 }
 
 pub struct ResolvedCommandHelp<'a> {
@@ -316,7 +328,8 @@ fn unsupported_argument_error_for(
     command_path: &str,
     args: &[String],
 ) -> Option<String> {
-    for arg in args {
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
         if arg == "--" {
             break;
         }
@@ -326,6 +339,12 @@ fn unsupported_argument_error_for(
         }
 
         if !arg.starts_with('-') {
+            if command_path == "up" {
+                return Some(format!(
+                    "Unknown argument: {arg}: devcontainer {command_path}"
+                ));
+            }
+            index += 1;
             continue;
         }
 
@@ -352,6 +371,16 @@ fn unsupported_argument_error_for(
             return Some(format!(
                 "Option {flag} {UNSUPPORTED_ARGUMENT_MESSAGE}: devcontainer {command_path}"
             ));
+        }
+
+        let next = args.get(index + 1);
+        if !arg.contains('=')
+            && next.is_some_and(|value| value != "--")
+            && (option.takes_value() || option.accepts_explicit_boolean_value(next))
+        {
+            index += 2;
+        } else {
+            index += 1;
         }
     }
 

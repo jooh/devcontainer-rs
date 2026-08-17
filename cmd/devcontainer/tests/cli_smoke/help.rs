@@ -76,15 +76,19 @@ fn up_help_lists_native_pull_always_extension() {
 
 #[test]
 fn up_rejects_unknown_options_before_dispatch() {
-    for (option, expected) in [
+    for (argument, expected) in [
         (
             "--unrecognized-option",
             "Unknown option: --unrecognized-option",
         ),
+        (
+            "unrecognized-argument",
+            "Unknown argument: unrecognized-argument",
+        ),
         ("--pull=always", "Use --pull-always instead."),
     ] {
         let output = devcontainer_command(None)
-            .args(["up", option])
+            .args(["up", argument])
             .output()
             .expect("up command should run");
 
