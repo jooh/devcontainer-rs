@@ -1271,6 +1271,13 @@
 						"frozen-lockfile"
 					],
 					"positionalNames": []
+				},
+				{
+					"text": "  --build-no-cache                  Build without using cached layers. Native extension.  [boolean]",
+					"optionNames": [
+						"build-no-cache"
+					],
+					"positionalNames": []
 				}
 			],
 			"options": [
@@ -1416,6 +1423,12 @@
 					"name": "workspace-folder",
 					"aliases": [],
 					"description": "Workspace folder path. The devcontainer.json will be looked up relative to this path. If not provided, defaults to the current directory.  [string]",
+					"visible": true
+				},
+				{
+					"name": "build-no-cache",
+					"aliases": [],
+					"description": "Build without using cached layers. Native extension.  [boolean]",
 					"visible": true
 				},
 				{
@@ -2751,6 +2764,13 @@
 						"quiet"
 					],
 					"positionalNames": []
+				},
+				{
+					"text": "  --docker-path                     Container engine CLI path. Native extension.  [string]",
+					"optionNames": [
+						"docker-path"
+					],
+					"positionalNames": []
 				}
 			],
 			"options": [
@@ -2840,6 +2860,12 @@
 					"name": "skip-scenarios",
 					"aliases": [],
 					"description": "Skip all 'scenario' style tests.  Cannot be combined with '--global--scenarios-only'.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "docker-path",
+					"aliases": [],
+					"description": "Container engine CLI path. Native extension.  [string]",
 					"visible": true
 				},
 				{
@@ -3124,9 +3150,22 @@
 						"log-level"
 					],
 					"positionalNames": []
+				},
+				{
+					"text": "  --output-dir                      Directory for the generated local OCI layout. Native extension.  [string]",
+					"optionNames": [
+						"output-dir"
+					],
+					"positionalNames": []
 				}
 			],
 			"options": [
+				{
+					"name": "output-dir",
+					"aliases": [],
+					"description": "Directory for the generated local OCI layout. Native extension.  [string]",
+					"visible": true
+				},
 				{
 					"name": "help",
 					"aliases": [],
@@ -3912,9 +3951,22 @@
 						"log-level"
 					],
 					"positionalNames": []
+				},
+				{
+					"text": "  --output-dir                      Directory for the generated local OCI layout. Native extension.  [string]",
+					"optionNames": [
+						"output-dir"
+					],
+					"positionalNames": []
 				}
 			],
 			"options": [
+				{
+					"name": "output-dir",
+					"aliases": [],
+					"description": "Directory for the generated local OCI layout. Native extension.  [string]",
+					"visible": true
+				},
 				{
 					"name": "help",
 					"aliases": [],
@@ -4026,6 +4078,13 @@
 						"log-level"
 					],
 					"positionalNames": []
+				},
+				{
+					"text": "  --workspace-folder                Workspace folder used to resolve local OCI layouts. Native extension.  [string]",
+					"optionNames": [
+						"workspace-folder"
+					],
+					"positionalNames": []
 				}
 			],
 			"options": [
@@ -4033,6 +4092,12 @@
 					"name": "log-level",
 					"aliases": [],
 					"description": "Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
+					"visible": true
+				},
+				{
+					"name": "workspace-folder",
+					"aliases": [],
+					"description": "Workspace folder used to resolve local OCI layouts. Native extension.  [string]",
 					"visible": true
 				},
 				{

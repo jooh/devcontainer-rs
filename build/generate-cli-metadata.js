@@ -41,6 +41,41 @@ const nativeOptionsByCommand = {
 			description: 'Always pull images before creating the dev container. Native extension.  [boolean]',
 		},
 	],
+	build: [
+		{
+			name: 'build-no-cache',
+			aliases: [],
+			description: 'Build without using cached layers. Native extension.  [boolean]',
+		},
+	],
+	'features test': [
+		{
+			name: 'docker-path',
+			aliases: [],
+			description: 'Container engine CLI path. Native extension.  [string]',
+		},
+	],
+	'features publish': [
+		{
+			name: 'output-dir',
+			aliases: [],
+			description: 'Directory for the generated local OCI layout. Native extension.  [string]',
+		},
+	],
+	'templates metadata': [
+		{
+			name: 'workspace-folder',
+			aliases: [],
+			description: 'Workspace folder used to resolve local OCI layouts. Native extension.  [string]',
+		},
+	],
+	'templates publish': [
+		{
+			name: 'output-dir',
+			aliases: [],
+			description: 'Directory for the generated local OCI layout. Native extension.  [string]',
+		},
+	],
 };
 
 function readJson(filePath) {
