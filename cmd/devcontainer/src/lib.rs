@@ -225,7 +225,7 @@ mod tests {
         assert_eq!(
             run(vec![
                 "read-configuration".to_string(),
-                "--unsupported".to_string()
+                "unexpected-positional".to_string()
             ]),
             ExitCode::from(2)
         );
