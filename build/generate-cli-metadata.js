@@ -54,6 +54,11 @@ const nativeOptionsByCommand = {
 			aliases: [],
 			description: 'Workspace folder used to resolve the devcontainer configuration. Native extension.  [string]',
 		},
+		{
+			name: 'docker-compose-path',
+			aliases: [],
+			description: 'Docker Compose CLI path. Native extension.  [string]',
+		},
 	],
 	exec: [
 		{

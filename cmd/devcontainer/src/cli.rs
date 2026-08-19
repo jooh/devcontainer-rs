@@ -605,6 +605,19 @@ mod tests {
     }
 
     #[test]
+    fn set_up_accepts_native_compose_path_option() {
+        let error = unsupported_argument_error(
+            "set-up",
+            &[
+                "--docker-compose-path".to_string(),
+                "podman-compose".to_string(),
+            ],
+        );
+
+        assert!(error.is_none(), "{error:?}");
+    }
+
+    #[test]
     fn unsupported_argument_error_reports_synthetic_unsupported_options() {
         let command = CommandHelp {
             path: "sample".to_string(),

@@ -958,6 +958,13 @@
 						"workspace-folder"
 					],
 					"positionalNames": []
+				},
+				{
+					"text": "  --docker-compose-path             Docker Compose CLI path. Native extension.  [string]",
+					"optionNames": [
+						"docker-compose-path"
+					],
+					"positionalNames": []
 				}
 			],
 			"options": [
@@ -1085,6 +1092,12 @@
 					"name": "workspace-folder",
 					"aliases": [],
 					"description": "Workspace folder used to resolve the devcontainer configuration. Native extension.  [string]",
+					"visible": true
+				},
+				{
+					"name": "docker-compose-path",
+					"aliases": [],
+					"description": "Docker Compose CLI path. Native extension.  [string]",
 					"visible": true
 				},
 				{
