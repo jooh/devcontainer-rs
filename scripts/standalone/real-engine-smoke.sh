@@ -115,7 +115,7 @@ cat >"$image_workspace/.devcontainer/devcontainer.json" <<'EOF'
 }
 EOF
 
-run_devcontainer up --workspace-folder "$image_workspace" >"$tmp_dir/image-up.json"
+run_devcontainer up --pull-always --workspace-folder "$image_workspace" >"$tmp_dir/image-up.json"
 assert_file_contains "$tmp_dir/image-up.json" '"outcome":"success"'
 image_container_id="$(container_id_from_json "$tmp_dir/image-up.json")"
 if [[ -z "$image_container_id" ]]; then
@@ -162,7 +162,7 @@ cat >"$compose_workspace/.devcontainer/devcontainer.json" <<'EOF'
 }
 EOF
 
-run_devcontainer up --workspace-folder "$compose_workspace" >"$tmp_dir/compose-up.json"
+run_devcontainer up --pull-always --workspace-folder "$compose_workspace" >"$tmp_dir/compose-up.json"
 assert_file_contains "$tmp_dir/compose-up.json" '"outcome":"success"'
 compose_container_id="$(container_id_from_json "$tmp_dir/compose-up.json")"
 if [[ -z "$compose_container_id" ]]; then

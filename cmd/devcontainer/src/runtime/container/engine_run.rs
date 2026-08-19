@@ -59,12 +59,9 @@ fn start_container_with_metadata(
     let default_labels =
         common::default_devcontainer_id_labels(&resolved.workspace_folder, &resolved.config_file);
     let metadata = metadata?;
-    let mut engine_args = vec!["run".to_string(), "-d".to_string()];
-    if common::has_flag(args, "--pull-always") {
-        engine_args.push("--pull".to_string());
-        engine_args.push("always".to_string());
-    }
-    engine_args.extend([
+    let mut engine_args = vec![
+        "run".to_string(),
+        "-d".to_string(),
         "--label".to_string(),
         default_labels[0].clone(),
         "--label".to_string(),
@@ -73,7 +70,7 @@ fn start_container_with_metadata(
         format!("devcontainer.metadata={metadata}"),
         "--mount".to_string(),
         workspace_mount_for_args(resolved, remote_workspace_folder, args),
-    ]);
+    ];
     if resolved.configuration.get("workspaceMount").is_none() {
         for mount in additional_mounts_for_workspace_target(resolved, remote_workspace_folder, args)
         {
@@ -486,13 +483,11 @@ esac
             }),
         );
 
-        let container_id = start_container(
-            &resolved,
-            &engine_args(&fake_engine),
-            "alpine:3.20",
-            "/workspace",
-        )
-        .expect("container should start");
+        let mut args = engine_args(&fake_engine);
+        args.push("--pull-always".to_string());
+        let container_id =
+            start_container(&resolved, &args, "devcontainer-workspace-uid", "/workspace")
+                .expect("container should start");
 
         assert_eq!(container_id, "created-container");
         let invocation = fs::read_to_string(&invocation_log).expect("invocation log");
@@ -500,6 +495,11 @@ esac
         assert!(invocation.contains("-e EDITOR=vim"));
         assert!(invocation.contains("--cap-add SYS_PTRACE"));
         assert!(invocation.contains("--security-opt seccomp=unconfined"));
+        assert!(!invocation.contains("--pull always"), "{invocation}");
+        assert!(
+            invocation.contains("devcontainer-workspace-uid"),
+            "{invocation}"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

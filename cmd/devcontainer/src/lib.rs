@@ -229,5 +229,15 @@ mod tests {
             ]),
             ExitCode::from(2)
         );
+        assert_eq!(
+            run(vec![
+                "--log-format".to_string(),
+                "json".to_string(),
+                "read-configuration".to_string(),
+                "--user-data-folder".to_string(),
+                "/tmp/devcontainer-user-data".to_string(),
+            ]),
+            ExitCode::from(2)
+        );
     }
 }

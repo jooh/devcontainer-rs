@@ -273,6 +273,32 @@ fn prepare_up_image_preserves_the_inspected_platform_for_uid_update_builds() {
 }
 
 #[test]
+fn pull_always_does_not_force_pull_the_generated_uid_image() {
+    let fixture = FakeEngineFixture::new();
+    fixture.write(
+        "image-inspect.stdout",
+        &image_inspect_output("node", Some("linux/amd64")),
+    );
+    let workspace = fixture.root.join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace dir");
+    let resolved = resolved_config(json!({ "remoteUser": "vscode" }), &workspace);
+    let mut args = fixture.args();
+    args.push("--pull-always".to_string());
+
+    let updated_image =
+        prepare_up_image_for_platform(&resolved, &args, "ghcr.io/example/app:latest", true)
+            .expect("prepare up image");
+
+    assert!(updated_image.ends_with("-uid"));
+    let invocations = fixture.invocations();
+    let build = invocations
+        .lines()
+        .find(|line| line.starts_with("build "))
+        .expect("uid update build");
+    assert!(!build.contains("--pull"), "{invocations}");
+}
+
+#[test]
 fn prepare_up_image_prefixes_local_podman_base_images_with_localhost() {
     let fixture = FakeEngineFixture::new();
     fixture.write(

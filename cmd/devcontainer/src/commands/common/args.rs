@@ -87,9 +87,18 @@ pub(crate) struct RuntimeOptions {
 }
 
 pub(crate) fn parse_option_value(args: &[String], option: &str) -> Option<String> {
-    args.windows(2)
+    args_before_separator(args)
+        .windows(2)
         .find(|window| window[0] == option)
         .map(|window| window[1].clone())
+}
+
+fn args_before_separator(args: &[String]) -> &[String] {
+    let end = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    &args[..end]
 }
 
 pub(crate) fn env_default_option_value(
@@ -343,6 +352,7 @@ pub(crate) fn parse_bool_option(args: &[String], option: &str, default: bool) ->
     const FALSE_VALUES: &[&str] = &["false", "0", "no", "off"];
     const TRUE_VALUES: &[&str] = &["true", "1", "yes", "on"];
 
+    let args = args_before_separator(args);
     let Some(index) = args.iter().position(|arg| arg == option) else {
         return default;
     };
@@ -356,6 +366,7 @@ pub(crate) fn parse_bool_option(args: &[String], option: &str, default: bool) ->
 }
 
 pub(crate) fn validate_option_values(args: &[String], options: &[&str]) -> Result<(), String> {
+    let args = args_before_separator(args);
     for (index, arg) in args.iter().enumerate() {
         if options.contains(&arg.as_str())
             && args
@@ -420,6 +431,7 @@ pub(crate) fn validate_paired_options(
 }
 
 pub(crate) fn parse_option_values(args: &[String], option: &str) -> Vec<String> {
+    let args = args_before_separator(args);
     let mut values = Vec::new();
     let mut index = 0;
     while index < args.len() {
@@ -427,6 +439,24 @@ pub(crate) fn parse_option_values(args: &[String], option: &str) -> Vec<String> 
             values.push(args[index + 1].clone());
             index += 2;
         } else {
+            index += 1;
+        }
+    }
+    values
+}
+
+pub(crate) fn parse_array_option_values(args: &[String], option: &str) -> Vec<String> {
+    let args = args_before_separator(args);
+    let mut values = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] != option {
+            index += 1;
+            continue;
+        }
+        index += 1;
+        while args.get(index).is_some_and(|value| !value.starts_with('-')) {
+            values.push(args[index].clone());
             index += 1;
         }
     }
@@ -456,7 +486,7 @@ pub(crate) fn parse_json_string_array_option(
 }
 
 pub(crate) fn has_flag(args: &[String], flag: &str) -> bool {
-    args.iter().any(|arg| arg == flag)
+    args_before_separator(args).iter().any(|arg| arg == flag)
 }
 
 pub(crate) fn parse_remote_env(args: &[String]) -> Map<String, Value> {
@@ -515,8 +545,9 @@ mod tests {
     use crate::test_support::unique_temp_dir;
 
     use super::{
-        env_default_bool_option, env_default_choice_value, env_default_option_value,
-        parse_bool_option, parse_json_string_array_option, parse_remote_env, remote_env_overrides,
+        env_default_bool_option, env_default_choice_value, env_default_option_value, has_flag,
+        parse_array_option_values, parse_bool_option, parse_json_string_array_option,
+        parse_option_value, parse_option_values, parse_remote_env, remote_env_overrides,
         runtime_options, runtime_process_request, secrets_env, test_env_defaults,
         validate_choice_option, validate_number_option, validate_option_values,
         validate_paired_options, validate_runtime_env_defaults, DEVCONTAINER_BUILDKIT,
@@ -526,6 +557,34 @@ mod tests {
         DEVCONTAINER_MOUNT_WORKSPACE_GIT_ROOT, DEVCONTAINER_UPDATE_REMOTE_USER_UID_DEFAULT,
         DEVCONTAINER_USER_DATA_FOLDER, DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY,
     };
+
+    #[test]
+    fn option_helpers_stop_at_the_separator() {
+        let args = vec![
+            "--before".to_string(),
+            "value".to_string(),
+            "--array".to_string(),
+            "one".to_string(),
+            "two".to_string(),
+            "--".to_string(),
+            "--after".to_string(),
+            "payload".to_string(),
+        ];
+
+        assert_eq!(
+            parse_option_value(&args, "--before").as_deref(),
+            Some("value")
+        );
+        assert_eq!(parse_option_values(&args, "--before"), vec!["value"]);
+        assert_eq!(
+            parse_array_option_values(&args, "--array"),
+            vec!["one", "two"]
+        );
+        assert!(has_flag(&args, "--before"));
+        assert_eq!(parse_option_value(&args, "--after"), None);
+        assert!(!has_flag(&args, "--after"));
+        assert!(validate_option_values(&args, &["--after"]).is_ok());
+    }
 
     #[test]
     fn runtime_options_collect_shared_runtime_flags() {

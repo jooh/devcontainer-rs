@@ -1,6 +1,7 @@
 //! Unit tests for compose runtime helpers.
 
 use serde_json::json;
+use serde_yaml::Value as YamlValue;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -16,8 +17,9 @@ use super::service::{
 };
 use super::uses_compose_config;
 use super::{
-    build_service, load_compose_spec, resolve_container_id, resolve_container_id_including_stopped,
-    up_service, ComposeSpec,
+    build_service, compose_profiled_services, compose_profiles_state, compose_service_dependencies,
+    load_compose_spec, remote_service_closure, resolve_container_id,
+    resolve_container_id_including_stopped, up_service, ComposeSpec,
 };
 use crate::runtime::context::ResolvedConfig;
 use crate::test_support::{
@@ -1630,6 +1632,216 @@ fn build_service_reports_compose_build_failures() {
 }
 
 #[test]
+fn build_service_pull_always_reports_engine_pull_failures() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose file");
+    let compose_path = root.join("compose.sh");
+    write_executable_script(
+        &compose_path,
+        "#!/bin/sh\nprintf '%s\\n' 'services:' '  app:' '    image: alpine:3.20'\nexit 0\n",
+    );
+    let engine_path = root.join("engine.sh");
+    write_executable_script(
+        &engine_path,
+        "#!/bin/sh\necho engine pull failed >&2\nexit 12\n",
+    );
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+
+    let error = build_service(
+        &resolved,
+        &[
+            "--docker-compose-path".to_string(),
+            compose_path.display().to_string(),
+            "--docker-path".to_string(),
+            engine_path.display().to_string(),
+            "--pull-always".to_string(),
+        ],
+    )
+    .expect_err("engine pull failure");
+
+    assert_eq!(error, "engine pull failed");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn build_service_pull_always_deduplicates_matching_image_and_platform_pulls() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose file");
+    let compose_path = root.join("compose.sh");
+    write_executable_script(
+        &compose_path,
+        "#!/bin/sh\nprintf '%s\\n' 'services:' '  app:' '    image: alpine:3.20' '    platform: linux/amd64' '  sidecar:' '    image: alpine:3.20' '    platform: linux/amd64'\nexit 0\n",
+    );
+    let engine_path = root.join("engine.sh");
+    let log = root.join("engine.log");
+    write_executable_script(
+        &engine_path,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+            log.display()
+        ),
+    );
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+
+    let image = build_service(
+        &resolved,
+        &[
+            "--docker-compose-path".to_string(),
+            compose_path.display().to_string(),
+            "--docker-path".to_string(),
+            engine_path.display().to_string(),
+            "--pull-always".to_string(),
+        ],
+    )
+    .expect("deduplicated image pull");
+
+    assert_eq!(image, "alpine:3.20");
+    assert_eq!(
+        fs::read_to_string(log).expect("engine log"),
+        "pull --platform linux/amd64 alpine:3.20\n"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn build_service_pull_always_reports_compose_config_failures() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose file");
+    let compose_path = root.join("compose.sh");
+    write_executable_script(
+        &compose_path,
+        "#!/bin/sh\necho compose config failed >&2\nexit 11\n",
+    );
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+
+    let error = build_service(
+        &resolved,
+        &[
+            "--docker-compose-path".to_string(),
+            compose_path.display().to_string(),
+            "--pull-always".to_string(),
+        ],
+    )
+    .expect_err("compose config failure");
+
+    assert_eq!(error, "compose config failed");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn build_service_pull_always_reports_engine_binary_disappearing_before_pull() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose file");
+    let compose_path = root.join("compose.sh");
+    let engine_path = root.join("engine.sh");
+    write_executable_script(&engine_path, "#!/bin/sh\nexit 0\n");
+    write_executable_script(
+        &compose_path,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' 'services:' '  app:' '    image: alpine:3.20'\nrm -f '{}'\nexit 0\n",
+            engine_path.display()
+        ),
+    );
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+
+    let error = build_service(
+        &resolved,
+        &[
+            "--docker-compose-path".to_string(),
+            compose_path.display().to_string(),
+            "--docker-path".to_string(),
+            engine_path.display().to_string(),
+            "--pull-always".to_string(),
+        ],
+    )
+    .expect_err("compose pull spawn failure");
+
+    assert!(
+        error.contains("Container engine executable not found"),
+        "{error}"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn build_service_pull_always_reports_missing_compose_binary() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("workspace root");
+    fs::write(
+        root.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose file");
+    let resolved = resolved_config(
+        root.clone(),
+        json!({
+            "dockerComposeFile": "docker-compose.yml",
+            "service": "app"
+        }),
+    );
+
+    let error = build_service(
+        &resolved,
+        &[
+            "--docker-compose-path".to_string(),
+            root.join("missing-compose").display().to_string(),
+            "--pull-always".to_string(),
+        ],
+    )
+    .expect_err("missing compose binary");
+
+    assert!(
+        error.contains("Container compose executable not found"),
+        "{error}"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn build_service_reports_feature_build_failures() {
     let root = unique_temp_dir("devcontainer-compose-test");
     fs::create_dir_all(&root).expect("workspace root");
@@ -1759,7 +1971,7 @@ fn build_service_builds_feature_image_successfully() {
     write_executable_script(
         &engine_path,
         &format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \" $* \" in\n  *\" config \"*) printf '%s\\n' 'services:' '  app:' '    image: alpine:3.20' ;;\nesac\nexit 0\n",
             log.display()
         ),
     );
@@ -1781,6 +1993,7 @@ fn build_service_builds_feature_image_successfully() {
             engine_path.display().to_string(),
             "--image-name".to_string(),
             "example/compose-featured:test".to_string(),
+            "--pull-always".to_string(),
         ],
     )
     .expect("feature image");
@@ -1791,7 +2004,127 @@ fn build_service_builds_feature_image_successfully() {
         log.contains("build --tag example/compose-featured:test"),
         "{log}"
     );
+    let feature_build = log
+        .lines()
+        .find(|line| line.starts_with("build --tag example/compose-featured:test"))
+        .expect("feature build invocation");
+    assert!(
+        !feature_build
+            .split_whitespace()
+            .any(|argument| argument == "--pull"),
+        "{log}"
+    );
+    assert!(log.lines().any(|line| line == "pull alpine:3.20"), "{log}");
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn compose_profile_states_cover_resets_tags_null_and_invalid_shapes() {
+    let reset: YamlValue = serde_yaml::from_str("!reset []").expect("reset profiles");
+    assert_eq!(compose_profiles_state(&reset), Some(false));
+
+    let tagged: YamlValue = serde_yaml::from_str("!override [debug]").expect("tagged profiles");
+    assert_eq!(compose_profiles_state(&tagged), Some(true));
+
+    assert_eq!(
+        compose_profiles_state(&YamlValue::Sequence(Vec::new())),
+        None
+    );
+    assert_eq!(compose_profiles_state(&YamlValue::Null), Some(false));
+    assert_eq!(
+        compose_profiles_state(&YamlValue::String("debug".to_string())),
+        None
+    );
+}
+
+#[test]
+fn compose_profiled_services_merge_files_and_ignore_invalid_entries() {
+    let root = unique_temp_dir("devcontainer-compose-test");
+    fs::create_dir_all(&root).expect("compose root");
+    let no_services = root.join("no-services.yml");
+    let invalid_services = root.join("invalid-services.yml");
+    let profiles = root.join("profiles.yml");
+    let reset = root.join("reset.yml");
+    fs::write(&no_services, "name: ignored\n").expect("no services compose");
+    fs::write(
+        &invalid_services,
+        "services:\n  1:\n    profiles: [debug]\n  scalar: alpine:3.20\n",
+    )
+    .expect("invalid services compose");
+    fs::write(
+        &profiles,
+        "services:\n  app:\n    profiles: [debug]\n  keep:\n    profiles: [test]\n  empty:\n    profiles: []\n  scalar-profile:\n    profiles: debug\n",
+    )
+    .expect("profiled compose");
+    fs::write(&reset, "services:\n  app:\n    profiles: null\n").expect("profile reset compose");
+    let spec = ComposeSpec {
+        files: vec![no_services, invalid_services, profiles, reset],
+        service: "app".to_string(),
+        image: None,
+        has_build: false,
+        user: None,
+        project_name: "project".to_string(),
+    };
+
+    assert_eq!(
+        compose_profiled_services(&spec).expect("profiled services"),
+        vec!["keep".to_string()]
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn remote_service_closure_handles_cycles_and_reports_missing_dependencies() {
+    let cyclic: YamlValue = serde_yaml::from_str(
+        "services:\n  app:\n    image: example/app\n    depends_on: [db]\n  db:\n    image: postgres:16\n    depends_on: [app]\n",
+    )
+    .expect("cyclic compose config");
+    let services = cyclic
+        .as_mapping()
+        .and_then(|root| root.get(YamlValue::String("services".to_string())))
+        .and_then(YamlValue::as_mapping)
+        .expect("services");
+    assert_eq!(
+        remote_service_closure(services, Some(&["app".to_string()]))
+            .expect("remote service closure"),
+        vec!["db".to_string(), "app".to_string()]
+    );
+
+    let missing: YamlValue = serde_yaml::from_str(
+        "services:\n  app:\n    image: example/app\n    depends_on: [missing]\n",
+    )
+    .expect("missing dependency compose config");
+    let services = missing
+        .as_mapping()
+        .and_then(|root| root.get(YamlValue::String("services".to_string())))
+        .and_then(YamlValue::as_mapping)
+        .expect("services");
+    let error = remote_service_closure(services, Some(&["app".to_string()]))
+        .expect_err("missing dependency");
+    assert_eq!(
+        error,
+        "Unable to locate compose service `missing` in resolved configuration"
+    );
+}
+
+#[test]
+fn compose_service_dependencies_support_all_compose_reference_shapes() {
+    let value: YamlValue = serde_yaml::from_str(
+        "depends_on: invalid\nlinks:\n  - cache:alias\n  - container:external\n  - ''\n  - 42\nvolumes_from:\n  - worker:ro\nipc: service:ipc-service\nnetwork_mode: service:network-service\npid: service:pid-service\n",
+    )
+    .expect("service definition");
+    let definition = value.as_mapping().expect("service mapping");
+
+    assert_eq!(
+        compose_service_dependencies(definition),
+        vec![
+            "cache".to_string(),
+            "worker".to_string(),
+            "ipc-service".to_string(),
+            "network-service".to_string(),
+            "pid-service".to_string(),
+        ]
+    );
 }
 
 #[test]

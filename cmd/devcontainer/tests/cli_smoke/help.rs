@@ -99,6 +99,140 @@ fn up_rejects_unknown_options_before_dispatch() {
 }
 
 #[test]
+fn leaf_commands_reject_unknown_arguments_before_dispatch() {
+    for (args, expected) in [
+        (
+            ["outdated", "unexpected"].as_slice(),
+            "Unknown argument: unexpected: devcontainer outdated",
+        ),
+        (
+            ["outdated", "--unrecognized-option"].as_slice(),
+            "Unknown option: --unrecognized-option: devcontainer outdated",
+        ),
+        (
+            ["features", "test", "target", "extra"].as_slice(),
+            "Unknown argument: extra: devcontainer features test",
+        ),
+        (
+            ["outdated", "--", "unexpected"].as_slice(),
+            "Unknown argument: unexpected: devcontainer outdated",
+        ),
+        (
+            ["build", "--", "first", "second"].as_slice(),
+            "Unknown argument: second: devcontainer build",
+        ),
+    ] {
+        let output = devcontainer_command(None)
+            .args(args)
+            .output()
+            .expect("command should run");
+
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+        assert!(stderr.contains(expected), "{stderr}");
+    }
+}
+
+#[test]
+fn declared_nested_positionals_reach_command_dispatch() {
+    for args in [
+        ["features", "test", "/definitely/missing/project"].as_slice(),
+        ["features", "package", "/definitely/missing/project"].as_slice(),
+        ["templates", "apply", "/definitely/missing/template"].as_slice(),
+        ["features", "generate-docs", "/definitely/missing/features"].as_slice(),
+        [
+            "templates",
+            "generate-docs",
+            "/definitely/missing/templates",
+        ]
+        .as_slice(),
+    ] {
+        let output = devcontainer_command(None)
+            .args(args)
+            .output()
+            .expect("command should run");
+
+        assert_ne!(output.status.code(), Some(2), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+        assert!(!stderr.contains("Unknown argument:"), "{stderr}");
+    }
+}
+
+#[test]
+fn features_test_accepts_hidden_camel_case_project_folder_alias() {
+    let output = devcontainer_command(None)
+        .args([
+            "features",
+            "test",
+            "--projectFolder=/definitely/missing/project",
+        ])
+        .output()
+        .expect("features test should run");
+
+    assert_ne!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(!stderr.contains("Unknown option:"), "{stderr}");
+
+    let help = devcontainer_command(None)
+        .args(["features", "test", "--help"])
+        .output()
+        .expect("features test help should run");
+    let stdout = String::from_utf8(help.stdout).expect("utf8 stdout");
+    assert!(!stdout.contains("--projectFolder"), "{stdout}");
+}
+
+#[test]
+fn exec_only_validates_options_before_the_command_payload() {
+    let rejected = devcontainer_command(None)
+        .args(["exec", "--payload-option", "/bin/true"])
+        .output()
+        .expect("exec command should run");
+
+    assert_eq!(rejected.status.code(), Some(2), "{rejected:?}");
+    let stderr = String::from_utf8(rejected.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("Unknown option: --payload-option: devcontainer exec"),
+        "{stderr}"
+    );
+
+    let accepted = devcontainer_command(None)
+        .args([
+            "exec",
+            "--docker-path",
+            "/definitely/missing/container-engine",
+            "/bin/true",
+            "--payload-option",
+        ])
+        .output()
+        .expect("exec command should run");
+
+    assert_eq!(accepted.status.code(), Some(1), "{accepted:?}");
+    let stderr = String::from_utf8(accepted.stderr).expect("utf8 stderr");
+    assert!(!stderr.contains("Unknown option:"), "{stderr}");
+
+    let after_separator = devcontainer_command(None)
+        .args([
+            "exec",
+            "--docker-path",
+            "/definitely/missing/container-engine",
+            "--",
+            "--payload-command",
+            "--payload-option",
+        ])
+        .output()
+        .expect("exec command should run");
+
+    assert_eq!(
+        after_separator.status.code(),
+        Some(1),
+        "{after_separator:?}"
+    );
+    let stderr = String::from_utf8(after_separator.stderr).expect("utf8 stderr");
+    assert!(!stderr.contains("Unknown option:"), "{stderr}");
+    assert!(!stderr.contains("Unsupported exec option:"), "{stderr}");
+}
+
+#[test]
 fn up_help_lists_upstream_options() {
     let output = devcontainer_command(None)
         .args(["up", "--help"])

@@ -1,6 +1,6 @@
 //! Runtime container smoke tests for compose-backed up flows.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -66,6 +66,14 @@ fn write_executable(path: &Path, contents: String) {
 fn compose_label_lookup_args(project_name: &str, service: &str, include_stopped: bool) -> String {
     let all_arg = if include_stopped { " -a" } else { "" };
     format!("ps -q{all_arg} --filter label=com.docker.compose.project={project_name} --filter label=com.docker.compose.service={service}")
+}
+
+fn pulled_images(invocations: &str) -> HashSet<&str> {
+    invocations
+        .lines()
+        .filter_map(|line| line.strip_prefix("pull "))
+        .filter_map(|arguments| arguments.split_whitespace().last())
+        .collect()
 }
 
 #[test]
@@ -138,7 +146,7 @@ fn up_starts_compose_services_and_exec_uses_compose_container_lookup() {
 }
 
 #[test]
-fn up_pull_always_forwards_the_compose_pull_policy() {
+fn up_pull_always_prepulls_with_the_default_podman_compose_wrapper() {
     let harness = RuntimeHarness::new();
     let workspace = harness.workspace();
     fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
@@ -168,7 +176,313 @@ fn up_pull_always_forwards_the_compose_pull_policy() {
     assert!(output.status.success(), "{output:?}");
     let invocations = harness.read_invocations();
     assert!(
-        invocations.contains(" up -d --pull always"),
+        pulled_images(&invocations) == HashSet::from(["alpine:3.20"]),
+        "{invocations}"
+    );
+    let up = invocations
+        .lines()
+        .find(|line| line.starts_with("compose ") && line.contains(" up "))
+        .expect("compose up invocation");
+    assert!(up.ends_with(" up -d"), "{invocations}");
+    assert!(!up.contains("--pull"), "{invocations}");
+}
+
+#[test]
+fn up_pull_always_reports_underlying_engine_pull_failures_hidden_by_compose() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    fs::write(
+        workspace.join(".devcontainer").join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n",
+    )
+    .expect("compose");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"dockerComposeFile\": \"docker-compose.yml\",\n  \"service\": \"app\"\n}\n",
+    );
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+
+    let output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--pull-always",
+        ],
+        &[
+            ("FAKE_PODMAN_PULL_STDERR", "registry denied the image pull"),
+            ("FAKE_PODMAN_PULL_EXIT_CODE", "47"),
+        ],
+    );
+
+    assert!(!output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stderr)
+            .expect("utf8 stderr")
+            .trim(),
+        "registry denied the image pull"
+    );
+    let invocations = harness.read_invocations();
+    assert!(invocations.contains("pull alpine:3.20"), "{invocations}");
+    assert!(!invocations.contains(" up -d"), "{invocations}");
+}
+
+#[test]
+fn pull_always_prepull_is_provider_neutral_for_explicit_compose_binaries() {
+    for compose_name in ["docker-compose", "podman-compose"] {
+        let harness = RuntimeHarness::new();
+        let workspace = harness.workspace();
+        let compose_wrapper = harness.root.join(compose_name);
+        fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+        fs::write(
+            workspace.join(".devcontainer").join("docker-compose.yml"),
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .expect("compose");
+        write_devcontainer_config(
+            &workspace,
+            "{\n  \"dockerComposeFile\": \"docker-compose.yml\",\n  \"service\": \"app\"\n}\n",
+        );
+        write_executable(
+            &compose_wrapper,
+            format!(
+                "#!/bin/sh\nexec \"{}\" compose \"$@\"\n",
+                harness.fake_podman.display()
+            ),
+        );
+        let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+
+        let output = harness.run(
+            &[
+                "up",
+                "--docker-path",
+                fake_podman.as_str(),
+                "--docker-compose-path",
+                compose_wrapper.to_string_lossy().as_ref(),
+                "--workspace-folder",
+                workspace.to_string_lossy().as_ref(),
+                "--pull-always=true",
+            ],
+            &[],
+        );
+
+        assert!(output.status.success(), "{compose_name}: {output:?}");
+        let invocations = harness.read_invocations();
+        assert!(
+            pulled_images(&invocations) == HashSet::from(["alpine:3.20"]),
+            "{compose_name}: {invocations}"
+        );
+        assert!(
+            !invocations
+                .lines()
+                .any(|line| line.contains(" up ") && line.contains("--pull")),
+            "{compose_name}: {invocations}"
+        );
+    }
+}
+
+#[test]
+fn pull_always_activates_profiled_run_services_without_wildcard_profile_support() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    fs::write(
+        workspace.join(".devcontainer").join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n  worker:\n    image: redis:7\n    profiles: [debug]\n    depends_on:\n      db:\n        condition: service_started\n  db:\n    image: postgres:16\n    profiles: [data]\n",
+    )
+    .expect("compose");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"dockerComposeFile\": \"docker-compose.yml\",\n  \"service\": \"app\",\n  \"runServices\": [\"worker\"]\n}\n",
+    );
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+
+    let output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--pull-always",
+        ],
+        &[("FAKE_PODMAN_COMPOSE_REJECT_WILDCARD_PROFILE", "1")],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let invocations = harness.read_invocations();
+    assert!(!invocations.contains("--profile *"), "{invocations}");
+    assert_eq!(
+        pulled_images(&invocations),
+        HashSet::from(["alpine:3.20", "redis:7", "postgres:16"]),
+        "{invocations}"
+    );
+    assert!(
+        invocations
+            .lines()
+            .any(|line| line.contains(" up -d worker app")),
+        "{invocations}"
+    );
+    let compose_files = harness.read_compose_file_log();
+    assert!(
+        compose_files.contains("devcontainer-compose-profile-override"),
+        "{compose_files}"
+    );
+    assert!(
+        compose_files.contains("  'worker':\n    profiles: !reset []"),
+        "{compose_files}"
+    );
+    assert!(
+        compose_files.contains("  'db':\n    profiles: !reset []"),
+        "{compose_files}"
+    );
+    assert!(
+        !compose_files.contains("  'app':\n    profiles: !reset []"),
+        "{compose_files}"
+    );
+}
+
+#[test]
+fn pull_always_does_not_pull_compose_generated_images() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    fs::write(
+        workspace.join(".devcontainer").join("docker-compose.yml"),
+        "services:\n  app:\n    build: .\n",
+    )
+    .expect("compose");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"dockerComposeFile\": \"docker-compose.yml\",\n  \"service\": \"app\"\n}\n",
+    );
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+
+    let output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--pull-always",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let invocations = harness.read_invocations();
+    assert!(
+        invocations
+            .lines()
+            .any(|line| line.contains(" build --pull app")),
+        "{invocations}"
+    );
+    assert!(pulled_images(&invocations).is_empty(), "{invocations}");
+    assert!(
+        !invocations
+            .lines()
+            .any(|line| line.contains(" up ") && line.contains("--pull")),
+        "{invocations}"
+    );
+}
+
+#[test]
+fn pull_always_refreshes_remote_run_services_and_dependencies_without_pulling_builds() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    fs::create_dir_all(workspace.join(".devcontainer")).expect("workspace config dir");
+    fs::write(
+        workspace.join(".devcontainer").join("docker-compose.yml"),
+        "services:\n  app:\n    build: .\n    depends_on:\n      db:\n        condition: service_started\n  db:\n    image: postgres:16\n    platform: linux/arm64\n  worker:\n    image: redis:7\n    depends_on:\n      cache:\n        condition: service_started\n  cache:\n    image: memcached:1.6\n  local-tool:\n    build: ./tool\n    image: example/local-tool:test\n  unrelated:\n    image: busybox:1.36\n",
+    )
+    .expect("compose");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"dockerComposeFile\": \"docker-compose.yml\",\n  \"service\": \"app\",\n  \"runServices\": [\"worker\", \"local-tool\"]\n}\n",
+    );
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+
+    let output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--pull-always",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let invocations = harness.read_invocations();
+    assert_eq!(
+        pulled_images(&invocations),
+        HashSet::from(["redis:7", "memcached:1.6", "postgres:16"]),
+        "{invocations}"
+    );
+    assert!(
+        invocations.contains("pull --platform linux/arm64 postgres:16"),
+        "{invocations}"
+    );
+    assert!(invocations.contains(" up -d worker local-tool app"));
+}
+
+#[test]
+fn pull_always_refreshes_feature_source_and_image_sidecars_without_repulling_the_result() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    let config_dir = workspace.join(".devcontainer");
+    let feature_dir = config_dir.join("local-feature");
+    fs::create_dir_all(&feature_dir).expect("feature dir");
+    fs::write(
+        config_dir.join("docker-compose.yml"),
+        "services:\n  app:\n    image: alpine:3.20\n    depends_on:\n      db:\n        condition: service_started\n  db:\n    image: postgres:16\n  worker:\n    image: redis:7\n  local-tool:\n    build: ./tool\n    image: example/local-tool:test\n",
+    )
+    .expect("compose");
+    fs::write(
+        feature_dir.join("devcontainer-feature.json"),
+        "{\n  \"id\": \"local-feature\",\n  \"name\": \"Local Feature\",\n  \"version\": \"1.0.0\"\n}\n",
+    )
+    .expect("feature manifest");
+    fs::write(feature_dir.join("install.sh"), "#!/bin/sh\nexit 0\n").expect("feature install");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"dockerComposeFile\": \"docker-compose.yml\",\n  \"service\": \"app\",\n  \"runServices\": [\"worker\", \"local-tool\"],\n  \"features\": {\n    \"./local-feature\": {}\n  }\n}\n",
+    );
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+
+    let output = harness.run(
+        &[
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--pull-always",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let invocations = harness.read_invocations();
+    assert_eq!(
+        pulled_images(&invocations),
+        HashSet::from(["alpine:3.20", "redis:7", "postgres:16"]),
+        "{invocations}"
+    );
+    let feature_build = invocations
+        .lines()
+        .find(|line| line.starts_with("build --tag alpine:3.20"))
+        .expect("feature build invocation");
+    assert!(!feature_build.contains("--pull"), "{invocations}");
+    assert!(
+        invocations.find("pull ").expect("pull position")
+            < invocations.find("build --tag").expect("build position"),
         "{invocations}"
     );
 }
@@ -448,7 +762,13 @@ fn up_uses_env_backed_engine_and_compose_paths_for_compose_workspaces() {
     let invocations = harness.read_invocations();
     assert!(invocations.contains("compose --project-name workspace_devcontainer -f "));
     assert!(
-        invocations.contains(" up -d --pull-always"),
+        pulled_images(&invocations) == HashSet::from(["alpine:3.20"]),
+        "{invocations}"
+    );
+    assert!(
+        !invocations
+            .lines()
+            .any(|line| line.contains(" up ") && line.contains("--pull")),
         "{invocations}"
     );
 }

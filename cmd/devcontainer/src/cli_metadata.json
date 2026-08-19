@@ -1470,7 +1470,12 @@
 					"visible": true
 				}
 			],
-			"positionals": [],
+			"positionals": [
+				{
+					"name": "path",
+					"description": ""
+				}
+			],
 			"unsupportedOptions": [],
 			"unsupportedPositionals": []
 		},
@@ -2481,8 +2486,10 @@
 				},
 				{
 					"name": "feature",
-					"aliases": [],
-					"description": null,
+					"aliases": [
+						"f"
+					],
+					"description": "Feature identifier to upgrade.  [string]",
 					"visible": false
 				},
 				{
@@ -2493,8 +2500,10 @@
 				},
 				{
 					"name": "target-version",
-					"aliases": [],
-					"description": null,
+					"aliases": [
+						"v"
+					],
+					"description": "Feature version requirement to apply.  [string]",
 					"visible": false
 				},
 				{
@@ -2895,6 +2904,12 @@
 					"visible": true
 				},
 				{
+					"name": "projectFolder",
+					"aliases": [],
+					"description": "Project folder accepted by the native feature test runner.  [string]",
+					"visible": false
+				},
+				{
 					"name": "help",
 					"aliases": [],
 					"description": "Show help  [boolean]",
@@ -2954,7 +2969,9 @@
 				{
 					"text": "  target",
 					"optionNames": [],
-					"positionalNames": []
+					"positionalNames": [
+						"target"
+					]
 				},
 				{
 					"text": "           Package features at provided [target] (default is cwd), where [target] is either:",
@@ -3068,7 +3085,12 @@
 					"visible": true
 				}
 			],
-			"positionals": [],
+			"positionals": [
+				{
+					"name": "target",
+					"description": ""
+				}
+			],
 			"unsupportedOptions": [],
 			"unsupportedPositionals": []
 		},
@@ -3110,7 +3132,9 @@
 				{
 					"text": "  target",
 					"optionNames": [],
-					"positionalNames": []
+					"positionalNames": [
+						"target"
+					]
 				},
 				{
 					"text": "           Package and publish features at provided [target] (default is cwd), where [target] is either:",
@@ -3227,7 +3251,12 @@
 					"visible": true
 				}
 			],
-			"positionals": [],
+			"positionals": [
+				{
+					"name": "target",
+					"description": ""
+				}
+			],
 			"unsupportedOptions": [],
 			"unsupportedPositionals": []
 		},
@@ -3600,7 +3629,12 @@
 					"visible": true
 				}
 			],
-			"positionals": [],
+			"positionals": [
+				{
+					"name": "target",
+					"description": "Feature collection folder. Native extension.  [string]"
+				}
+			],
 			"unsupportedOptions": [],
 			"unsupportedPositionals": []
 		},
@@ -3869,7 +3903,12 @@
 					"visible": true
 				}
 			],
-			"positionals": [],
+			"positionals": [
+				{
+					"name": "target",
+					"description": "Local template folder to apply. Native extension.  [string]"
+				}
+			],
 			"unsupportedOptions": [],
 			"unsupportedPositionals": []
 		},
@@ -3911,7 +3950,9 @@
 				{
 					"text": "  target",
 					"optionNames": [],
-					"positionalNames": []
+					"positionalNames": [
+						"target"
+					]
 				},
 				{
 					"text": "           Package and publish templates at provided [target] (default is cwd), where [target] is either:",
@@ -4028,7 +4069,12 @@
 					"visible": true
 				}
 			],
-			"positionals": [],
+			"positionals": [
+				{
+					"name": "target",
+					"description": ""
+				}
+			],
 			"unsupportedOptions": [],
 			"unsupportedPositionals": []
 		},
@@ -4266,7 +4312,12 @@
 					"visible": true
 				}
 			],
-			"positionals": [],
+			"positionals": [
+				{
+					"name": "target",
+					"description": "Template collection folder. Native extension.  [string]"
+				}
+			],
 			"unsupportedOptions": [],
 			"unsupportedPositionals": []
 		},

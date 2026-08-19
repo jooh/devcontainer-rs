@@ -201,10 +201,7 @@ pub(super) fn execute_feature_tests_with_runtime<R: FeatureTestRuntime>(
 }
 
 fn parse_feature_test_options(args: &[String]) -> Result<FeatureTestOptions, String> {
-    let project_folder = match feature_test_project_folder_arg(args) {
-        Some(project_folder) => PathBuf::from(project_folder),
-        None => return Err("features test requires a project folder".to_string()),
-    };
+    let project_folder = PathBuf::from(feature_test_project_folder_arg(args));
     let base_image = common::parse_option_value(args, "--base-image")
         .unwrap_or(DEFAULT_FEATURE_TEST_BASE_IMAGE.to_string());
     let remote_user = common::parse_option_value(args, "--remote-user");
@@ -230,19 +227,17 @@ fn all_feature_tests_passed(results: &[FeatureTestResult]) -> bool {
     true
 }
 
-fn feature_test_project_folder_arg(args: &[String]) -> Option<String> {
+fn feature_test_project_folder_arg(args: &[String]) -> String {
     if let Some(project_folder) = common::parse_option_value(args, "--project-folder") {
-        return Some(project_folder);
+        return project_folder;
     }
     if let Some(project_folder) = common::parse_option_value(args, "--projectFolder") {
-        return Some(project_folder);
+        return project_folder;
     }
-    for arg in args.iter().rev() {
-        if !arg.starts_with('-') {
-            return Some(arg.clone());
-        }
-    }
-    None
+    crate::cli::command_positionals("features test", args)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| ".".to_string())
 }
 
 #[cfg(test)]
@@ -311,20 +306,17 @@ mod tests {
         let positional = vec!["--quiet".to_string(), "/workspace/project".to_string()];
 
         assert_eq!(
-            feature_test_project_folder_arg(&dashed).as_deref(),
-            Some("/workspace/dashed")
+            feature_test_project_folder_arg(&dashed),
+            "/workspace/dashed"
         );
+        assert_eq!(feature_test_project_folder_arg(&camel), "/workspace/camel");
         assert_eq!(
-            feature_test_project_folder_arg(&camel).as_deref(),
-            Some("/workspace/camel")
-        );
-        assert_eq!(
-            feature_test_project_folder_arg(&positional).as_deref(),
-            Some("/workspace/project")
+            feature_test_project_folder_arg(&positional),
+            "/workspace/project"
         );
         assert_eq!(
             feature_test_project_folder_arg(&["--quiet".to_string()]),
-            None
+            "."
         );
     }
 

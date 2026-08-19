@@ -66,7 +66,7 @@ fn up_starts_a_container_and_exec_runs_inside_it() {
 }
 
 #[test]
-fn up_pull_always_forwards_the_engine_pull_policy() {
+fn up_pull_always_refreshes_the_source_without_pulling_the_final_tag() {
     let harness = RuntimeHarness::new();
     let workspace = harness.workspace();
     fs::create_dir_all(&workspace).expect("workspace dir");
@@ -87,10 +87,50 @@ fn up_pull_always_forwards_the_engine_pull_policy() {
 
     assert!(output.status.success(), "{output:?}");
     let invocations = harness.read_invocations();
+    assert!(invocations.contains("pull alpine:3.20"), "{invocations}");
     assert!(
-        invocations.contains("run -d --pull always"),
+        !invocations.contains("run -d --pull always"),
         "{invocations}"
     );
+}
+
+#[test]
+fn up_pull_always_honors_explicit_true_and_false_values() {
+    for (arguments, should_pull) in [
+        (vec!["--pull-always", "true"], true),
+        (vec!["--pull-always=true"], true),
+        (vec!["--pull-always", "false"], false),
+        (vec!["--pull-always=false"], false),
+    ] {
+        let harness = RuntimeHarness::new();
+        let workspace = harness.workspace();
+        fs::create_dir_all(&workspace).expect("workspace dir");
+        write_devcontainer_config(&workspace, "{\n  \"image\": \"alpine:3.20\"\n}\n");
+        let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+        let workspace_arg = workspace.to_string_lossy().to_string();
+        let mut args = vec![
+            "up",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace_arg.as_str(),
+        ];
+        args.extend(arguments.iter().copied());
+
+        let output = harness.run(&args, &[("FAKE_PODMAN_PS_DISABLE_DEFAULT", "1")]);
+
+        assert!(output.status.success(), "{arguments:?}: {output:?}");
+        let invocations = harness.read_invocations();
+        assert_eq!(
+            invocations.contains("pull alpine:3.20"),
+            should_pull,
+            "{arguments:?}: {invocations}"
+        );
+        assert!(
+            !invocations.contains("run -d --pull always"),
+            "{invocations}"
+        );
+    }
 }
 
 #[test]

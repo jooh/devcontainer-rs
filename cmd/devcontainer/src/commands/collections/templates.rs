@@ -82,7 +82,8 @@ pub(super) fn run_template_apply(args: &[String]) -> Result<Value, String> {
         );
     }
 
-    let target = match args.first() {
+    let positionals = crate::cli::command_positionals("templates apply", args);
+    let target = match positionals.first() {
         Some(target) => target,
         None => return Err("templates apply requires <target>".to_string()),
     };

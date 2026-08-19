@@ -210,13 +210,13 @@ fn template_apply_supports_omit_paths_and_tmp_dir() {
     .expect("failed to write omitted file");
 
     run_template_apply(&[
-        template_root.display().to_string(),
         "--workspace-folder".to_string(),
         workspace_root.display().to_string(),
         "--omit-paths".to_string(),
         "[\".github/*\"]".to_string(),
         "--tmp-dir".to_string(),
         tmp_dir.display().to_string(),
+        template_root.display().to_string(),
     ])
     .expect("apply template");
 

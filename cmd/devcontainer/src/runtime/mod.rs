@@ -180,19 +180,19 @@ pub fn run_user_commands(args: &[String]) -> Result<Value, String> {
 }
 
 pub fn run_exec(args: &[String]) -> Result<i32, String> {
-    common::validate_runtime_env_defaults(args)?;
-    let command_args = exec::exec_command_and_args(args)?;
-    let context = context::resolve_existing_container_context(args)?;
+    let parsed = exec::parse_exec_arguments(args)?;
+    common::validate_runtime_env_defaults(parsed.runtime_args)?;
+    let context = context::resolve_existing_container_context(parsed.runtime_args)?;
     let engine_args = exec::exec_engine_args(
-        args,
+        parsed.runtime_args,
         &context.configuration,
         &context.remote_workspace_folder,
         &context.container_id,
-        command_args,
+        parsed.command_args,
         exec::ExecStdio::current(),
     )?;
 
-    engine::run_engine_streaming(args, engine_args)
+    engine::run_engine_streaming(parsed.runtime_args, engine_args)
 }
 
 #[cfg(test)]
