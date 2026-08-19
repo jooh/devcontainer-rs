@@ -33,6 +33,121 @@ const outputPath = path.join(
 	'cli_metadata.json',
 );
 
+const nativeOptionsByCommand = {
+	up: [
+		{
+			name: 'pull-always',
+			aliases: [],
+			description: 'Always pull images before creating the dev container. Native extension.  [boolean]',
+		},
+	],
+	build: [
+		{
+			name: 'build-no-cache',
+			aliases: [],
+			description: 'Build without using cached layers. Native extension.  [boolean]',
+		},
+	],
+	'set-up': [
+		{
+			name: 'workspace-folder',
+			aliases: [],
+			description: 'Workspace folder used to resolve the devcontainer configuration. Native extension.  [string]',
+		},
+		{
+			name: 'docker-compose-path',
+			aliases: [],
+			description: 'Docker Compose CLI path. Native extension.  [string]',
+		},
+	],
+	exec: [
+		{
+			name: 'secrets-file',
+			aliases: [],
+			description: 'Path to a JSON file containing secret environment variables. Native extension.  [string]',
+		},
+	],
+	'features test': [
+		{
+			name: 'docker-path',
+			aliases: [],
+			description: 'Container engine CLI path. Native extension.  [string]',
+		},
+	],
+	'features publish': [
+		{
+			name: 'output-dir',
+			aliases: [],
+			description: 'Directory for the generated local OCI layout. Native extension.  [string]',
+		},
+	],
+	'templates metadata': [
+		{
+			name: 'workspace-folder',
+			aliases: [],
+			description: 'Workspace folder used to resolve local OCI layouts. Native extension.  [string]',
+		},
+	],
+	'templates publish': [
+		{
+			name: 'output-dir',
+			aliases: [],
+			description: 'Directory for the generated local OCI layout. Native extension.  [string]',
+		},
+	],
+};
+
+// Native collection handlers retain positional forms that are not declared by
+// the pinned upstream yargs command definitions. Keep them in validation
+// metadata without changing the upstream-rendered help text.
+const nativePositionalsByCommand = {
+	'templates apply': [
+		{
+			name: 'target',
+			description: 'Local template folder to apply. Native extension.  [string]',
+		},
+	],
+	'features generate-docs': [
+		{
+			name: 'target',
+			description: 'Feature collection folder. Native extension.  [string]',
+		},
+	],
+	'templates generate-docs': [
+		{
+			name: 'target',
+			description: 'Template collection folder. Native extension.  [string]',
+		},
+	],
+};
+
+// Hidden upstream options do not appear in rendered help, so retain the type
+// and alias details needed to parse their values without making them visible.
+const hiddenOptionsByCommand = {
+	'features test': [
+		{
+			name: 'projectFolder',
+			aliases: [],
+			description: 'Project folder accepted by the native feature test runner.  [string]',
+			visible: false,
+		},
+	],
+	upgrade: [
+		{
+			name: 'feature',
+			aliases: ['f'],
+			description: 'Feature identifier to upgrade.  [string]',
+			visible: false,
+		},
+		{
+			name: 'target-version',
+			aliases: ['v'],
+			description: 'Feature version requirement to apply.  [string]',
+			visible: false,
+		},
+	],
+};
+
 function readJson(filePath) {
 	return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
@@ -107,17 +222,22 @@ function parseOptionLine(line) {
 }
 
 function parsePositionalLine(line) {
-	const columns = splitHelpColumns(line);
-	if (!columns) {
+	// Yargs renders long positional descriptions on continuation lines, leaving
+	// the first line as just "  <name>". Only consider entries at the section's
+	// two-space indentation so those continuation lines are not mistaken for
+	// additional positionals.
+	if (!/^ {2}\S/.test(line)) {
 		return null;
 	}
-	const name = columns.label.split(/\s+/)[0];
-	if (!name || name.startsWith('-')) {
+	const columns = splitHelpColumns(line);
+	const label = columns ? columns.label : line.trim();
+	const name = label.split(/\s+/)[0];
+	if (!name || name.startsWith('-') || name.startsWith('[')) {
 		return null;
 	}
 	return {
 		name,
-		description: columns.description,
+		description: columns ? columns.description : '',
 	};
 }
 
@@ -161,22 +281,73 @@ function parseDisplayedEntries(lines) {
 	};
 }
 
+function mergeUsagePositionals(commandPath, lines, displayedPositionals) {
+	const usagePrefix = `devcontainer ${commandPath}`;
+	const usageLine = lines[0] || '';
+	if (!usageLine.startsWith(usagePrefix)) {
+		return displayedPositionals;
+	}
+
+	const byName = new Map(displayedPositionals.map(positional => [positional.name, positional]));
+	const merged = [];
+	for (const match of usageLine.slice(usagePrefix.length).matchAll(/<([^>]+)>|\[([^\]]+)\]/g)) {
+		const name = (match[1] || match[2]).replace(/\.\.$/, '');
+		if (!byName.has(name)) {
+			byName.set(name, { name, description: '' });
+		}
+		merged.push(byName.get(name));
+	}
+	for (const positional of displayedPositionals) {
+		if (!merged.some(candidate => candidate.name === positional.name)) {
+			merged.push(positional);
+		}
+	}
+	return merged;
+}
+
+function nativeOptionsForCommand(commandPath) {
+	return nativeOptionsByCommand[commandPath] || [];
+}
+
+function nativePositionalsForCommand(commandPath) {
+	return nativePositionalsByCommand[commandPath] || [];
+}
+
+function hiddenOptionsForCommand(commandPath) {
+	return hiddenOptionsByCommand[commandPath] || [];
+}
+
+function nativeOptionLines(options) {
+	return options.map(option => ({
+		text: `  --${option.name.padEnd(32)}${option.description}`,
+		optionNames: [option.name],
+		positionalNames: [],
+	}));
+}
+
 function mergeOptions(allOptionNames, displayedOptions) {
 	const displayedByName = new Map(displayedOptions.map(option => [option.name, option]));
-	const merged = allOptionNames.map(name => {
+	const merged = [];
+	const seenNames = new Set();
+	for (const name of allOptionNames) {
+		if (seenNames.has(name)) {
+			continue;
+		}
+		seenNames.add(name);
 		const displayed = displayedByName.get(name);
-		return {
+		merged.push({
 			name,
 			aliases: displayed ? displayed.aliases : [],
 			description: displayed ? displayed.description : null,
-			visible: Boolean(displayed),
-		};
-	});
+			visible: Boolean(displayed) && displayed.visible !== false,
+		});
+	}
 
 	for (const displayed of displayedOptions) {
-		if (!displayedByName.has(displayed.name) || allOptionNames.includes(displayed.name)) {
+		if (seenNames.has(displayed.name)) {
 			continue;
 		}
+		seenNames.add(displayed.name);
 		merged.push({
 			name: displayed.name,
 			aliases: displayed.aliases,
@@ -218,15 +389,30 @@ function generateCliMetadata() {
 			runUpstreamHelp(command.path.split(' ')),
 		);
 		const parsed = parseDisplayedEntries(commandLines);
+		const nativeOptions = nativeOptionsForCommand(command.path);
+		const nativePositionals = nativePositionalsForCommand(command.path);
+		const hiddenOptions = hiddenOptionsForCommand(command.path);
+		const positionals = mergeUsagePositionals(
+			command.path,
+			commandLines,
+			[...parsed.displayedPositionals, ...nativePositionals],
+		);
 		return {
 			path: command.path,
 			group: command.group,
 			tokenPath: command.path.split(' '),
 			description: command.description,
 			subcommands: groupChildren(matrix, command.path),
-			lines: parsed.lines,
-			options: mergeOptions(command.options, parsed.displayedOptions),
-			positionals: parsed.displayedPositionals,
+			lines: [...parsed.lines, ...nativeOptionLines(nativeOptions)],
+			options: mergeOptions(
+				[
+					...command.options,
+					...nativeOptions.map(option => option.name),
+					...hiddenOptions.map(option => option.name),
+				],
+				[...parsed.displayedOptions, ...nativeOptions, ...hiddenOptions],
+			),
+			positionals,
 			unsupportedOptions: unsupportedOptionsForCommand(
 				parityInventory,
 				command.path,

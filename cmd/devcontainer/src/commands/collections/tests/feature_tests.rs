@@ -294,10 +294,10 @@ fn features_test_discovery_handles_non_object_scenarios_and_missing_test_root() 
 }
 
 #[test]
-fn features_test_discovery_reports_missing_project_folder_argument() {
-    let error = discover_feature_test_scenarios(&[]).expect_err("missing project folder");
+fn features_test_discovery_defaults_to_current_project_folder() {
+    let scenarios = discover_feature_test_scenarios(&[]).expect("default project folder");
 
-    assert_eq!(error, "features test requires a project folder");
+    assert!(scenarios.is_empty());
 }
 
 #[test]
@@ -371,8 +371,23 @@ fn features_test_discovery_reports_invalid_scenarios_json() {
 }
 
 #[test]
+fn features_test_run_accepts_default_project_folder() {
+    assert_eq!(run_features_test(&[]), std::process::ExitCode::SUCCESS);
+}
+
+#[test]
 fn features_test_run_reports_discovery_errors() {
-    assert_eq!(run_features_test(&[]), std::process::ExitCode::from(1));
+    let root = unique_temp_dir();
+    let test = root.join("test").join("demo");
+    fs::create_dir_all(&test).expect("feature test");
+    fs::write(test.join("scenarios.json"), "{").expect("invalid scenarios");
+
+    assert_eq!(
+        run_features_test(&["--project-folder".to_string(), root.display().to_string(),]),
+        std::process::ExitCode::from(1)
+    );
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

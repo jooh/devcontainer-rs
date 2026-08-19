@@ -367,12 +367,9 @@ fn upgrade_with_feature_updates_config_and_dry_run_lockfile() {
         .args([
             "upgrade",
             "--dry-run",
-            "--workspace-folder",
-            workspace.to_string_lossy().as_ref(),
-            "--feature",
-            "ghcr.io/codspace/versioning/foo",
-            "--target-version",
-            "2",
+            &format!("--workspace-folder={}", workspace.display()),
+            "-f=ghcr.io/codspace/versioning/foo",
+            "-v=2",
         ])
         .output()
         .expect("upgrade should run");

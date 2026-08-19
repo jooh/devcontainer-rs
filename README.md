@@ -42,6 +42,26 @@ export DEVCONTAINER_DOCKER_COMPOSE_PATH=podman-compose
 devcontainer up --workspace-folder .
 ```
 
+To always refresh a remote image when `up` creates or recreates the container,
+use the native `--pull-always` extension:
+
+```bash
+devcontainer up --workspace-folder . --pull-always
+```
+
+For plain image configurations, the runtime explicitly pulls the source image.
+For Compose configurations, it resolves, merges, and interpolates the effective
+configuration, then determines the active `runServices` set and its dependency
+closure. Build-backed services are excluded; for each unique remaining remote
+image, it directly invokes the selected engine and checks the exit status of
+each call (`pull IMAGE` or `pull --platform PLATFORM IMAGE`).
+Dockerfile, Compose, and Feature builds use build-stage `--pull` where needed to
+refresh remote bases, without force-pulling locally generated final tags such as
+Feature or UID-update images. During `up`, this refresh happens before the final
+existing-container lookup and reuse/start/create decision. An existing container
+can therefore still be reused after its source is refreshed; combine the option
+with `--remove-existing-container` when replacement is required.
+
 To use the same non-standard config path across commands:
 
 ```bash

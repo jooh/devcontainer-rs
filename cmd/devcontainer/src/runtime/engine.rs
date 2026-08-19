@@ -93,6 +93,42 @@ pub(crate) fn requested_compose_program(args: &[String]) -> Option<String> {
     )
 }
 
+pub(crate) fn pull_always_requested(args: &[String]) -> bool {
+    let mut requested = false;
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        if arg == "--pull-always" {
+            if let Some(value) = args
+                .get(index + 1)
+                .and_then(|value| cli_boolean_value(value))
+            {
+                requested = value;
+                index += 2;
+            } else {
+                requested = true;
+                index += 1;
+            }
+            continue;
+        }
+        if let Some(value) = arg
+            .strip_prefix("--pull-always=")
+            .and_then(cli_boolean_value)
+        {
+            requested = value;
+        }
+        index += 1;
+    }
+    requested
+}
+
+fn cli_boolean_value(value: &str) -> Option<bool> {
+    match value {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 fn default_compose_subcommand_available(args: &[String]) -> bool {
     let request = common::runtime_process_request(
         args,
@@ -197,8 +233,53 @@ mod tests {
 
     use super::{
         compose_request, default_compose_subcommand_available, engine_request, is_build_request,
-        normalize_process_error, run_compose, run_engine, run_engine_streaming, stderr_or_stdout,
+        normalize_process_error, pull_always_requested, run_compose, run_engine,
+        run_engine_streaming, stderr_or_stdout,
     };
+
+    #[test]
+    fn pull_always_requested_honors_the_cli_boolean_vocabulary_and_last_value() {
+        for value in ["true", "1", "yes", "on"] {
+            assert!(
+                pull_always_requested(&["--pull-always".to_string(), value.to_string()]),
+                "spaced {value}"
+            );
+            assert!(
+                pull_always_requested(&[format!("--pull-always={value}")]),
+                "equals {value}"
+            );
+        }
+        for value in ["false", "0", "no", "off"] {
+            assert!(
+                !pull_always_requested(&["--pull-always".to_string(), value.to_string()]),
+                "spaced {value}"
+            );
+            assert!(
+                !pull_always_requested(&[format!("--pull-always={value}")]),
+                "equals {value}"
+            );
+        }
+
+        assert!(pull_always_requested(&["--pull-always".to_string()]));
+        assert!(!pull_always_requested(&[]));
+        assert!(!pull_always_requested(&[
+            "--pull-always=yes".to_string(),
+            "--pull-always".to_string(),
+            "off".to_string(),
+        ]));
+        assert!(pull_always_requested(&[
+            "--pull-always".to_string(),
+            "false".to_string(),
+            "--pull-always=on".to_string(),
+        ]));
+        assert!(!pull_always_requested(&[
+            "--pull-always=invalid".to_string()
+        ]));
+        assert!(pull_always_requested(&[
+            "--pull-always".to_string(),
+            "invalid".to_string(),
+        ]));
+    }
 
     #[test]
     fn engine_request_applies_terminal_env_and_log_level() {

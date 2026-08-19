@@ -23,19 +23,22 @@ pub(crate) fn run_features(args: &[String]) -> ExitCode {
             features::build_features_resolve_dependencies_payload(subcommand_args)
         }
         "info" => {
-            if args.len() < 3 {
+            let positionals = crate::cli::command_positionals("features info", subcommand_args);
+            if positionals.len() < 2 {
                 Err("features info requires manifest <feature>".to_string())
             } else {
-                let _ = common::parse_option_value(&args[3..], "--log-level");
-                let workspace_folder = common::parse_option_value(&args[3..], "--workspace-folder")
-                    .map(std::path::PathBuf::from);
+                let _ = common::parse_option_value(subcommand_args, "--log-level");
+                let workspace_folder =
+                    common::parse_option_value(subcommand_args, "--workspace-folder")
+                        .map(std::path::PathBuf::from);
                 match features::build_feature_info_payload_with_workspace(
-                    &args[1],
-                    &args[2],
+                    &positionals[0],
+                    &positionals[1],
                     workspace_folder.as_deref(),
                 ) {
                     Ok(payload)
-                        if common::parse_option_value(&args[3..], "--output-format").as_deref()
+                        if common::parse_option_value(subcommand_args, "--output-format")
+                            .as_deref()
                             == Some("text") =>
                     {
                         println!("{}", render_collection_info_text(&payload));
@@ -47,11 +50,12 @@ pub(crate) fn run_features(args: &[String]) -> ExitCode {
         }
         "test" => return feature_tests::run_features_test(subcommand_args),
         "package" => {
-            if args.len() < 2 {
+            let positionals = crate::cli::command_positionals("features package", subcommand_args);
+            if positionals.is_empty() {
                 Err("features package requires <target>".to_string())
             } else {
                 match publish::package_collection_target(
-                    std::path::Path::new(&args[1]),
+                    std::path::Path::new(&positionals[0]),
                     "devcontainer-feature.json",
                     "feature",
                 ) {
@@ -65,33 +69,36 @@ pub(crate) fn run_features(args: &[String]) -> ExitCode {
             }
         }
         "publish" => {
-            if args.len() < 2 {
+            let positionals = crate::cli::command_positionals("features publish", subcommand_args);
+            if positionals.is_empty() {
                 Err("features publish requires <target>".to_string())
             } else {
                 publish::publish_collection_target_to_oci(
-                    std::path::Path::new(&args[1]),
+                    std::path::Path::new(&positionals[0]),
                     "devcontainer-feature.json",
                     "feature",
                     "features publish",
-                    &args[2..],
+                    subcommand_args,
                 )
             }
         }
         "generate-docs" => {
-            if args.len() < 2 {
+            let positionals =
+                crate::cli::command_positionals("features generate-docs", subcommand_args);
+            if positionals.is_empty() {
                 Err("features generate-docs requires <target>".to_string())
             } else {
                 let options = common::ManifestDocOptions {
                     registry: Some(
-                        common::parse_option_value(&args[2..], "--registry")
+                        common::parse_option_value(subcommand_args, "--registry")
                             .unwrap_or("ghcr.io".to_string()),
                     ),
-                    namespace: common::parse_option_value(&args[2..], "--namespace"),
-                    github_owner: common::parse_option_value(&args[2..], "--github-owner"),
-                    github_repo: common::parse_option_value(&args[2..], "--github-repo"),
+                    namespace: common::parse_option_value(subcommand_args, "--namespace"),
+                    github_owner: common::parse_option_value(subcommand_args, "--github-owner"),
+                    github_repo: common::parse_option_value(subcommand_args, "--github-repo"),
                 };
                 match crate::commands::common::generate_manifest_docs(
-                    std::path::Path::new(&args[1]),
+                    std::path::Path::new(&positionals[0]),
                     "devcontainer-feature.json",
                     "Feature",
                     &options,
@@ -117,42 +124,54 @@ fn render_collection_info_text(payload: &Value) -> String {
 }
 
 pub(crate) fn run_templates(args: &[String]) -> ExitCode {
-    let subcommand = args.first().map(String::as_str).unwrap_or("");
+    let (subcommand, subcommand_args) = match args.split_first() {
+        Some((subcommand, subcommand_args)) => (subcommand.as_str(), subcommand_args),
+        None => ("", &[][..]),
+    };
     let result = match subcommand {
-        "apply" => templates::run_template_apply(&args[1..]),
+        "apply" => templates::run_template_apply(subcommand_args),
         "metadata" => {
-            if args.len() < 2 {
+            let positionals =
+                crate::cli::command_positionals("templates metadata", subcommand_args);
+            if positionals.is_empty() {
                 Err("templates metadata requires <target>".to_string())
             } else {
-                let workspace_folder = common::parse_option_value(&args[2..], "--workspace-folder")
-                    .map(std::path::PathBuf::from);
-                templates::build_template_metadata_payload(&args[1], workspace_folder.as_deref())
+                let workspace_folder =
+                    common::parse_option_value(subcommand_args, "--workspace-folder")
+                        .map(std::path::PathBuf::from);
+                templates::build_template_metadata_payload(
+                    &positionals[0],
+                    workspace_folder.as_deref(),
+                )
             }
         }
         "publish" => {
-            if args.len() < 2 {
+            let positionals = crate::cli::command_positionals("templates publish", subcommand_args);
+            if positionals.is_empty() {
                 Err("templates publish requires <target>".to_string())
             } else {
                 publish::publish_collection_target_to_oci(
-                    std::path::Path::new(&args[1]),
+                    std::path::Path::new(&positionals[0]),
                     "devcontainer-template.json",
                     "template",
                     "templates publish",
-                    &args[2..],
+                    subcommand_args,
                 )
             }
         }
         "generate-docs" => {
-            if args.len() < 2 {
+            let positionals =
+                crate::cli::command_positionals("templates generate-docs", subcommand_args);
+            if positionals.is_empty() {
                 Err("templates generate-docs requires <target>".to_string())
             } else {
                 let options = common::ManifestDocOptions {
-                    github_owner: common::parse_option_value(&args[2..], "--github-owner"),
-                    github_repo: common::parse_option_value(&args[2..], "--github-repo"),
+                    github_owner: common::parse_option_value(subcommand_args, "--github-owner"),
+                    github_repo: common::parse_option_value(subcommand_args, "--github-repo"),
                     ..Default::default()
                 };
                 match crate::commands::common::generate_manifest_docs(
-                    std::path::Path::new(&args[1]),
+                    std::path::Path::new(&positionals[0]),
                     "devcontainer-template.json",
                     "Template",
                     &options,

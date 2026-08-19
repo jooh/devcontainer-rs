@@ -31,10 +31,21 @@ impl ExecStdio {
     }
 }
 
-pub(crate) fn exec_command_and_args(args: &[String]) -> Result<Vec<String>, String> {
+pub(crate) struct ParsedExecArguments<'a> {
+    pub(crate) runtime_args: &'a [String],
+    pub(crate) command_args: Vec<String>,
+}
+
+pub(crate) fn parse_exec_arguments(args: &[String]) -> Result<ParsedExecArguments<'_>, String> {
     let mut index = 0;
-    while index < args.len() {
+    let (runtime_end, command_start) = loop {
+        if index >= args.len() {
+            return Err("exec requires a command to run".to_string());
+        }
         let arg = &args[index];
+        if arg == "--" {
+            break (index, index + 1);
+        }
         if matches!(
             arg.as_str(),
             "--docker-path"
@@ -78,14 +89,22 @@ pub(crate) fn exec_command_and_args(args: &[String]) -> Result<Vec<String>, Stri
         if arg.starts_with("--") {
             return Err(format!("Unsupported exec option: {arg}"));
         }
-        break;
-    }
+        break (index, index);
+    };
 
-    if index >= args.len() {
+    if command_start >= args.len() {
         return Err("exec requires a command to run".to_string());
     }
 
-    Ok(args[index..].to_vec())
+    Ok(ParsedExecArguments {
+        runtime_args: &args[..runtime_end],
+        command_args: args[command_start..].to_vec(),
+    })
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn exec_command_and_args(args: &[String]) -> Result<Vec<String>, String> {
+    parse_exec_arguments(args).map(|parsed| parsed.command_args)
 }
 
 fn is_explicit_bool_literal(value: &str) -> bool {
@@ -150,7 +169,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        exec_command_and_args, exec_engine_args, exec_engine_args_with_remote_env, ExecStdio,
+        exec_command_and_args, exec_engine_args, exec_engine_args_with_remote_env,
+        parse_exec_arguments, ExecStdio,
     };
 
     #[test]
@@ -175,6 +195,38 @@ mod tests {
         .expect_err("expected unsupported option");
 
         assert_eq!(error, "Unsupported exec option: --interactive");
+    }
+
+    #[test]
+    fn exec_command_and_args_rejects_separator_without_command() {
+        let error = exec_command_and_args(&["--".to_string()])
+            .expect_err("separator must be followed by a command");
+
+        assert_eq!(error, "exec requires a command to run");
+    }
+
+    #[test]
+    fn exec_command_and_args_strips_separator_and_preserves_payload_flags() {
+        let input = [
+            "--workspace-folder".to_string(),
+            "/workspace".to_string(),
+            "--".to_string(),
+            "--payload-command".to_string(),
+            "--payload-option".to_string(),
+        ];
+        let parsed = parse_exec_arguments(&input).expect("parsed exec arguments");
+
+        assert_eq!(
+            parsed.runtime_args,
+            &["--workspace-folder".to_string(), "/workspace".to_string()]
+        );
+        assert_eq!(
+            parsed.command_args,
+            vec![
+                "--payload-command".to_string(),
+                "--payload-option".to_string()
+            ]
+        );
     }
 
     #[test]

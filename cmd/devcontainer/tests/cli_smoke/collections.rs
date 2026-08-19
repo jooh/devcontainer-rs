@@ -12,6 +12,99 @@ use crate::support::test_support::{devcontainer_command, unique_temp_dir};
 const DEFAULT_PUBLISHED_TEMPLATE_BASE_IMAGE: &str = "docker.io/library/debian:bookworm-slim";
 
 #[test]
+fn features_test_array_filters_use_the_default_project_folder() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.root.join("feature-project");
+    for feature in ["demo", "other"] {
+        let src = workspace.join("src").join(feature);
+        let test = workspace.join("test").join(feature);
+        fs::create_dir_all(&src).expect("feature src");
+        fs::create_dir_all(&test).expect("feature test");
+        fs::write(
+            src.join("devcontainer-feature.json"),
+            format!(
+                "{{\n  \"id\": \"{feature}\",\n  \"name\": \"{feature}\",\n  \"version\": \"1.0.0\"\n}}\n"
+            ),
+        )
+        .expect("manifest");
+        fs::write(test.join("test.sh"), "#!/bin/sh\nexit 0\n").expect("test script");
+    }
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run_in_dir(
+        &[
+            "features",
+            "test",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--features",
+            "demo",
+            "other",
+        ],
+        &[],
+        Some(&workspace),
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    assert!(stdout.contains("'demo'"), "{stdout}");
+    assert!(stdout.contains("'other'"), "{stdout}");
+
+    let _ = fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn collection_positionals_work_after_options() {
+    let root = unique_temp_dir("devcontainer-cli-smoke");
+    let feature = root.join("feature");
+    let package_output = root.join("package-output");
+    fs::create_dir_all(&feature).expect("feature root");
+    fs::write(
+        feature.join("devcontainer-feature.json"),
+        "{\n  \"id\": \"demo\",\n  \"name\": \"Demo\",\n  \"version\": \"1.0.0\"\n}\n",
+    )
+    .expect("feature manifest");
+
+    let package = devcontainer_command(None)
+        .args([
+            "features",
+            "package",
+            "--output-folder",
+            package_output.to_string_lossy().as_ref(),
+            feature.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("features package should run");
+    assert!(package.status.success(), "{package:?}");
+
+    let template = root.join("template");
+    let template_src = template.join("src");
+    let workspace = root.join("workspace");
+    fs::create_dir_all(&template_src).expect("template src");
+    fs::write(
+        template.join("devcontainer-template.json"),
+        "{\n  \"id\": \"demo\",\n  \"name\": \"Demo\"\n}\n",
+    )
+    .expect("template manifest");
+    fs::write(template_src.join("README.md"), "# applied\n").expect("template file");
+
+    let apply = devcontainer_command(None)
+        .args([
+            "templates",
+            "apply",
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            template.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .expect("templates apply should run");
+    assert!(apply.status.success(), "{apply:?}");
+    assert!(workspace.join("README.md").is_file());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn features_test_emits_a_local_report() {
     let harness = RuntimeHarness::new();
     let workspace = harness.root.join("feature-project");

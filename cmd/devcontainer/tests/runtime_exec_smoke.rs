@@ -8,6 +8,40 @@ use std::fs;
 use support::runtime_harness::{write_devcontainer_config, RuntimeHarness};
 
 #[test]
+fn exec_separator_preserves_payload_options() {
+    let harness = RuntimeHarness::new();
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+
+    let output = harness.run(
+        &[
+            "exec",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--container-id",
+            "fake-container-id",
+            "--",
+            "/bin/echo",
+            "--workspace-mount-consistency",
+            "payload-choice",
+        ],
+        &[],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("utf8 stdout"),
+        "--workspace-mount-consistency payload-choice\n"
+    );
+    assert!(
+        harness
+            .read_exec_argv_log()
+            .contains("[/bin/echo]\n[--workspace-mount-consistency]\n[payload-choice]"),
+        "{}",
+        harness.read_exec_argv_log()
+    );
+}
+
+#[test]
 fn interactive_exec_attaches_stdin() {
     let harness = RuntimeHarness::new();
     let fake_podman = harness.fake_podman.to_string_lossy().to_string();

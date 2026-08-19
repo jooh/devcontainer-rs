@@ -63,13 +63,17 @@ fn collection_entrypoints_run_package_publish_and_docs_paths() {
     .expect("feature manifest");
 
     assert_eq!(
-        super::run_features(&["package".to_string(), root.display().to_string()]),
+        super::run_features(&[
+            "package".to_string(),
+            "--output-folder".to_string(),
+            feature_output.display().to_string(),
+            root.display().to_string(),
+        ]),
         ExitCode::SUCCESS
     );
     assert_eq!(
         super::run_features(&[
             "generate-docs".to_string(),
-            root.display().to_string(),
             "--registry".to_string(),
             "ghcr.io".to_string(),
             "--namespace".to_string(),
@@ -78,6 +82,7 @@ fn collection_entrypoints_run_package_publish_and_docs_paths() {
             "acme".to_string(),
             "--github-repo".to_string(),
             "features".to_string(),
+            root.display().to_string(),
         ]),
         ExitCode::SUCCESS
     );
@@ -85,9 +90,9 @@ fn collection_entrypoints_run_package_publish_and_docs_paths() {
     assert_eq!(
         super::run_features(&[
             "publish".to_string(),
-            root.display().to_string(),
             "--output-dir".to_string(),
             feature_output.display().to_string(),
+            root.display().to_string(),
         ]),
         ExitCode::SUCCESS
     );
@@ -128,12 +133,12 @@ fn feature_info_entrypoint_supports_text_output() {
     assert_eq!(
         super::run_features(&[
             "info".to_string(),
-            "manifest".to_string(),
-            root.display().to_string(),
             "--output-format".to_string(),
             "text".to_string(),
             "--log-level".to_string(),
             "trace".to_string(),
+            "manifest".to_string(),
+            root.display().to_string(),
         ]),
         ExitCode::SUCCESS
     );
@@ -194,17 +199,22 @@ fn template_entrypoints_run_metadata_publish_and_docs_paths() {
     .expect("template manifest");
 
     assert_eq!(
-        super::run_templates(&["metadata".to_string(), root.display().to_string()]),
+        super::run_templates(&[
+            "metadata".to_string(),
+            "--log-level".to_string(),
+            "trace".to_string(),
+            root.display().to_string(),
+        ]),
         ExitCode::SUCCESS
     );
     assert_eq!(
         super::run_templates(&[
             "generate-docs".to_string(),
-            root.display().to_string(),
             "--github-owner".to_string(),
             "acme".to_string(),
             "--github-repo".to_string(),
             "templates".to_string(),
+            root.display().to_string(),
         ]),
         ExitCode::SUCCESS
     );
@@ -212,9 +222,9 @@ fn template_entrypoints_run_metadata_publish_and_docs_paths() {
     assert_eq!(
         super::run_templates(&[
             "publish".to_string(),
-            root.display().to_string(),
             "--output-dir".to_string(),
             output.display().to_string(),
+            root.display().to_string(),
         ]),
         ExitCode::SUCCESS
     );

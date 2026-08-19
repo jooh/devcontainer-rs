@@ -29,6 +29,7 @@ pub(crate) fn runtime_image_name(
     } else if has_build_definition(&resolved.configuration) || has_native_features {
         build_image(resolved, args)
     } else if let Some(image) = resolved.configuration.get("image").and_then(Value::as_str) {
+        pull_source_image_if_requested(args, image)?;
         Ok(image.to_string())
     } else {
         Err(
@@ -71,8 +72,13 @@ pub(crate) fn build_image(resolved: &ResolvedConfig, args: &[String]) -> Result<
             );
             lockfile_validation?;
             let image_name = image_name_arg_or_default(args, &resolved.workspace_folder);
-            let built =
-                build_feature_image(args, &image_name, &image, &feature_support.installations)?;
+            let built = build_feature_image(
+                args,
+                &image_name,
+                &image,
+                &feature_support.installations,
+                engine::pull_always_requested(args),
+            )?;
             maybe_push_image(args, &built)?;
             let lockfile_update = configuration::ensure_native_lockfile(
                 args,
@@ -83,6 +89,7 @@ pub(crate) fn build_image(resolved: &ResolvedConfig, args: &[String]) -> Result<
             lockfile_update?;
             Ok(built)
         } else {
+            pull_source_image_if_requested(args, &image)?;
             Ok(image)
         };
     }
@@ -99,7 +106,7 @@ pub(crate) fn build_image(resolved: &ResolvedConfig, args: &[String]) -> Result<
         let base_image = format!("{image_name}-base");
         build_base_image(resolved, args, &base_image)?;
         let installations = &feature_support.installations;
-        let built = build_feature_image(args, &image_name, &base_image, installations)?;
+        let built = build_feature_image(args, &image_name, &base_image, installations, false)?;
         maybe_push_image(args, &built)?;
         let lockfile_update = configuration::ensure_native_lockfile(
             args,
@@ -139,6 +146,9 @@ fn build_base_image(
     let dockerfile_path = resolve_relative(config_root, dockerfile);
     let context_path = resolve_relative(config_root, context);
     let mut engine_args = engine_build_args(args, image_name, &dockerfile_path);
+    if engine::pull_always_requested(args) {
+        engine_args.push("--pull".to_string());
+    }
     if let Some(build_args) = build.get("args").and_then(Value::as_object) {
         for (key, value) in build_args {
             if let Some(value) = value.as_str() {
@@ -162,12 +172,16 @@ pub(crate) fn build_feature_image(
     image_name: &str,
     base_image: &str,
     installations: &[configuration::FeatureInstallation],
+    pull_base_image: bool,
 ) -> Result<String, String> {
     let build_context_dir = unique_feature_build_dir();
     fs::create_dir_all(&build_context_dir).map_err(|error| error.to_string())?;
     let dockerfile_path =
         write_feature_dockerfile(args, &build_context_dir, base_image, installations)?;
     let mut engine_args = engine_build_args(args, image_name, &dockerfile_path);
+    if pull_base_image {
+        engine_args.push("--pull".to_string());
+    }
     engine_args.push(build_context_dir.display().to_string());
 
     let result = engine::run_engine(args, engine_args);
@@ -178,6 +192,17 @@ pub(crate) fn build_feature_image(
     }
     cleanup.map_err(|error| error.to_string())?;
     Ok(image_name.to_string())
+}
+
+fn pull_source_image_if_requested(args: &[String], image_name: &str) -> Result<(), String> {
+    if !engine::pull_always_requested(args) {
+        return Ok(());
+    }
+    let result = engine::run_engine(args, vec!["pull".to_string(), image_name.to_string()])?;
+    if result.status_code != 0 {
+        return Err(engine::stderr_or_stdout(&result));
+    }
+    Ok(())
 }
 
 fn maybe_push_image(args: &[String], image_name: &str) -> Result<(), String> {
@@ -548,6 +573,173 @@ mod tests {
                 .as_str(),
             "debian:bookworm"
         );
+    }
+
+    #[test]
+    fn runtime_image_name_pull_always_refreshes_plain_source_images() {
+        let root = unique_temp_dir("devcontainer-runtime-image-name-pull");
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "image": "debian:bookworm"
+            }),
+        );
+        let log = root.join("engine.log");
+        let engine = write_engine_script(
+            &root,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+                log.display()
+            ),
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            engine.display().to_string(),
+            "--pull-always=true".to_string(),
+        ];
+
+        assert_eq!(
+            runtime_image_name(&resolved, &args).expect("image name"),
+            "debian:bookworm"
+        );
+        assert_eq!(
+            fs::read_to_string(log).expect("engine log"),
+            "pull debian:bookworm\n"
+        );
+    }
+
+    #[test]
+    fn runtime_image_name_reports_pull_failures_for_plain_source_images() {
+        let root = unique_temp_dir("devcontainer-runtime-image-name-pull-failure");
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "image": "debian:bookworm"
+            }),
+        );
+        let engine = write_engine_script(
+            &root,
+            "#!/bin/sh\necho source image pull failed >&2\nexit 23\n",
+        );
+
+        let error = runtime_image_name(
+            &resolved,
+            &[
+                "--docker-path".to_string(),
+                engine.display().to_string(),
+                "--pull-always".to_string(),
+            ],
+        )
+        .expect_err("source image pull failure");
+
+        assert_eq!(error, "source image pull failed");
+    }
+
+    #[test]
+    fn pull_always_refreshes_remote_build_bases_without_pulling_generated_feature_tags() {
+        let root = unique_temp_dir("devcontainer-build-feature-pull");
+        write_local_feature(&root, "local-feature", json!({}));
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "build": { "dockerfile": "Dockerfile" },
+                "features": { "../local-feature": {} }
+            }),
+        );
+        fs::write(
+            root.join(".devcontainer").join("Dockerfile"),
+            "FROM debian:bookworm\n",
+        )
+        .expect("dockerfile");
+        let log = root.join("engine.log");
+        let engine = write_engine_script(
+            &root,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+                log.display()
+            ),
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            engine.display().to_string(),
+            "--image-name".to_string(),
+            "example/featured:test".to_string(),
+            "--pull-always".to_string(),
+        ];
+
+        assert_eq!(
+            build_image(&resolved, &args).expect("featured image"),
+            "example/featured:test"
+        );
+        let log = fs::read_to_string(log).expect("engine log");
+        let builds = log.lines().collect::<Vec<_>>();
+        assert_eq!(builds.len(), 2, "{log}");
+        assert!(builds[0].contains("--pull"), "{log}");
+        assert!(!builds[1].contains("--pull"), "{log}");
+    }
+
+    #[test]
+    fn pull_always_refreshes_remote_image_under_feature_builds() {
+        let root = unique_temp_dir("devcontainer-image-feature-pull");
+        write_local_feature(&root, "local-feature", json!({}));
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "image": "debian:bookworm",
+                "features": { "../local-feature": {} }
+            }),
+        );
+        let log = root.join("engine.log");
+        let engine = write_engine_script(
+            &root,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+                log.display()
+            ),
+        );
+        let args = vec![
+            "--docker-path".to_string(),
+            engine.display().to_string(),
+            "--image-name".to_string(),
+            "example/featured:test".to_string(),
+            "--pull-always".to_string(),
+        ];
+
+        build_image(&resolved, &args).expect("feature image");
+        let log = fs::read_to_string(log).expect("engine log");
+        assert_eq!(log.lines().count(), 1, "{log}");
+        assert!(log.contains("build --tag example/featured:test"), "{log}");
+        assert!(log.contains("--pull"), "{log}");
+    }
+
+    #[test]
+    fn build_image_propagates_feature_build_failures_for_image_configs() {
+        let root = unique_temp_dir("devcontainer-image-feature-build-failure");
+        write_local_feature(&root, "local-feature", json!({}));
+        let resolved = resolved_config(
+            &root,
+            json!({
+                "image": "debian:bookworm",
+                "features": { "../local-feature": {} }
+            }),
+        );
+        let engine = write_engine_script(
+            &root,
+            "#!/bin/sh\necho feature image build failed >&2\nexit 17\n",
+        );
+
+        let error = build_image(
+            &resolved,
+            &[
+                "--docker-path".to_string(),
+                engine.display().to_string(),
+                "--image-name".to_string(),
+                "example/featured:test".to_string(),
+            ],
+        )
+        .expect_err("feature image build failure");
+
+        assert_eq!(error, "feature image build failed");
     }
 
     #[test]
@@ -1030,8 +1222,14 @@ exit 0
         );
         let args = vec!["--docker-path".to_string(), engine.display().to_string()];
 
-        let image = build_feature_image(&args, "example/native:test", "example/base:test", &[])
-            .expect("feature build");
+        let image = build_feature_image(
+            &args,
+            "example/native:test",
+            "example/base:test",
+            &[],
+            false,
+        )
+        .expect("feature build");
 
         assert_eq!(image, "example/native:test");
         let log = fs::read_to_string(log).expect("engine log");
@@ -1082,8 +1280,14 @@ exit 0
         );
         let args = vec!["--docker-path".to_string(), engine.display().to_string()];
 
-        let error = build_feature_image(&args, "example/native:test", "example/base:test", &[])
-            .expect_err("feature build failure");
+        let error = build_feature_image(
+            &args,
+            "example/native:test",
+            "example/base:test",
+            &[],
+            false,
+        )
+        .expect_err("feature build failure");
 
         assert_eq!(error, "feature build rejected");
     }
@@ -1098,8 +1302,14 @@ exit 0
             missing_engine.display().to_string(),
         ];
 
-        let error = build_feature_image(&args, "example/native:test", "example/base:test", &[])
-            .expect_err("feature build spawn failure");
+        let error = build_feature_image(
+            &args,
+            "example/native:test",
+            "example/base:test",
+            &[],
+            false,
+        )
+        .expect_err("feature build spawn failure");
 
         assert!(error.contains("missing-engine"), "{error}");
         let _ = fs::remove_dir_all(root);

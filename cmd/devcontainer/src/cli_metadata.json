@@ -455,6 +455,13 @@
 						"include-merged-configuration"
 					],
 					"positionalNames": []
+				},
+				{
+					"text": "  --pull-always                     Always pull images before creating the dev container. Native extension.  [boolean]",
+					"optionNames": [
+						"pull-always"
+					],
+					"positionalNames": []
 				}
 			],
 			"options": [
@@ -729,6 +736,12 @@
 					"visible": true
 				},
 				{
+					"name": "pull-always",
+					"aliases": [],
+					"description": "Always pull images before creating the dev container. Native extension.  [boolean]",
+					"visible": true
+				},
+				{
 					"name": "help",
 					"aliases": [],
 					"description": "Show help  [boolean]",
@@ -938,6 +951,20 @@
 						"include-merged-configuration"
 					],
 					"positionalNames": []
+				},
+				{
+					"text": "  --workspace-folder                Workspace folder used to resolve the devcontainer configuration. Native extension.  [string]",
+					"optionNames": [
+						"workspace-folder"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --docker-compose-path             Docker Compose CLI path. Native extension.  [string]",
+					"optionNames": [
+						"docker-compose-path"
+					],
+					"positionalNames": []
 				}
 			],
 			"options": [
@@ -1059,6 +1086,18 @@
 					"name": "user-data-folder",
 					"aliases": [],
 					"description": "Host path to a directory that is intended to be persisted and share state between sessions.  [string]",
+					"visible": true
+				},
+				{
+					"name": "workspace-folder",
+					"aliases": [],
+					"description": "Workspace folder used to resolve the devcontainer configuration. Native extension.  [string]",
+					"visible": true
+				},
+				{
+					"name": "docker-compose-path",
+					"aliases": [],
+					"description": "Docker Compose CLI path. Native extension.  [string]",
 					"visible": true
 				},
 				{
@@ -1258,6 +1297,13 @@
 						"frozen-lockfile"
 					],
 					"positionalNames": []
+				},
+				{
+					"text": "  --build-no-cache                  Build without using cached layers. Native extension.  [boolean]",
+					"optionNames": [
+						"build-no-cache"
+					],
+					"positionalNames": []
 				}
 			],
 			"options": [
@@ -1406,6 +1452,12 @@
 					"visible": true
 				},
 				{
+					"name": "build-no-cache",
+					"aliases": [],
+					"description": "Build without using cached layers. Native extension.  [boolean]",
+					"visible": true
+				},
+				{
 					"name": "help",
 					"aliases": [],
 					"description": "Show help  [boolean]",
@@ -1418,7 +1470,12 @@
 					"visible": true
 				}
 			],
-			"positionals": [],
+			"positionals": [
+				{
+					"name": "path",
+					"description": ""
+				}
+			],
 			"unsupportedOptions": [],
 			"unsupportedPositionals": []
 		},
@@ -2429,8 +2486,10 @@
 				},
 				{
 					"name": "feature",
-					"aliases": [],
-					"description": null,
+					"aliases": [
+						"f"
+					],
+					"description": "Feature identifier to upgrade.  [string]",
 					"visible": false
 				},
 				{
@@ -2441,8 +2500,10 @@
 				},
 				{
 					"name": "target-version",
-					"aliases": [],
-					"description": null,
+					"aliases": [
+						"v"
+					],
+					"description": "Feature version requirement to apply.  [string]",
 					"visible": false
 				},
 				{
@@ -2738,6 +2799,13 @@
 						"quiet"
 					],
 					"positionalNames": []
+				},
+				{
+					"text": "  --docker-path                     Container engine CLI path. Native extension.  [string]",
+					"optionNames": [
+						"docker-path"
+					],
+					"positionalNames": []
 				}
 			],
 			"options": [
@@ -2830,6 +2898,18 @@
 					"visible": true
 				},
 				{
+					"name": "docker-path",
+					"aliases": [],
+					"description": "Container engine CLI path. Native extension.  [string]",
+					"visible": true
+				},
+				{
+					"name": "projectFolder",
+					"aliases": [],
+					"description": "Project folder accepted by the native feature test runner.  [string]",
+					"visible": false
+				},
+				{
 					"name": "help",
 					"aliases": [],
 					"description": "Show help  [boolean]",
@@ -2889,7 +2969,9 @@
 				{
 					"text": "  target",
 					"optionNames": [],
-					"positionalNames": []
+					"positionalNames": [
+						"target"
+					]
 				},
 				{
 					"text": "           Package features at provided [target] (default is cwd), where [target] is either:",
@@ -3003,7 +3085,12 @@
 					"visible": true
 				}
 			],
-			"positionals": [],
+			"positionals": [
+				{
+					"name": "target",
+					"description": ""
+				}
+			],
 			"unsupportedOptions": [],
 			"unsupportedPositionals": []
 		},
@@ -3045,7 +3132,9 @@
 				{
 					"text": "  target",
 					"optionNames": [],
-					"positionalNames": []
+					"positionalNames": [
+						"target"
+					]
 				},
 				{
 					"text": "           Package and publish features at provided [target] (default is cwd), where [target] is either:",
@@ -3111,9 +3200,22 @@
 						"log-level"
 					],
 					"positionalNames": []
+				},
+				{
+					"text": "  --output-dir                      Directory for the generated local OCI layout. Native extension.  [string]",
+					"optionNames": [
+						"output-dir"
+					],
+					"positionalNames": []
 				}
 			],
 			"options": [
+				{
+					"name": "output-dir",
+					"aliases": [],
+					"description": "Directory for the generated local OCI layout. Native extension.  [string]",
+					"visible": true
+				},
 				{
 					"name": "help",
 					"aliases": [],
@@ -3149,7 +3251,12 @@
 					"visible": true
 				}
 			],
-			"positionals": [],
+			"positionals": [
+				{
+					"name": "target",
+					"description": ""
+				}
+			],
 			"unsupportedOptions": [],
 			"unsupportedPositionals": []
 		},
@@ -3522,7 +3629,12 @@
 					"visible": true
 				}
 			],
-			"positionals": [],
+			"positionals": [
+				{
+					"name": "target",
+					"description": "Feature collection folder. Native extension.  [string]"
+				}
+			],
 			"unsupportedOptions": [],
 			"unsupportedPositionals": []
 		},
@@ -3791,7 +3903,12 @@
 					"visible": true
 				}
 			],
-			"positionals": [],
+			"positionals": [
+				{
+					"name": "target",
+					"description": "Local template folder to apply. Native extension.  [string]"
+				}
+			],
 			"unsupportedOptions": [],
 			"unsupportedPositionals": []
 		},
@@ -3833,7 +3950,9 @@
 				{
 					"text": "  target",
 					"optionNames": [],
-					"positionalNames": []
+					"positionalNames": [
+						"target"
+					]
 				},
 				{
 					"text": "           Package and publish templates at provided [target] (default is cwd), where [target] is either:",
@@ -3899,9 +4018,22 @@
 						"log-level"
 					],
 					"positionalNames": []
+				},
+				{
+					"text": "  --output-dir                      Directory for the generated local OCI layout. Native extension.  [string]",
+					"optionNames": [
+						"output-dir"
+					],
+					"positionalNames": []
 				}
 			],
 			"options": [
+				{
+					"name": "output-dir",
+					"aliases": [],
+					"description": "Directory for the generated local OCI layout. Native extension.  [string]",
+					"visible": true
+				},
 				{
 					"name": "help",
 					"aliases": [],
@@ -3937,7 +4069,12 @@
 					"visible": true
 				}
 			],
-			"positionals": [],
+			"positionals": [
+				{
+					"name": "target",
+					"description": ""
+				}
+			],
 			"unsupportedOptions": [],
 			"unsupportedPositionals": []
 		},
@@ -4013,6 +4150,13 @@
 						"log-level"
 					],
 					"positionalNames": []
+				},
+				{
+					"text": "  --workspace-folder                Workspace folder used to resolve local OCI layouts. Native extension.  [string]",
+					"optionNames": [
+						"workspace-folder"
+					],
+					"positionalNames": []
 				}
 			],
 			"options": [
@@ -4020,6 +4164,12 @@
 					"name": "log-level",
 					"aliases": [],
 					"description": "Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
+					"visible": true
+				},
+				{
+					"name": "workspace-folder",
+					"aliases": [],
+					"description": "Workspace folder used to resolve local OCI layouts. Native extension.  [string]",
 					"visible": true
 				},
 				{
@@ -4162,7 +4312,12 @@
 					"visible": true
 				}
 			],
-			"positionals": [],
+			"positionals": [
+				{
+					"name": "target",
+					"description": "Template collection folder. Native extension.  [string]"
+				}
+			],
 			"unsupportedOptions": [],
 			"unsupportedPositionals": []
 		},
@@ -4363,6 +4518,13 @@
 						"remote-env"
 					],
 					"positionalNames": []
+				},
+				{
+					"text": "  --secrets-file                    Path to a JSON file containing secret environment variables. Native extension.  [string]",
+					"optionNames": [
+						"secrets-file"
+					],
+					"positionalNames": []
 				}
 			],
 			"options": [
@@ -4478,6 +4640,12 @@
 					"name": "workspace-folder",
 					"aliases": [],
 					"description": "Workspace folder path. The devcontainer.json will be looked up relative to this path. If --container-id, --id-label, and --workspace-folder are not provided, this defaults to the current directory.  [string]",
+					"visible": true
+				},
+				{
+					"name": "secrets-file",
+					"aliases": [],
+					"description": "Path to a JSON file containing secret environment variables. Native extension.  [string]",
 					"visible": true
 				},
 				{

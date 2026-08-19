@@ -257,8 +257,19 @@ jobs:
       - name: Install Podman Compose
         if: matrix.runner == 'podman'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y podman podman-compose
+          # ubuntu-24.04 hosted runners prefer an Azure mirror and only fall
+          # back after each request times out. Remove that mirror when the
+          # runner exposes the mirror list so package downloads cannot stall.
+          if [[ -f /etc/apt/apt-mirrors.txt ]]; then
+            sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+          fi
+          apt_options=(
+            -o Acquire::Retries=3
+            -o Acquire::http::Timeout=20
+            -o Acquire::https::Timeout=20
+          )
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install -y podman podman-compose
 
       - name: Runtime version
         run: |

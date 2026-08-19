@@ -82,7 +82,8 @@ pub(super) fn run_template_apply(args: &[String]) -> Result<Value, String> {
         );
     }
 
-    let target = match args.first() {
+    let positionals = crate::cli::command_positionals("templates apply", args);
+    let target = match positionals.first() {
         Some(target) => target,
         None => return Err("templates apply requires <target>".to_string()),
     };
@@ -422,10 +423,8 @@ fn template_path_is_omitted(relative_path: &Path, omit_paths: &[String]) -> bool
             if relative == prefix || relative.starts_with(&format!("{prefix}/")) {
                 return true;
             }
-        } else {
-            if relative == *pattern {
-                return true;
-            }
+        } else if relative == *pattern {
+            return true;
         }
     }
     false

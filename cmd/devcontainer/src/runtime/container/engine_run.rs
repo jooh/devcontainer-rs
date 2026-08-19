@@ -483,13 +483,11 @@ esac
             }),
         );
 
-        let container_id = start_container(
-            &resolved,
-            &engine_args(&fake_engine),
-            "alpine:3.20",
-            "/workspace",
-        )
-        .expect("container should start");
+        let mut args = engine_args(&fake_engine);
+        args.push("--pull-always".to_string());
+        let container_id =
+            start_container(&resolved, &args, "devcontainer-workspace-uid", "/workspace")
+                .expect("container should start");
 
         assert_eq!(container_id, "created-container");
         let invocation = fs::read_to_string(&invocation_log).expect("invocation log");
@@ -497,6 +495,11 @@ esac
         assert!(invocation.contains("-e EDITOR=vim"));
         assert!(invocation.contains("--cap-add SYS_PTRACE"));
         assert!(invocation.contains("--security-opt seccomp=unconfined"));
+        assert!(!invocation.contains("--pull always"), "{invocation}");
+        assert!(
+            invocation.contains("devcontainer-workspace-uid"),
+            "{invocation}"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

@@ -21,6 +21,13 @@ case "$COMMAND" in
         --project-name)
           shift 2
           ;;
+        --profile)
+          if [ "${FAKE_PODMAN_COMPOSE_REJECT_WILDCARD_PROFILE:-0}" = "1" ] && [ "${2:-}" = "*" ]; then
+            echo "podman-compose does not expand wildcard profiles" >&2
+            exit 2
+          fi
+          shift 2
+          ;;
         -f)
           if [ -n "$COMPOSE_FILES" ]; then
             COMPOSE_FILES="$COMPOSE_FILES
@@ -38,6 +45,25 @@ ${2:-}"
     SUBCOMMAND="${1:-}"
     shift || true
     case "$SUBCOMMAND" in
+      config)
+        if [ -n "${FAKE_PODMAN_COMPOSE_CONFIG_FILE:-}" ]; then
+          cat "${FAKE_PODMAN_COMPOSE_CONFIG_FILE}"
+          exit 0
+        fi
+        if [ -n "$COMPOSE_FILES" ]; then
+          old_ifs="${IFS- }"
+          IFS='
+'
+          for compose_file in $COMPOSE_FILES; do
+            if [ -f "$compose_file" ]; then
+              cat "$compose_file"
+              break
+            fi
+          done
+          IFS="$old_ifs"
+        fi
+        exit 0
+        ;;
       build)
         compose_file_contents="$LOG_DIR/compose-file-contents.log"
         : > "$compose_file_contents"
@@ -55,6 +81,9 @@ ${2:-}"
           done
           IFS="$old_ifs"
         fi
+        exit 0
+        ;;
+      pull)
         exit 0
         ;;
       version)
@@ -220,6 +249,15 @@ ${2:-}"
     exit 0
     ;;
   push)
+    exit 0
+    ;;
+  pull)
+    if [ -n "${FAKE_PODMAN_PULL_STDERR:-}" ]; then
+      printf '%s\n' "${FAKE_PODMAN_PULL_STDERR}" >&2
+    fi
+    if [ -n "${FAKE_PODMAN_PULL_EXIT_CODE:-}" ]; then
+      exit "${FAKE_PODMAN_PULL_EXIT_CODE}"
+    fi
     exit 0
     ;;
   run)

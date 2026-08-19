@@ -50,8 +50,10 @@ struct HelpLine {
 struct CommandHelp {
     path: String,
     token_path: Vec<String>,
+    subcommands: Vec<String>,
     lines: Vec<HelpLine>,
     options: Vec<CommandOption>,
+    positionals: Vec<CommandPositional>,
     unsupported_options: Vec<String>,
     unsupported_positionals: Vec<String>,
 }
@@ -64,12 +66,42 @@ struct CommandOption {
     description: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct CommandPositional {
+    name: String,
+    description: String,
+}
+
 impl CommandOption {
     fn takes_value(&self) -> bool {
         match self.description.as_deref() {
             Some(description) => !description.contains("[boolean]"),
             None => false,
         }
+    }
+
+    fn accepts_explicit_boolean_value(&self, value: Option<&String>) -> bool {
+        self.description
+            .as_deref()
+            .is_none_or(|description| description.contains("[boolean]"))
+            && value.is_some_and(|value| {
+                matches!(
+                    value.as_str(),
+                    "false" | "0" | "no" | "off" | "true" | "1" | "yes" | "on"
+                )
+            })
+    }
+
+    fn takes_multiple_values(&self) -> bool {
+        self.description
+            .as_deref()
+            .is_some_and(|description| description.contains("[array]"))
+    }
+}
+
+impl CommandPositional {
+    fn takes_multiple_values(&self) -> bool {
+        self.description.contains("[array]")
     }
 }
 
@@ -235,25 +267,21 @@ pub(crate) fn normalize_option_aliases(command_path: &str, args: &[String]) -> V
             normalized.extend_from_slice(&args[index..]);
             break;
         }
-        let flag = match arg.split_once('=') {
-            Some((name, _)) => name,
-            None => arg.as_str(),
+        let (flag, inline_value) = match arg.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (arg.as_str(), None),
         };
-        let short_alias = match arg.strip_prefix('-') {
+        let short_alias = match flag.strip_prefix('-') {
             Some(value) if !value.starts_with('-') => Some(value),
             _ => None,
         };
         let option = find_command_option(command, flag, short_alias);
         if let Some(option) = option {
-            if arg.contains('=') {
-                normalized.push(arg.clone());
-            } else if match short_alias {
-                Some(alias) => option_has_alias(option, alias),
-                None => false,
-            } {
-                normalized.push(format!("--{}", option.name));
-            } else {
-                normalized.push(arg.clone());
+            normalized.push(format!("--{}", option.name));
+            if let Some(value) = inline_value {
+                normalized.push(value.to_string());
+                index += 1;
+                continue;
             }
         } else {
             normalized.push(arg.clone());
@@ -266,7 +294,7 @@ pub(crate) fn normalize_option_aliases(command_path: &str, args: &[String]) -> V
             Some(option) => option.takes_value(),
             None => false,
         };
-        if option_takes_value && !arg.contains('=') && next_arg_is_value {
+        if option_takes_value && next_arg_is_value {
             index += 1;
             normalized.push(args[index].clone());
         }
@@ -305,10 +333,69 @@ fn option_has_alias(option: &CommandOption, alias: &str) -> bool {
     false
 }
 
+pub(crate) fn command_positionals(command_path: &str, args: &[String]) -> Vec<String> {
+    let Some(command) = command_help(command_path) else {
+        return Vec::new();
+    };
+    let mut positionals = Vec::new();
+    let mut options_ended = false;
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        if !options_ended && arg == "--" {
+            options_ended = true;
+            index += 1;
+            continue;
+        }
+        if options_ended || !arg.starts_with('-') {
+            positionals.push(arg.clone());
+            index += 1;
+            continue;
+        }
+
+        let flag = arg.split_once('=').map_or(arg.as_str(), |(name, _)| name);
+        let short_alias = match flag.strip_prefix('-') {
+            Some(alias) if !alias.starts_with('-') => Some(alias),
+            _ => None,
+        };
+        let Some(option) = find_command_option(command, flag, short_alias) else {
+            index += 1;
+            continue;
+        };
+        if arg.contains('=') {
+            index += 1;
+        } else if option.takes_multiple_values() {
+            index += 1;
+            while args
+                .get(index)
+                .is_some_and(|value| value != "--" && !value.starts_with('-'))
+            {
+                index += 1;
+            }
+        } else if args.get(index + 1).is_some_and(|value| {
+            value != "--"
+                && (option.takes_value() || option.accepts_explicit_boolean_value(Some(value)))
+        }) {
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
+    positionals
+}
+
 pub fn unsupported_argument_error(command_path: &str, args: &[String]) -> Option<String> {
     let command = command_help(command_path)?;
 
-    unsupported_argument_error_for(command, command_path, args)
+    // Dispatch retains resolved nested command tokens (for example `test` in
+    // `features test`) in its argument vector. They identify the command and
+    // are not positionals declared by the leaf command's metadata.
+    let nested_tokens = &command.token_path[1..];
+    let command_args = match args.strip_prefix(nested_tokens) {
+        Some(command_args) => command_args,
+        None => args,
+    };
+
+    unsupported_argument_error_for(command, command_path, command_args)
 }
 
 fn unsupported_argument_error_for(
@@ -316,36 +403,88 @@ fn unsupported_argument_error_for(
     command_path: &str,
     args: &[String],
 ) -> Option<String> {
-    let mut unsupported_flags = Vec::new();
-
-    for option in &command.options {
-        if command.unsupported_options.contains(&option.name) {
-            unsupported_flags.push((format!("--{}", option.name), option.name.as_str()));
-            for alias in &option.aliases {
-                unsupported_flags.push((format!("-{alias}"), option.name.as_str()));
+    let mut index = 0;
+    let mut positional_index = 0;
+    let mut options_ended = false;
+    while let Some(arg) = args.get(index) {
+        if !options_ended && arg == "--" {
+            if command.path == "exec" {
+                break;
             }
+            options_ended = true;
+            index += 1;
+            continue;
         }
-    }
 
-    for arg in args {
-        if arg == "--" {
+        if !options_ended && command.path == "exec" && !arg.starts_with('-') {
             break;
         }
 
-        if command.path == "exec" && !arg.starts_with('-') {
-            break;
+        if options_ended || !arg.starts_with('-') {
+            // Group commands still need to pass unknown tokens through to the
+            // dispatcher so it can report an unsupported subcommand. Leaf
+            // commands, however, accept only the positionals in their
+            // generated upstream metadata.
+            if command.subcommands.is_empty() {
+                let Some(positional) = command.positionals.get(positional_index) else {
+                    return Some(format!(
+                        "Unknown argument: {arg}: devcontainer {command_path}"
+                    ));
+                };
+                if command.unsupported_positionals.contains(&positional.name) {
+                    return Some(format!(
+                        "Argument {arg} {UNSUPPORTED_ARGUMENT_MESSAGE}: devcontainer {command_path}"
+                    ));
+                }
+                if !positional.takes_multiple_values() {
+                    positional_index += 1;
+                }
+            }
+            index += 1;
+            continue;
         }
 
         let flag = match arg.split_once('=') {
             Some((name, _)) => name,
             None => arg.as_str(),
         };
-        for (candidate, _) in &unsupported_flags {
-            if candidate == flag {
-                return Some(format!(
-                    "Option {candidate} {UNSUPPORTED_ARGUMENT_MESSAGE}: devcontainer {command_path}"
-                ));
+        let short_alias = match flag.strip_prefix('-') {
+            Some(alias) if !alias.starts_with('-') => Some(alias),
+            _ => None,
+        };
+        let Some(option) = find_command_option(command, flag, short_alias) else {
+            if command_path == "up" && flag == "--pull" {
+                return Some(
+                    "Option --pull is not supported by devcontainer up. Use --pull-always instead."
+                        .to_string(),
+                );
             }
+            return Some(format!(
+                "Unknown option: {flag}: devcontainer {command_path}"
+            ));
+        };
+        if command.unsupported_options.contains(&option.name) {
+            return Some(format!(
+                "Option {flag} {UNSUPPORTED_ARGUMENT_MESSAGE}: devcontainer {command_path}"
+            ));
+        }
+
+        let next = args.get(index + 1);
+        if !arg.contains('=') && option.takes_multiple_values() {
+            index += 1;
+            while args
+                .get(index)
+                .is_some_and(|value| value != "--" && !value.starts_with('-'))
+            {
+                index += 1;
+            }
+        } else if !arg.contains('=')
+            && next.is_some_and(|value| value != "--")
+            && (option.takes_value() || option.accepts_explicit_boolean_value(next))
+        {
+            index += 2;
+        } else {
+            index += 1;
         }
     }
 
@@ -355,10 +494,10 @@ fn unsupported_argument_error_for(
 #[cfg(test)]
 mod tests {
     use super::{
-        command_help, command_help_text, is_command_help_request, is_command_version_request,
-        normalize_option_aliases, rendered_cli_log, rendered_lines, resolve_command_help,
-        unsupported_argument_error, unsupported_argument_error_for, CommandHelp, CommandOption,
-        HelpLine,
+        cli_metadata, command_help, command_help_text, command_positionals,
+        is_command_help_request, is_command_version_request, normalize_option_aliases,
+        rendered_cli_log, rendered_lines, resolve_command_help, unsupported_argument_error,
+        unsupported_argument_error_for, CommandHelp, CommandOption, CommandPositional, HelpLine,
     };
 
     #[test]
@@ -422,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_long_options_with_inline_values() {
+    fn normalizes_inline_long_and_short_option_values() {
         let normalized = normalize_option_aliases(
             "templates apply",
             &[
@@ -435,10 +574,45 @@ mod tests {
         assert_eq!(
             normalized,
             vec![
-                "--workspace-folder=/tmp/workspace".to_string(),
-                "--template-id=ghcr.io/devcontainers/templates/docker-from-docker:latest"
-                    .to_string(),
+                "--workspace-folder".to_string(),
+                "/tmp/workspace".to_string(),
+                "--template-id".to_string(),
+                "ghcr.io/devcontainers/templates/docker-from-docker:latest".to_string(),
             ]
+        );
+
+        let normalized = normalize_option_aliases(
+            "upgrade",
+            &[
+                "-f=ghcr.io/example/features/demo".to_string(),
+                "-v=2".to_string(),
+            ],
+        );
+        assert_eq!(
+            normalized,
+            vec![
+                "--feature".to_string(),
+                "ghcr.io/example/features/demo".to_string(),
+                "--target-version".to_string(),
+                "2".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn extracts_positionals_across_option_and_separator_forms() {
+        assert!(command_positionals("unknown", &["target".to_string()]).is_empty());
+        assert_eq!(
+            command_positionals(
+                "templates apply",
+                &[
+                    "--workspace-folder=/workspace".to_string(),
+                    "--unknown".to_string(),
+                    "--".to_string(),
+                    "--target".to_string(),
+                ],
+            ),
+            vec!["--target"]
         );
     }
 
@@ -560,6 +734,21 @@ mod tests {
     }
 
     #[test]
+    fn generated_command_option_names_are_unique() {
+        for command in &cli_metadata().commands {
+            let mut names = std::collections::HashSet::new();
+            for option in &command.options {
+                assert!(
+                    names.insert(option.name.as_str()),
+                    "duplicate option metadata for {}: {}",
+                    command.path,
+                    option.name
+                );
+            }
+        }
+    }
+
+    #[test]
     fn supported_command_options_are_not_reported_as_unsupported() {
         let error = unsupported_argument_error(
             "outdated",
@@ -570,18 +759,54 @@ mod tests {
     }
 
     #[test]
+    fn features_test_accepts_hidden_camel_case_project_folder_alias() {
+        let error = unsupported_argument_error(
+            "features test",
+            &[
+                "test".to_string(),
+                "--projectFolder".to_string(),
+                "/workspace".to_string(),
+            ],
+        );
+
+        assert!(error.is_none(), "{error:?}");
+        assert!(
+            !command_help_text("features test").contains("--projectFolder"),
+            "hidden alias should not be duplicated in help"
+        );
+    }
+
+    #[test]
+    fn set_up_accepts_native_compose_path_option() {
+        let error = unsupported_argument_error(
+            "set-up",
+            &[
+                "--docker-compose-path".to_string(),
+                "podman-compose".to_string(),
+            ],
+        );
+
+        assert!(error.is_none(), "{error:?}");
+    }
+
+    #[test]
     fn unsupported_argument_error_reports_synthetic_unsupported_options() {
         let command = CommandHelp {
             path: "sample".to_string(),
             token_path: vec!["sample".to_string()],
+            subcommands: Vec::new(),
             lines: Vec::new(),
             options: vec![CommandOption {
                 name: "legacy".to_string(),
                 aliases: vec!["l".to_string()],
                 description: Some("Legacy option".to_string()),
             }],
+            positionals: vec![CommandPositional {
+                name: "legacy-target".to_string(),
+                description: "Legacy target  [string]".to_string(),
+            }],
             unsupported_options: vec!["legacy".to_string()],
-            unsupported_positionals: Vec::new(),
+            unsupported_positionals: vec!["legacy-target".to_string()],
         };
 
         let error = unsupported_argument_error_for(&command, "sample", &["-l".to_string()])
@@ -599,7 +824,20 @@ mod tests {
             "sample",
             &["--".to_string(), "-l".to_string()],
         );
-        assert!(after_separator.is_none());
+        assert_eq!(
+            after_separator.as_deref(),
+            Some(
+                "Argument -l is recognized for this command but is not yet implemented in the native Rust CLI: devcontainer sample"
+            )
+        );
+
+        let positional_error =
+            unsupported_argument_error_for(&command, "sample", &["target".to_string()])
+                .expect("unsupported positional");
+        assert_eq!(
+            positional_error,
+            "Argument target is recognized for this command but is not yet implemented in the native Rust CLI: devcontainer sample"
+        );
     }
 
     #[test]
@@ -618,11 +856,74 @@ mod tests {
 
     #[test]
     fn preserves_positional_metadata_for_nested_commands() {
+        let build = command_help("build").expect("build metadata");
+        assert_eq!(build.positionals[0].name, "path");
+
         let command = command_help("features test").expect("features test metadata");
         assert!(command
             .lines
             .iter()
             .any(|line| line.positional_names.contains(&"target".to_string())));
+        assert_eq!(command.positionals[0].name, "target");
+
+        for path in [
+            "features package",
+            "features publish",
+            "templates publish",
+            "templates apply",
+            "features generate-docs",
+            "templates generate-docs",
+        ] {
+            let command = command_help(path).expect("nested command metadata");
+            assert_eq!(command.positionals[0].name, "target", "{path}");
+        }
+    }
+
+    #[test]
+    fn accepts_all_values_of_array_options_before_validating_positionals() {
+        let error = unsupported_argument_error(
+            "features test",
+            &[
+                "test".to_string(),
+                "--features".to_string(),
+                "one".to_string(),
+                "two".to_string(),
+                "--quiet".to_string(),
+            ],
+        );
+
+        assert!(error.is_none(), "{error:?}");
+    }
+
+    #[test]
+    fn accepts_declared_positionals_and_rejects_extras() {
+        assert!(unsupported_argument_error("build", &["workspace".to_string()]).is_none());
+
+        let error =
+            unsupported_argument_error("build", &["workspace".to_string(), "extra".to_string()]);
+        assert_eq!(
+            error.as_deref(),
+            Some("Unknown argument: extra: devcontainer build")
+        );
+
+        assert!(unsupported_argument_error(
+            "features info",
+            &[
+                "info".to_string(),
+                "manifest".to_string(),
+                "ghcr.io/example/features/sample:1".to_string(),
+            ],
+        )
+        .is_none());
+
+        assert!(unsupported_argument_error(
+            "features info",
+            &[
+                "manifest".to_string(),
+                "ghcr.io/example/features/sample:1".to_string(),
+            ],
+        )
+        .is_none());
     }
 
     #[test]
