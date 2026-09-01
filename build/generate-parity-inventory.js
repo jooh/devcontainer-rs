@@ -325,6 +325,10 @@ function isTestOnlyPath(relativePath) {
 	return path.basename(relativePath) === 'tests.rs' || pathSegments.includes('tests');
 }
 
+function isNativeImplementationPath(relativePath) {
+	return relativePath.endsWith('.rs') && !isTestOnlyPath(relativePath);
+}
+
 function stripCfgTestBlocks(source) {
 	let stripped = '';
 	let cursor = 0;
@@ -381,7 +385,7 @@ function commandSourceFiles(commandPath) {
 	}
 	return configuredPaths
 		.flatMap(relativePath => walkFiles(relativePath))
-		.filter(relativePath => !isTestOnlyPath(relativePath));
+		.filter(isNativeImplementationPath);
 }
 
 function optionEvidence(commandPath, optionName) {
@@ -397,7 +401,7 @@ function optionEvidence(commandPath, optionName) {
 function globalOptionEvidence(optionName) {
 	const needle = `--${optionName}`;
 	return walkFiles('cmd/devcontainer/src')
-		.filter(relativePath => !isTestOnlyPath(relativePath))
+		.filter(isNativeImplementationPath)
 		.filter(relativePath => readSourceForEvidence(relativePath).includes(needle))
 		.sort();
 }

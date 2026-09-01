@@ -13,7 +13,7 @@ use super::super::context::{
 };
 use super::super::engine;
 use super::super::metadata::serialized_container_metadata;
-use super::super::mounts::mount_value_to_engine_arg;
+use super::super::mounts::{mount_args_for_engine, mount_value_to_engine_arg};
 
 pub(super) fn start_container(
     resolved: &ResolvedConfig,
@@ -73,11 +73,11 @@ fn start_container_with_metadata(
     engine_args.extend(mount_args_for_engine(
         &workspace_mount_for_args(resolved, remote_workspace_folder, args),
         is_wslc,
-    ));
+    )?);
     if resolved.configuration.get("workspaceMount").is_none() {
         for mount in additional_mounts_for_workspace_target(resolved, remote_workspace_folder, args)
         {
-            engine_args.extend(mount_args_for_engine(&mount, is_wslc));
+            engine_args.extend(mount_args_for_engine(&mount, is_wslc)?);
         }
     }
     if !is_wslc
@@ -108,11 +108,11 @@ fn start_container_with_metadata(
         .and_then(Value::as_array)
     {
         for mount in mounts.iter().filter_map(mount_value_to_engine_arg) {
-            engine_args.extend(mount_args_for_engine(&mount, is_wslc));
+            engine_args.extend(mount_args_for_engine(&mount, is_wslc)?);
         }
     }
     for mount in crate::runtime::mounts::cli_mount_values(args)? {
-        engine_args.extend(mount_args_for_engine(&mount, is_wslc));
+        engine_args.extend(mount_args_for_engine(&mount, is_wslc)?);
     }
     if let Some(run_args) = resolved
         .configuration
@@ -284,31 +284,6 @@ fn is_missing_local_image_error(error: &str) -> bool {
     error.contains("no such image") || error.contains("image not known")
 }
 
-fn mount_args_for_engine(mount: &str, is_wslc: bool) -> Vec<String> {
-    if !is_wslc {
-        return vec!["--mount".to_string(), mount.to_string()];
-    }
-    let mut source = None;
-    let mut target = None;
-    for part in mount.split(',') {
-        let Some((key, value)) = part.split_once('=') else {
-            continue;
-        };
-        match key {
-            "source" | "src" => source = Some(value),
-            "target" | "dst" | "destination" => target = Some(value),
-            _ => {}
-        }
-    }
-    match (source, target) {
-        (Some(source), Some(target)) => {
-            vec!["-v".to_string(), format!("{source}:{target}")]
-        }
-        (None, Some(target)) => vec!["-v".to_string(), target.to_string()],
-        _ => vec!["--mount".to_string(), mount.to_string()],
-    }
-}
-
 pub(super) fn start_existing_container(args: &[String], container_id: &str) -> Result<(), String> {
     let result = engine::run_engine(args, vec!["start".to_string(), container_id.to_string()])?;
     if result.status_code != 0 {
@@ -387,12 +362,12 @@ mod tests {
 
     use crate::commands::common::{test_env_defaults, DEVCONTAINER_GPU_AVAILABILITY};
     use crate::runtime::context::ResolvedConfig;
-    use crate::runtime::mounts::mount_value_to_engine_arg;
+    use crate::runtime::mounts::{mount_args_for_engine, mount_value_to_engine_arg};
     use crate::test_support::{unique_temp_dir, write_executable_script};
 
     use super::{
         contains_environment_reference, expand_environment_references, inspect_image_environment,
-        mount_args_for_engine, remove_container, should_add_gpu_capability, start_container,
+        remove_container, should_add_gpu_capability, start_container,
         start_container_with_metadata, start_existing_container,
     };
 
@@ -403,28 +378,27 @@ mod tests {
                 "type=bind,source=/workspace,target=/workspaces/project,consistency=cached",
                 true,
             ),
-            vec![
+            Ok(vec![
                 "-v".to_string(),
-                "/workspace:/workspaces/project".to_string(),
-            ]
+                "/workspace:/workspaces/project:cached".to_string(),
+            ])
         );
         assert_eq!(
             mount_args_for_engine("type=volume,target=/cache", true),
-            vec!["-v".to_string(), "/cache".to_string()]
+            Ok(vec!["-v".to_string(), "/cache".to_string()])
         );
         assert_eq!(
             mount_args_for_engine("type=bind,source=/a,target=/b", false),
-            vec![
+            Ok(vec![
                 "--mount".to_string(),
                 "type=bind,source=/a,target=/b".to_string(),
-            ]
+            ])
         );
-        assert_eq!(
-            mount_args_for_engine("type=bind,source=/a,malformed", true),
-            vec![
-                "--mount".to_string(),
-                "type=bind,source=/a,malformed".to_string(),
-            ]
+        let error = mount_args_for_engine("type=bind,source=/a,malformed", true)
+            .expect_err("unrepresentable mount");
+        assert!(
+            error.contains("WSLc cannot represent mount with -v"),
+            "{error}"
         );
     }
 
@@ -831,12 +805,18 @@ esac
         let resolved = resolved_config(
             &workspace,
             json!({
-                "workspaceMount": "type=bind,source=/host/workspace,target=/workspace",
+                "workspaceMount": "type=bind,src=/host/workspace,dst=/workspace,ro,consistency=delegated",
                 "init": true,
                 "privileged": true,
                 "capAdd": ["SYS_PTRACE"],
                 "securityOpt": ["seccomp=unconfined"],
-                "mounts": ["type=volume,source=cache,target=/cache"]
+                "mounts": [{
+                    "type": "volume",
+                    "source": "cache",
+                    "target": "/cache",
+                    "readOnly": true,
+                    "volume-nocopy": true
+                }]
             }),
         );
 
@@ -850,13 +830,55 @@ esac
 
         assert_eq!(container_id, "created-container");
         let invocation = fs::read_to_string(&invocation_log).expect("invocation log");
-        assert!(invocation.contains("-v /host/workspace:/workspace"));
-        assert!(invocation.contains("-v cache:/cache"));
+        assert!(invocation.contains("-v /host/workspace:/workspace:ro,delegated"));
+        assert!(invocation.contains("-v cache:/cache:ro,nocopy"));
         assert!(!invocation.contains("--mount"));
         assert!(!invocation.contains("--init"));
         assert!(!invocation.contains("--privileged"));
         assert!(!invocation.contains("--cap-add"));
         assert!(!invocation.contains("--security-opt"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn start_container_reports_unrepresentable_wslc_workspace_mount() {
+        let root = unique_temp_dir("devcontainer-start-container-wslc-mount-error-test");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace dir");
+        let fake_engine = root.join("wslc");
+        write_executable_script(
+            &fake_engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  -v) printf 'wslc version 0.1.0\n' ;;
+  *) echo "unexpected command $1" >&2; exit 2 ;;
+esac
+"#,
+        );
+        let resolved = resolved_config(
+            &workspace,
+            json!({
+                "workspaceMount": "type=bind,source=/workspace,target=/workspace,external=true"
+            }),
+        );
+
+        let error = start_container(
+            &resolved,
+            &engine_args(&fake_engine),
+            "alpine:3.20",
+            "/workspace",
+        )
+        .expect_err("unsupported WSLc workspace mount should fail");
+
+        assert!(
+            error.contains("WSLc cannot represent mount with -v"),
+            "{error}"
+        );
+        assert!(
+            error.contains("option \"external\" is not supported"),
+            "{error}"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

@@ -73,32 +73,38 @@ pub fn run(raw_args: Vec<String>) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let (global_oci_args, global_oci_arg_count) =
-        match cli::parse_leading_oci_auth_options(&raw_args[offset..]) {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                eprintln!("{error}");
-                return ExitCode::from(2);
-            }
-        };
-    let command_offset = offset + global_oci_arg_count;
-    if raw_args.len() <= command_offset {
+    let cli::ParsedGlobalOptions {
+        command_line,
+        oci_auth,
+    } = match cli::parse_global_options(&raw_args[offset..]) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    if command_line.is_empty() {
         cli::print_help();
         return ExitCode::from(2);
     }
 
-    if cli::is_command_version_request(&raw_args[command_offset..]) {
+    if cli::is_command_help_request(&command_line) {
+        cli::print_help();
+        return ExitCode::SUCCESS;
+    }
+
+    if cli::is_command_version_request(&command_line) {
         println!("{VERSION}");
         return ExitCode::SUCCESS;
     }
 
-    let command = &raw_args[command_offset];
+    let command = &command_line[0];
     if !cli::SUPPORTED_TOP_LEVEL_COMMANDS.contains(&command.as_str()) {
         eprintln!("Unsupported command: {command}");
         return ExitCode::from(2);
     }
 
-    let command_args = &raw_args[command_offset + 1..];
+    let command_args = &command_line[1..];
     let resolved_help = cli::resolve_command_help(command, command_args).expect("known command");
     let resolved_args = &command_args[resolved_help.consumed_args..];
 
@@ -113,7 +119,6 @@ pub fn run(raw_args: Vec<String>) -> ExitCode {
     }
 
     let mut normalized_command_args = command_args[..resolved_help.consumed_args].to_vec();
-    normalized_command_args.extend(global_oci_args);
     normalized_command_args.extend(cli::normalize_option_aliases(
         resolved_help.path,
         resolved_args,
@@ -126,7 +131,7 @@ pub fn run(raw_args: Vec<String>) -> ExitCode {
         return exit_code;
     }
 
-    match commands::dispatch(command, &normalized_command_args) {
+    match commands::dispatch(command, &normalized_command_args, oci_auth) {
         commands::DispatchResult::Complete(code) => code,
         commands::DispatchResult::UnsupportedNativePath => {
             cli::emit_log(log_format, "Unsupported native command path.");

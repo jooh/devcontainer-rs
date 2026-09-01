@@ -483,6 +483,88 @@ fn build_layers_features_on_top_of_dockerfile_builds() {
 }
 
 #[test]
+fn build_exports_only_the_terminal_feature_stage() {
+    let harness = RuntimeHarness::new();
+    let workspace = harness.workspace();
+    let config_dir = workspace.join(".devcontainer");
+    let feature_dir = config_dir.join("local-feature");
+    fs::create_dir_all(&feature_dir).expect("feature dir");
+    fs::write(
+        feature_dir.join("devcontainer-feature.json"),
+        "{\n  \"id\": \"local-feature\",\n  \"name\": \"Local Feature\",\n  \"version\": \"1.0.0\"\n}\n",
+    )
+    .expect("feature manifest");
+    fs::write(feature_dir.join("install.sh"), "#!/bin/sh\nset -eu\n").expect("install script");
+    let dockerfile = config_dir.join("Dockerfile");
+    fs::write(&dockerfile, "FROM scratch\n").expect("dockerfile");
+    write_devcontainer_config(
+        &workspace,
+        "{\n  \"build\": {\n    \"dockerfile\": \"Dockerfile\",\n    \"context\": \".\"\n  },\n  \"features\": {\n    \"./local-feature\": {}\n  }\n}\n",
+    );
+
+    let fake_podman = harness.fake_podman.to_string_lossy().to_string();
+    let output = harness.run(
+        &[
+            "build",
+            "--docker-path",
+            fake_podman.as_str(),
+            "--workspace-folder",
+            workspace.to_string_lossy().as_ref(),
+            "--image-name",
+            "example/native-build:feature-output",
+            "--output",
+            "type=oci,dest=/tmp/native-feature-output.tar",
+        ],
+        &[("FAKE_PODMAN_REJECT_EXPORTED_BASE_IMAGE", "1")],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let payload = harness.parse_stdout_json(&output);
+    assert_eq!(payload["outcome"], "success");
+    assert_eq!(payload["imageName"], "example/native-build:feature-output");
+
+    let invocations = harness.read_engine_argv();
+    assert_eq!(invocations.len(), 2, "{invocations:?}");
+    assert_eq!(
+        invocations[0],
+        vec![
+            "build".to_string(),
+            "--tag".to_string(),
+            "example/native-build:feature-output-base".to_string(),
+            "--file".to_string(),
+            dockerfile.display().to_string(),
+            "--build-arg".to_string(),
+            "BUILDKIT_INLINE_CACHE=1".to_string(),
+            config_dir.join(".").display().to_string(),
+        ]
+    );
+    let feature_dockerfile = Path::new(&invocations[1][4]);
+    let feature_context = feature_dockerfile.parent().expect("feature build context");
+    assert!(
+        feature_context
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("devcontainer-feature-build-")),
+        "{feature_context:?}"
+    );
+    assert_eq!(
+        invocations[1],
+        vec![
+            "build".to_string(),
+            "--tag".to_string(),
+            "example/native-build:feature-output".to_string(),
+            "--file".to_string(),
+            feature_dockerfile.display().to_string(),
+            "--build-arg".to_string(),
+            "BUILDKIT_INLINE_CACHE=1".to_string(),
+            "--output".to_string(),
+            "type=oci,dest=/tmp/native-feature-output.tar".to_string(),
+            feature_context.display().to_string(),
+        ]
+    );
+}
+
+#[test]
 fn build_pushes_final_feature_image_instead_of_intermediate_base_image() {
     let harness = RuntimeHarness::new();
     let workspace = harness.workspace();

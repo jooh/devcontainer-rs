@@ -16,14 +16,11 @@ pub enum DispatchResult {
     UnsupportedNativePath,
 }
 
-pub fn dispatch(command: &str, args: &[String]) -> DispatchResult {
-    let options = match common::oci_auth_options(args) {
-        Ok(options) => options,
-        Err(error) => {
-            eprintln!("{error}");
-            return DispatchResult::Complete(ExitCode::from(2));
-        }
-    };
+pub(crate) fn dispatch(
+    command: &str,
+    args: &[String],
+    options: common::OciAuthOptions,
+) -> DispatchResult {
     if let Err(error) = collections::validate_oci_auth_options(&options) {
         eprintln!("{error}");
         return DispatchResult::Complete(ExitCode::from(2));
@@ -35,15 +32,19 @@ fn dispatch_with_options(command: &str, args: &[String]) -> DispatchResult {
     match command {
         "read-configuration" => {
             if configuration::should_use_native_read_configuration(args) {
-                DispatchResult::Complete(print_json_result(
+                DispatchResult::Complete(print_json_result_with_oci_auth_diagnostics(
                     configuration::build_read_configuration_payload(args),
                 ))
             } else {
                 DispatchResult::UnsupportedNativePath
             }
         }
-        "build" => DispatchResult::Complete(print_json_result(runtime::run_build(args))),
-        "up" => DispatchResult::Complete(print_json_result(runtime::run_up(args))),
+        "build" => DispatchResult::Complete(print_json_result_with_oci_auth_diagnostics(
+            runtime::run_build(args),
+        )),
+        "up" => DispatchResult::Complete(print_json_result_with_oci_auth_diagnostics(
+            runtime::run_up(args),
+        )),
         "set-up" => DispatchResult::Complete(print_json_result(runtime::run_set_up(args))),
         "run-user-commands" => {
             DispatchResult::Complete(print_json_result(runtime::run_user_commands(args)))
@@ -59,7 +60,8 @@ fn dispatch_with_options(command: &str, args: &[String]) -> DispatchResult {
 
 fn print_json_result(result: Result<Value, String>) -> ExitCode {
     match result {
-        Ok(payload) => {
+        Ok(mut payload) => {
+            common::attach_oci_auth_diagnostics(&mut payload);
             println!("{payload}");
             ExitCode::SUCCESS
         }
@@ -70,6 +72,11 @@ fn print_json_result(result: Result<Value, String>) -> ExitCode {
     }
 }
 
+fn print_json_result_with_oci_auth_diagnostics(result: Result<Value, String>) -> ExitCode {
+    common::mark_oci_auth_attempted();
+    print_json_result(result)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -77,6 +84,7 @@ mod tests {
 
     use serde_json::json;
 
+    use crate::commands::common::OciAuthOptions;
     use crate::test_support::unique_temp_dir;
 
     use super::{dispatch, print_json_result, DispatchResult};
@@ -90,7 +98,7 @@ mod tests {
 
     fn assert_complete_exit(command: &str, args: &[String], expected: ExitCode) {
         assert_eq!(
-            complete_exit_code(dispatch(command, args)),
+            complete_exit_code(dispatch(command, args, OciAuthOptions::default())),
             Some(expected),
             "{command} exit code"
         );
@@ -110,19 +118,29 @@ mod tests {
 
     #[test]
     fn dispatch_rejects_invalid_oci_auth_options() {
-        assert_complete_exit(
-            "features",
-            &["--allow-cross-origin-auth-host".to_string()],
-            ExitCode::from(2),
+        assert_eq!(
+            complete_exit_code(dispatch(
+                "features",
+                &[],
+                OciAuthOptions {
+                    hardening: false,
+                    allowed_cross_origin_auth_hosts: vec![
+                        "registry.example=auth.example".to_string(),
+                    ],
+                },
+            )),
+            Some(ExitCode::from(2))
         );
-        assert_complete_exit(
-            "features",
-            &[
-                "--oci-auth-hardening".to_string(),
-                "--allow-cross-origin-auth-host".to_string(),
-                "invalid".to_string(),
-            ],
-            ExitCode::from(2),
+        assert_eq!(
+            complete_exit_code(dispatch(
+                "features",
+                &[],
+                OciAuthOptions {
+                    hardening: true,
+                    allowed_cross_origin_auth_hosts: vec!["invalid".to_string()],
+                },
+            )),
+            Some(ExitCode::from(2))
         );
     }
 
@@ -144,11 +162,16 @@ mod tests {
                     "--workspace-folder".to_string(),
                     workspace.display().to_string()
                 ],
+                OciAuthOptions::default(),
             )),
             Some(ExitCode::SUCCESS)
         );
         assert!(matches!(
-            dispatch("read-configuration", &["--unsupported".to_string()]),
+            dispatch(
+                "read-configuration",
+                &["--unsupported".to_string()],
+                OciAuthOptions::default(),
+            ),
             DispatchResult::UnsupportedNativePath
         ));
         let _ = fs::remove_dir_all(workspace);
@@ -210,6 +233,9 @@ mod tests {
 
     #[test]
     fn dispatch_reports_unknown_commands_as_unsupported() {
-        assert_eq!(complete_exit_code(dispatch("unknown", &[])), None);
+        assert_eq!(
+            complete_exit_code(dispatch("unknown", &[], OciAuthOptions::default())),
+            None
+        );
     }
 }

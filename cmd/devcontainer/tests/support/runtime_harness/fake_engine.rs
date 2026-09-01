@@ -12,6 +12,14 @@ LOG_DIR="${FAKE_PODMAN_LOG_DIR:?missing log dir}"
 COMMAND="$1"
 shift
 printf '%s %s\n' "$COMMAND" "$*" >> "$LOG_DIR/invocations.log"
+{
+  printf '%s\n' "BEGIN"
+  printf '[%s]\n' "$COMMAND"
+  for arg in "$@"; do
+    printf '[%s]\n' "$arg"
+  done
+  printf '%s\n' "END"
+} >> "$LOG_DIR/engine-argv.log"
 
 case "$COMMAND" in
   compose)
@@ -223,10 +231,20 @@ ${2:-}"
     printf 'DOCKER_BUILDKIT=%s\n' "${DOCKER_BUILDKIT:-}" >> "$LOG_DIR/build-env.log"
     build_file=""
     build_context=""
+    build_tag=""
+    build_output=""
     while [ "$#" -gt 0 ]; do
       case "${1:-}" in
         --file)
           build_file="${2:-}"
+          shift 2
+          ;;
+        --tag)
+          build_tag="${2:-}"
+          shift 2
+          ;;
+        --output)
+          build_output="${2:-}"
           shift 2
           ;;
         *)
@@ -242,6 +260,18 @@ ${2:-}"
         printf '%s\n' "END"
       } >> "$LOG_DIR/build-dockerfiles.log"
     fi
+    if [ "${FAKE_PODMAN_REJECT_EXPORTED_BASE_IMAGE:-0}" = "1" ] && [ -n "$build_file" ] && [ -f "$build_file" ] && [ -f "$LOG_DIR/exported-images.log" ]; then
+      while IFS= read -r exported_image; do
+        if grep -Fq "FROM $exported_image" "$build_file"; then
+          printf 'build assumes exported image is local: %s\n' "$exported_image" >&2
+          exit 92
+        fi
+      done < "$LOG_DIR/exported-images.log"
+    fi
+    case "$build_output" in
+      ""|type=docker*) ;;
+      *) printf '%s\n' "$build_tag" >> "$LOG_DIR/exported-images.log" ;;
+    esac
     if [ -n "${FAKE_PODMAN_REQUIRE_BUILD_CONTEXT_FILE:-}" ] && [ ! -f "$build_context/${FAKE_PODMAN_REQUIRE_BUILD_CONTEXT_FILE}" ]; then
       printf 'required build context file missing: %s/%s\n' "$build_context" "${FAKE_PODMAN_REQUIRE_BUILD_CONTEXT_FILE}" >&2
       exit 1

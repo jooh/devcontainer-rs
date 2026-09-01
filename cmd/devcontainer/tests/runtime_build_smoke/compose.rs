@@ -356,6 +356,8 @@ fn build_rejects_output_for_compose_builds() {
             workspace.to_string_lossy().as_ref(),
             "--output",
             "type=docker",
+            "--push",
+            "false",
         ],
         &[],
     );

@@ -69,26 +69,30 @@ impl FeatureTestRuntime for ContainerEngineFeatureTestRuntime {
         image_name: &str,
         workspace_dir: &Path,
     ) -> Result<String, String> {
-        let result = runtime::engine::run_engine(
-            args,
-            vec![
-                "run".to_string(),
-                "-d".to_string(),
-                "--label".to_string(),
-                "devcontainer.is_test_run=true".to_string(),
-                "--mount".to_string(),
-                format!(
-                    "type=bind,source={},target=/workspace",
-                    workspace_dir.display()
-                ),
-                "--workdir".to_string(),
-                "/workspace".to_string(),
-                image_name.to_string(),
-                "/bin/sh".to_string(),
-                "-lc".to_string(),
-                "while sleep 1000; do :; done".to_string(),
-            ],
+        let workspace_mount = format!(
+            "type=bind,source={},target=/workspace",
+            workspace_dir.display()
+        );
+        let mount_args = runtime::mounts::mount_args_for_engine(
+            &workspace_mount,
+            runtime::engine::is_wslc(args),
         )?;
+        let mut engine_args = vec![
+            "run".to_string(),
+            "-d".to_string(),
+            "--label".to_string(),
+            "devcontainer.is_test_run=true".to_string(),
+        ];
+        engine_args.extend(mount_args);
+        engine_args.extend([
+            "--workdir".to_string(),
+            "/workspace".to_string(),
+            image_name.to_string(),
+            "/bin/sh".to_string(),
+            "-lc".to_string(),
+            "while sleep 1000; do :; done".to_string(),
+        ]);
+        let result = runtime::engine::run_engine(args, engine_args)?;
         if result.status_code != 0 {
             return Err(runtime::engine::stderr_or_stdout(&result));
         }
@@ -401,6 +405,92 @@ esac
             "{log}"
         );
         assert!(log.contains("rm -f container-from-runtime"), "{log}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn container_engine_runtime_uses_wslc_compatible_workspace_mount() {
+        let root = crate::test_support::unique_temp_dir("feature-test-wslc-runtime");
+        fs::create_dir_all(&root).expect("runtime test root");
+        let engine = root.join("wslc");
+        let log_path = root.join("engine.log");
+        crate::test_support::write_executable_script(
+            &engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+command="$1"
+shift
+printf '%s %s\n' "$command" "$*" >> {log_path}
+case "$command" in
+  -v)
+    printf 'wslc version 0.1.0\n'
+    ;;
+  run)
+    for argument in "$@"; do
+      if [ "$argument" = "--mount" ]; then
+        printf 'WSLc does not support --mount\n' >&2
+        exit 64
+      fi
+    done
+    printf 'container-from-wslc-runtime\n'
+    ;;
+  *)
+    printf 'unsupported command: %s\n' "$command" >&2
+    exit 1
+    ;;
+esac
+"#,
+                log_path = super::shell_single_quote(log_path.to_string_lossy().as_ref())
+            ),
+        );
+        let args = vec!["--docker-path".to_string(), engine.display().to_string()];
+
+        let mut runtime = ContainerEngineFeatureTestRuntime;
+        let container_id = runtime
+            .start_container(&args, "feature-test-image", &root)
+            .expect("start WSLc feature-test container");
+
+        assert_eq!(container_id, "container-from-wslc-runtime");
+        let log = fs::read_to_string(&log_path).expect("engine log");
+        assert!(
+            log.contains(&format!(
+                "run -d --label devcontainer.is_test_run=true -v {}:/workspace",
+                root.display()
+            )),
+            "{log}"
+        );
+        assert!(!log.contains("--mount"), "{log}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn container_engine_runtime_reports_unrepresentable_wslc_workspace_mount() {
+        let root = crate::test_support::unique_temp_dir("feature-test-wslc-mount-error");
+        fs::create_dir_all(&root).expect("runtime test root");
+        let engine = root.join("wslc");
+        crate::test_support::write_executable_script(
+            &engine,
+            r#"#!/bin/sh
+set -eu
+case "$1" in
+  -v) printf 'wslc version 0.1.0\n' ;;
+  *) echo "unexpected command $1" >&2; exit 2 ;;
+esac
+"#,
+        );
+        let args = vec!["--docker-path".to_string(), engine.display().to_string()];
+
+        let mut runtime = ContainerEngineFeatureTestRuntime;
+        let error = runtime
+            .start_container(&args, "feature-test-image", Path::new("relative-workspace"))
+            .expect_err("unsupported WSLc workspace mount should fail");
+
+        assert!(
+            error.contains("WSLc cannot represent mount with -v"),
+            "{error}"
+        );
+        assert!(error.contains("unambiguous absolute paths"), "{error}");
         let _ = fs::remove_dir_all(root);
     }
 

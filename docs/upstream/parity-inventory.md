@@ -11,8 +11,8 @@ This report is a static inventory, not a semantic parity proof. A referenced opt
 
 ## Global options
 
-- `--allow-cross-origin-auth-host`: referenced (`cmd/devcontainer/src/cli.rs`, `cmd/devcontainer/src/cli_metadata.json`, `cmd/devcontainer/src/commands/collections/oci.rs`, `cmd/devcontainer/src/commands/common/args.rs`)
-- `--oci-auth-hardening`: referenced (`cmd/devcontainer/src/cli.rs`, `cmd/devcontainer/src/cli_metadata.json`, `cmd/devcontainer/src/commands/common/args.rs`)
+- `--allow-cross-origin-auth-host`: referenced (`cmd/devcontainer/src/cli.rs`, `cmd/devcontainer/src/commands/collections/mod.rs`, `cmd/devcontainer/src/commands/collections/oci.rs`)
+- `--oci-auth-hardening`: referenced (`cmd/devcontainer/src/cli.rs`, `cmd/devcontainer/src/commands/collections/mod.rs`)
 
 ## Summary
 

@@ -14,6 +14,9 @@ use serde_json::Value;
 use crate::commands::common;
 
 pub(crate) fn validate_oci_auth_options(options: &common::OciAuthOptions) -> Result<(), String> {
+    if !options.hardening && !options.allowed_cross_origin_auth_hosts.is_empty() {
+        return Err("--allow-cross-origin-auth-host requires --oci-auth-hardening.".to_string());
+    }
     oci::parse_cross_origin_auth_hosts(&options.allowed_cross_origin_auth_hosts).map(|_| ())
 }
 
@@ -198,7 +201,8 @@ pub(crate) fn run_templates(args: &[String]) -> ExitCode {
 
 fn print_result(result: Result<Value, String>) -> ExitCode {
     match result {
-        Ok(payload) => {
+        Ok(mut payload) => {
+            common::attach_oci_auth_diagnostics(&mut payload);
             println!("{payload}");
             ExitCode::SUCCESS
         }
