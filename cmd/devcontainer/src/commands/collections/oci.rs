@@ -533,9 +533,7 @@ fn parse_http_url(value: &str) -> Result<ParsedHttpUrl, String> {
     if !matches!(scheme.as_str(), "http" | "https") {
         return Err(format!("Invalid URL scheme: {scheme}"));
     }
-    let authority_end = remainder
-        .find(['/', '?', '#'])
-        .unwrap_or(remainder.len());
+    let authority_end = remainder.find(['/', '?', '#']).unwrap_or(remainder.len());
     let authority = &remainder[..authority_end];
     let default_port = if scheme == "https" { 443 } else { 80 };
     let (authority, hostname) = normalize_authority(authority, Some(default_port))?;
