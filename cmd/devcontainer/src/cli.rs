@@ -241,9 +241,7 @@ pub(crate) fn parse_leading_oci_auth_options(
         }
         if let Some(value) = arg.strip_prefix("--allow-cross-origin-auth-host=") {
             if value.is_empty() {
-                return Err(
-                    "Missing value for option: --allow-cross-origin-auth-host".to_string(),
-                );
+                return Err("Missing value for option: --allow-cross-origin-auth-host".to_string());
             }
             normalized.push("--allow-cross-origin-auth-host".to_string());
             normalized.push(value.to_string());
@@ -252,9 +250,7 @@ pub(crate) fn parse_leading_oci_auth_options(
         }
         if arg == "--allow-cross-origin-auth-host" {
             let Some(value) = args.get(index + 1).filter(|value| !value.starts_with('-')) else {
-                return Err(
-                    "Missing value for option: --allow-cross-origin-auth-host".to_string(),
-                );
+                return Err("Missing value for option: --allow-cross-origin-auth-host".to_string());
             };
             normalized.push(arg.clone());
             normalized.push(value.clone());

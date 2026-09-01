@@ -9,13 +9,14 @@ mod manifest;
 #[cfg(not(target_os = "linux"))]
 pub(crate) use args::DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY;
 pub(crate) use args::{
-    config_option_value, env_default_bool_option, env_default_option_value, has_flag,
-    parse_array_option_values, parse_json_string_array_option, parse_option_value,
-    parse_option_values, remote_env_overrides, runtime_options, runtime_process_request,
-    secrets_env, validate_choice_option, validate_number_option, validate_option_values,
-    validate_paired_options, validate_runtime_env_defaults, DEVCONTAINER_DOCKER_COMPOSE_PATH,
-    DEVCONTAINER_DOCKER_PATH, DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR,
-    DEVCONTAINER_MOUNT_WORKSPACE_GIT_ROOT,
+    config_option_value, current_oci_auth_options, env_default_bool_option,
+    env_default_option_value, has_flag, oci_auth_options, parse_array_option_values,
+    parse_json_string_array_option, parse_option_value, parse_option_values, remote_env_overrides,
+    runtime_options, runtime_process_request, secrets_env, validate_choice_option,
+    validate_number_option, validate_option_values, validate_paired_options,
+    validate_runtime_env_defaults, with_oci_auth_options, OciAuthOptions,
+    DEVCONTAINER_DOCKER_COMPOSE_PATH, DEVCONTAINER_DOCKER_PATH,
+    DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR, DEVCONTAINER_MOUNT_WORKSPACE_GIT_ROOT,
 };
 #[cfg(test)]
 pub(crate) use args::{

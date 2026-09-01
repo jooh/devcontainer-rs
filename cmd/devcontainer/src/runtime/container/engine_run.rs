@@ -82,19 +82,19 @@ fn start_container_with_metadata(
     }
     if !is_wslc
         && resolved
-        .configuration
-        .get("init")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+            .configuration
+            .get("init")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
     {
         engine_args.push("--init".to_string());
     }
     if !is_wslc
         && resolved
-        .configuration
-        .get("privileged")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+            .configuration
+            .get("privileged")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
     {
         engine_args.push("--privileged".to_string());
     }

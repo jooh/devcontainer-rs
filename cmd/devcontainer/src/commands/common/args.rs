@@ -140,9 +140,7 @@ pub(crate) fn oci_auth_options(args: &[String]) -> Result<OciAuthOptions, String
     let allowed_cross_origin_auth_hosts =
         parse_option_values(args, "--allow-cross-origin-auth-host");
     if !hardening && !allowed_cross_origin_auth_hosts.is_empty() {
-        return Err(
-            "--allow-cross-origin-auth-host requires --oci-auth-hardening.".to_string(),
-        );
+        return Err("--allow-cross-origin-auth-host requires --oci-auth-hardening.".to_string());
     }
     Ok(OciAuthOptions {
         hardening,

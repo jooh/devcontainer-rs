@@ -522,9 +522,7 @@ pub(crate) fn is_allowed_token_service_realm(
 }
 
 fn invalid_cross_origin_auth_host(entry: &str) -> String {
-    format!(
-        "Invalid cross-origin auth host '{entry}'. Expected '<registry-host>=<auth-host>'."
-    )
+    format!("Invalid cross-origin auth host '{entry}'. Expected '<registry-host>=<auth-host>'.")
 }
 
 fn parse_http_url(value: &str) -> Result<ParsedHttpUrl, String> {
@@ -566,11 +564,9 @@ fn normalize_authority(
         };
         let hostname = &bracketed[..closing];
         if hostname.is_empty()
-            || !hostname
-                .chars()
-                .all(|character| {
-                    character.is_ascii_hexdigit() || character == ':' || character == '.'
-                })
+            || !hostname.chars().all(|character| {
+                character.is_ascii_hexdigit() || character == ':' || character == '.'
+            })
         {
             return Err(format!("Invalid authority: {authority}"));
         }
@@ -634,9 +630,7 @@ pub(crate) fn token_service_url(
         .split('&')
         .filter(|parameter| !parameter.is_empty())
         .filter(|parameter| {
-            let key = parameter
-                .split_once('=')
-                .map_or(*parameter, |(key, _)| key);
+            let key = parameter.split_once('=').map_or(*parameter, |(key, _)| key);
             !matches!(form_urldecode_component(key).as_str(), "service" | "scope")
         })
         .map(str::to_string)
@@ -655,13 +649,19 @@ fn form_urldecode_component(value: &str) -> String {
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let (Some(high), Some(low)) = (hex_value(bytes[index + 1]), hex_value(bytes[index + 2])) {
+            if let (Some(high), Some(low)) =
+                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+            {
                 decoded.push((high << 4) | low);
                 index += 3;
                 continue;
             }
         }
-        decoded.push(if bytes[index] == b'+' { b' ' } else { bytes[index] });
+        decoded.push(if bytes[index] == b'+' {
+            b' '
+        } else {
+            bytes[index]
+        });
         index += 1;
     }
     String::from_utf8_lossy(&decoded).into_owned()
@@ -767,11 +767,8 @@ fn fetch_bearer_token(
             "Registry '{registry}' requested authentication from untrusted realm '{realm}'.{hint}"
         ));
     }
-    let token_url = token_service_url(
-        realm,
-        &service,
-        parameters.get("scope").map(String::as_str),
-    )?;
+    let token_url =
+        token_service_url(realm, &service, parameters.get("scope").map(String::as_str))?;
     let mut headers = Vec::new();
     if let Some(authorization) = basic_authorization {
         headers.push(("Authorization".to_string(), authorization.to_string()));
@@ -1858,13 +1855,14 @@ mod tests {
         configured_basic_authorization, configured_bearer_authorization, credential_helper_auth,
         docker_config_auth, exact_semver, extract_feature_layer, feature_layer,
         feature_manifest_from_layer, feature_ref_json, fetch_bearer_token,
-        fixture_feature_artifact, fixture_tags, is_registry_qualified_reference, list_feature_tags,
-        is_allowed_token_service_realm, parse_cross_origin_auth_hosts, token_service_url,
-        local_layout_feature_artifact, local_layout_manifest_digest, materialize_feature_artifact,
+        fixture_feature_artifact, fixture_tags, is_allowed_token_service_realm,
+        is_registry_qualified_reference, list_feature_tags, local_layout_feature_artifact,
+        local_layout_manifest_digest, materialize_feature_artifact,
         materialize_feature_artifact_with_transport, metadata_from_feature_layer,
-        parse_http_headers, parse_oci_reference, platform_default_credential_helper, registry_blob,
-        registry_config_keys, registry_feature_artifact, registry_get, registry_tags,
-        resolve_feature_artifact, resolve_feature_artifact_for_reference, safe_archive_path,
+        parse_cross_origin_auth_hosts, parse_http_headers, parse_oci_reference,
+        platform_default_credential_helper, registry_blob, registry_config_keys,
+        registry_feature_artifact, registry_get, registry_tags, resolve_feature_artifact,
+        resolve_feature_artifact_for_reference, safe_archive_path, token_service_url,
         verify_manifest_digest, CurlTransport, OciFeatureArtifact, OciFeatureLayer,
         OciHttpResponse, OciReference, OciTransport, VersionSelector, BASE64,
     };
@@ -2813,10 +2811,9 @@ esac
 
     #[test]
     fn validates_oci_auth_realm_policy_and_configured_mappings() {
-        let mappings = parse_cross_origin_auth_hosts(&[
-            "REGISTRY.EXAMPLE:8443=AUTH.EXAMPLE:9443".to_string(),
-        ])
-        .expect("valid mapping");
+        let mappings =
+            parse_cross_origin_auth_hosts(&["REGISTRY.EXAMPLE:8443=AUTH.EXAMPLE:9443".to_string()])
+                .expect("valid mapping");
         assert_eq!(
             mappings.get("registry.example:8443"),
             Some(&std::collections::HashSet::from([
@@ -2917,20 +2914,16 @@ esac
             )
             .expect_err("untrusted realm");
             assert!(error.contains("untrusted realm"), "{error}");
-            assert!(
-                transport
-                    .seen_authorization
-                    .lock()
-                    .expect("seen")
-                    .is_empty()
-            );
+            assert!(transport
+                .seen_authorization
+                .lock()
+                .expect("seen")
+                .is_empty());
         });
 
         let options = crate::commands::common::OciAuthOptions {
             hardening: true,
-            allowed_cross_origin_auth_hosts: vec![
-                "registry.example=auth.example".to_string()
-            ],
+            allowed_cross_origin_auth_hosts: vec!["registry.example=auth.example".to_string()],
         };
         crate::commands::common::with_oci_auth_options(options, || {
             let transport = FakeTransport::default();
