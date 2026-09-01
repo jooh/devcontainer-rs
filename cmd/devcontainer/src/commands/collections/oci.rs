@@ -534,7 +534,7 @@ fn parse_http_url(value: &str) -> Result<ParsedHttpUrl, String> {
         return Err(format!("Invalid URL scheme: {scheme}"));
     }
     let authority_end = remainder
-        .find(|character| matches!(character, '/' | '?' | '#'))
+        .find(['/', '?', '#'])
         .unwrap_or(remainder.len());
     let authority = &remainder[..authority_end];
     let default_port = if scheme == "https" { 443 } else { 80 };
