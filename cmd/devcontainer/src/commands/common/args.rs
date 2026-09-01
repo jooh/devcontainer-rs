@@ -594,7 +594,8 @@ mod tests {
 
     use super::{
         env_default_bool_option, env_default_choice_value, env_default_option_value, has_flag,
-        parse_array_option_values, parse_bool_option, parse_json_string_array_option,
+        oci_auth_options, parse_array_option_values, parse_bool_option,
+        parse_json_string_array_option,
         parse_option_value, parse_option_values, parse_remote_env, remote_env_overrides,
         runtime_options, runtime_process_request, secrets_env, test_env_defaults,
         validate_choice_option, validate_number_option, validate_option_values,
@@ -632,6 +633,16 @@ mod tests {
         assert_eq!(parse_option_value(&args, "--after"), None);
         assert!(!has_flag(&args, "--after"));
         assert!(validate_option_values(&args, &["--after"]).is_ok());
+    }
+
+    #[test]
+    fn cross_origin_auth_hosts_require_hardening() {
+        let error = oci_auth_options(&[
+            "--allow-cross-origin-auth-host".to_string(),
+            "registry.example=auth.example".to_string(),
+        ])
+        .expect_err("hardening requirement");
+        assert!(error.contains("requires --oci-auth-hardening"), "{error}");
     }
 
     #[test]

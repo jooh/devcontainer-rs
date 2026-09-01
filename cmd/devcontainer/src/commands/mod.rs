@@ -109,6 +109,24 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_rejects_invalid_oci_auth_options() {
+        assert_complete_exit(
+            "features",
+            &["--allow-cross-origin-auth-host".to_string()],
+            ExitCode::from(2),
+        );
+        assert_complete_exit(
+            "features",
+            &[
+                "--oci-auth-hardening".to_string(),
+                "--allow-cross-origin-auth-host".to_string(),
+                "invalid".to_string(),
+            ],
+            ExitCode::from(2),
+        );
+    }
+
+    #[test]
     fn dispatch_routes_read_configuration_native_and_unsupported_paths() {
         let workspace = unique_temp_dir("dispatch-read-configuration");
         let config_dir = workspace.join(".devcontainer");

@@ -2867,6 +2867,34 @@ esac
             "https://registry.example/v2/",
             &["registry.example=auth.example".to_string()],
         ));
+        assert!(!is_allowed_token_service_realm(
+            "not-a-url",
+            "https://registry.example/v2/",
+            &[],
+        ));
+        assert!(!is_allowed_token_service_realm(
+            "ftp://auth.example/token",
+            "https://registry.example/v2/",
+            &[],
+        ));
+        assert!(!is_allowed_token_service_realm(
+            "https://auth.example/token",
+            "not-a-url",
+            &[],
+        ));
+
+        let ipv6_mappings = parse_cross_origin_auth_hosts(&[
+            "[::1]=[::1]".to_string(),
+            "[::1]:443=[::2]:444".to_string(),
+        ])
+        .expect("IPv6 mappings");
+        assert_eq!(
+            ipv6_mappings.get("[::1]"),
+            Some(&std::collections::HashSet::from([
+                "[::1]".to_string(),
+                "[::2]:444".to_string(),
+            ]))
+        );
 
         for invalid in [
             "auth.example",
@@ -2875,6 +2903,15 @@ esac
             "https://registry.example=auth.example",
             "registry.example=https://auth.example",
             "registry.example/path=auth.example",
+            "[::1=auth.example",
+            "[]=auth.example",
+            "[gg::1]=auth.example",
+            "[::1]suffix=auth.example",
+            "2001:db8::1=auth.example",
+            "bad!host=auth.example",
+            "registry.example:=auth.example",
+            "registry.example:not-a-port=auth.example",
+            "registry.example:99999=auth.example",
         ] {
             assert!(
                 parse_cross_origin_auth_hosts(&[invalid.to_string()]).is_err(),
@@ -2893,6 +2930,15 @@ esac
             )
             .expect("token URL"),
             "https://registry.example/token?existing=value&service=registry.example%26injected%3Dservice%23fragment&scope=repository%3Atest%3Apull%26injected%3Dscope%23fragment"
+        );
+        assert_eq!(
+            token_service_url(
+                "https://registry.example/token?%73ervice=old&%73%63%6f%70%65=old&%73%63%6F%70%65=old&ser+vice=kept&bad%GG=kept",
+                "registry example",
+                None,
+            )
+            .expect("encoded query keys"),
+            "https://registry.example/token?ser+vice=kept&bad%GG=kept&service=registry+example&scope="
         );
     }
 
@@ -3198,6 +3244,10 @@ esac
             let error = CurlTransport
                 .get("https://registry.example.com/v2/", &[])
                 .expect_err("curl spawn failure");
+            assert!(!error.is_empty());
+            let error = CurlTransport
+                .get_no_redirects("https://registry.example.com/token", &[])
+                .expect_err("curl spawn failure without redirects");
             assert!(!error.is_empty());
         }
         let _ = fs::remove_dir_all(missing_bin_dir);

@@ -269,5 +269,13 @@ mod tests {
             ]),
             ExitCode::SUCCESS
         );
+        assert_eq!(
+            run(vec!["--allow-cross-origin-auth-host=".to_string()]),
+            ExitCode::from(2)
+        );
+        assert_eq!(
+            run(vec!["--oci-auth-hardening".to_string()]),
+            ExitCode::from(2)
+        );
     }
 }

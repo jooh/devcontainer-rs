@@ -547,8 +547,9 @@ mod tests {
     use super::{
         cli_metadata, command_help, command_help_text, command_positionals,
         is_command_help_request, is_command_version_request, normalize_option_aliases,
-        rendered_cli_log, rendered_lines, resolve_command_help, unsupported_argument_error,
-        unsupported_argument_error_for, CommandHelp, CommandOption, CommandPositional, HelpLine,
+        parse_leading_oci_auth_options, rendered_cli_log, rendered_lines, resolve_command_help,
+        unsupported_argument_error, unsupported_argument_error_for, CommandHelp, CommandOption,
+        CommandPositional, HelpLine,
     };
 
     #[test]
@@ -678,6 +679,41 @@ mod tests {
             ),
             vec!["manifest", "registry.example/features/demo"]
         );
+    }
+
+    #[test]
+    fn parses_leading_oci_auth_option_forms_and_errors() {
+        let (normalized, consumed) = parse_leading_oci_auth_options(&[
+            "--oci-auth-hardening=false".to_string(),
+            "--oci-auth-hardening".to_string(),
+            "true".to_string(),
+            "--allow-cross-origin-auth-host=registry.example=auth.example".to_string(),
+            "features".to_string(),
+        ])
+        .expect("global options");
+        assert_eq!(consumed, 4);
+        assert_eq!(
+            normalized,
+            vec![
+                "--oci-auth-hardening",
+                "false",
+                "--oci-auth-hardening",
+                "true",
+                "--allow-cross-origin-auth-host",
+                "registry.example=auth.example",
+            ]
+        );
+
+        for args in [
+            vec!["--allow-cross-origin-auth-host=".to_string()],
+            vec!["--allow-cross-origin-auth-host".to_string()],
+            vec![
+                "--allow-cross-origin-auth-host".to_string(),
+                "--oci-auth-hardening".to_string(),
+            ],
+        ] {
+            assert!(parse_leading_oci_auth_options(&args).is_err());
+        }
     }
 
     #[test]

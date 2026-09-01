@@ -419,6 +419,13 @@ mod tests {
                 "type=bind,source=/a,target=/b".to_string(),
             ]
         );
+        assert_eq!(
+            mount_args_for_engine("type=bind,source=/a,malformed", true),
+            vec![
+                "--mount".to_string(),
+                "type=bind,source=/a,malformed".to_string(),
+            ]
+        );
     }
 
     #[test]
