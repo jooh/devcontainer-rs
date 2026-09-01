@@ -1,5 +1,5 @@
 {
-	"upstreamCommit": "65f98a518a1f62355a08e6f38e9d6bfb9a0d8ac9",
+	"upstreamCommit": "5dc7533314b5ba7ec3875c30143dfe1aec644870",
 	"suites": [
 		{
 			"upstreamTest": "upstream/src/test/cli.build.test.ts",
@@ -282,6 +282,14 @@
 				"cmd/devcontainer/tests/runtime_lifecycle_smoke/commands.rs"
 			],
 			"notes": "Native unit and fake-engine smoke coverage validates non-root HOME fallback, root HOME acceptance, explicit remote HOME precedence, and lifecycle/exec injection."
+		},
+		{
+			"upstreamTest": "upstream/src/test/httpOCIRegistry.test.ts",
+			"status": "partial",
+			"nativeTests": [
+				"cmd/devcontainer/src/commands/collections/oci.rs"
+			],
+			"notes": "Native OCI coverage validates hardened same-origin and trusted cross-origin token realms, mapping syntax, query encoding, redirect refusal for hardened token requests, and registry credential use. Upstream diagnostics and refresh-token POST coverage remain partial."
 		},
 		{
 			"upstreamTest": "upstream/src/test/imageMetadata.test.ts",

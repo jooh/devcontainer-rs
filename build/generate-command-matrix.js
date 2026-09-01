@@ -99,6 +99,22 @@ function parseCommandBlock(source) {
 	return source.slice(start, end);
 }
 
+function parseGlobalOptionNames(source) {
+	const start = source.indexOf('const y = yargs(');
+	const end = source.indexOf("y.command('up'");
+	if (start === -1 || end === -1 || end <= start) {
+		throw new Error(`Unable to locate CLI global options in ${path.relative(repositoryRoot, upstreamCliPath)}.`);
+	}
+	const names = new Set();
+	const optionRegex = /\.option\('([^']+)'/g;
+	let match;
+	const block = source.slice(start, end);
+	while ((match = optionRegex.exec(block)) !== null) {
+		names.add(match[1]);
+	}
+	return Array.from(names).sort();
+}
+
 function parseCommands(commandBlock) {
 	const lines = commandBlock.split('\n');
 	const commands = [];
@@ -166,6 +182,7 @@ function generateCommandMatrix() {
 	return {
 		upstreamCommit: runGit(['rev-parse', 'HEAD:upstream']),
 		sourcePath: path.relative(repositoryRoot, upstreamCliPath),
+		globalOptions: parseGlobalOptionNames(source),
 		topLevel,
 		commands,
 		allCommandPaths: commands.map(command => command.path),

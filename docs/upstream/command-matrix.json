@@ -1,6 +1,10 @@
 {
-	"upstreamCommit": "65f98a518a1f62355a08e6f38e9d6bfb9a0d8ac9",
+	"upstreamCommit": "5dc7533314b5ba7ec3875c30143dfe1aec644870",
 	"sourcePath": "upstream/src/spec-node/devContainersSpecCLI.ts",
+	"globalOptions": [
+		"allow-cross-origin-auth-host",
+		"oci-auth-hardening"
+	],
 	"topLevel": [
 		"up",
 		"set-up",

@@ -13,6 +13,10 @@ use serde_json::Value;
 
 use crate::commands::common;
 
+pub(crate) fn validate_oci_auth_options(options: &common::OciAuthOptions) -> Result<(), String> {
+    oci::parse_cross_origin_auth_hosts(&options.allowed_cross_origin_auth_hosts).map(|_| ())
+}
+
 pub(crate) fn run_features(args: &[String]) -> ExitCode {
     let (subcommand, subcommand_args) = match args.split_first() {
         Some((subcommand, subcommand_args)) => (subcommand.as_str(), subcommand_args),

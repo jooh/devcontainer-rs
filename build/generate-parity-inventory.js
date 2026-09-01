@@ -394,6 +394,14 @@ function optionEvidence(commandPath, optionName) {
 		.sort();
 }
 
+function globalOptionEvidence(optionName) {
+	const needle = `--${optionName}`;
+	return walkFiles('cmd/devcontainer/src')
+		.filter(relativePath => !isTestOnlyPath(relativePath))
+		.filter(relativePath => readSourceForEvidence(relativePath).includes(needle))
+		.sort();
+}
+
 function declaredTopLevelCommand(command) {
 	const cliSource = fs.readFileSync(cliSourcePath, 'utf8');
 	const commandsMod = fs.readFileSync(commandsModPath, 'utf8');
@@ -419,6 +427,14 @@ function commandDeclared(pathValue) {
 
 function buildInventory() {
 	const matrix = JSON.parse(fs.readFileSync(commandMatrixPath, 'utf8'));
+	const globalOptions = (matrix.globalOptions || []).map(optionName => {
+		const evidence = globalOptionEvidence(optionName);
+		return {
+			name: optionName,
+			sourceReferenced: evidence.length > 0,
+			evidence,
+		};
+	});
 	const inventory = matrix.commands.map(command => {
 		const declared = commandDeclared(command.path);
 		const options = command.options.map(optionName => {
@@ -445,8 +461,10 @@ function buildInventory() {
 		};
 	});
 
-	const totalOptions = inventory.reduce((sum, command) => sum + command.optionSummary.total, 0);
-	const referencedOptions = inventory.reduce((sum, command) => sum + command.optionSummary.referenced, 0);
+	const totalOptions = globalOptions.length
+		+ inventory.reduce((sum, command) => sum + command.optionSummary.total, 0);
+	const referencedOptions = globalOptions.filter(option => option.sourceReferenced).length
+		+ inventory.reduce((sum, command) => sum + command.optionSummary.referenced, 0);
 	return {
 		upstreamCommit: matrix.upstreamCommit,
 		sourcePath: matrix.sourcePath,
@@ -457,6 +475,7 @@ function buildInventory() {
 			optionsReferenced: referencedOptions,
 			optionsMissing: totalOptions - referencedOptions,
 		},
+		globalOptions,
 		commands: inventory,
 	};
 }
@@ -473,6 +492,12 @@ function renderMarkdown(report) {
 		`- Upstream options with a native source reference in mapped files: \`${report.summary.optionsReferenced}/${report.summary.optionsTotal}\``,
 		'',
 		'This report is a static inventory, not a semantic parity proof. A referenced option can still be only partially implemented, and command-level known gaps are called out explicitly below.',
+		'',
+		'## Global options',
+		'',
+		...(report.globalOptions || []).map(option =>
+			`- \`--${option.name}\`: ${option.sourceReferenced ? 'referenced' : 'missing'}${option.evidence.length ? ` (${option.evidence.map(value => `\`${value}\``).join(', ')})` : ''}`
+		),
 		'',
 		'## Summary',
 		'',

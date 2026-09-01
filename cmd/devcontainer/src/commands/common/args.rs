@@ -1,6 +1,5 @@
 //! Shared command-line parsing and runtime option helpers.
 
-#[cfg(test)]
 use std::cell::RefCell;
 use std::collections::HashMap;
 #[cfg(not(test))]
@@ -32,6 +31,28 @@ pub(crate) const DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR: &str =
     "DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR";
 pub(crate) const DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY: &str =
     "DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY";
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct OciAuthOptions {
+    pub(crate) hardening: bool,
+    pub(crate) allowed_cross_origin_auth_hosts: Vec<String>,
+}
+
+thread_local! {
+    static CURRENT_OCI_AUTH_OPTIONS: RefCell<OciAuthOptions> = RefCell::new(OciAuthOptions::default());
+}
+
+struct OciAuthOptionsGuard {
+    previous: OciAuthOptions,
+}
+
+impl Drop for OciAuthOptionsGuard {
+    fn drop(&mut self) {
+        CURRENT_OCI_AUTH_OPTIONS.with(|current| {
+            *current.borrow_mut() = std::mem::take(&mut self.previous);
+        });
+    }
+}
 
 #[cfg(test)]
 thread_local! {
@@ -111,6 +132,35 @@ pub(crate) fn env_default_option_value(
 
 pub(crate) fn config_option_value(args: &[String]) -> Option<String> {
     env_default_option_value(args, "--config", DEVCONTAINER_CONFIG)
+}
+
+pub(crate) fn oci_auth_options(args: &[String]) -> Result<OciAuthOptions, String> {
+    validate_option_values(args, &["--allow-cross-origin-auth-host"])?;
+    let hardening = parse_bool_option(args, "--oci-auth-hardening", false);
+    let allowed_cross_origin_auth_hosts =
+        parse_option_values(args, "--allow-cross-origin-auth-host");
+    if !hardening && !allowed_cross_origin_auth_hosts.is_empty() {
+        return Err(
+            "--allow-cross-origin-auth-host requires --oci-auth-hardening.".to_string(),
+        );
+    }
+    Ok(OciAuthOptions {
+        hardening,
+        allowed_cross_origin_auth_hosts,
+    })
+}
+
+pub(crate) fn current_oci_auth_options() -> OciAuthOptions {
+    CURRENT_OCI_AUTH_OPTIONS.with(|current| current.borrow().clone())
+}
+
+pub(crate) fn with_oci_auth_options<T>(
+    options: OciAuthOptions,
+    operation: impl FnOnce() -> T,
+) -> T {
+    let previous = CURRENT_OCI_AUTH_OPTIONS.with(|current| current.replace(options));
+    let _guard = OciAuthOptionsGuard { previous };
+    operation()
 }
 
 pub(crate) fn env_default_choice_value(

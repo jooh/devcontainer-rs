@@ -93,9 +93,11 @@ impl CommandOption {
     }
 
     fn takes_multiple_values(&self) -> bool {
-        self.description
-            .as_deref()
-            .is_some_and(|description| description.contains("[array]"))
+        self.name != "allow-cross-origin-auth-host"
+            && self
+                .description
+                .as_deref()
+                .is_some_and(|description| description.contains("[array]"))
     }
 }
 
@@ -209,6 +211,59 @@ pub fn parse_log_format(args: &[String]) -> (&str, usize) {
         return (args[1].as_str(), 2);
     }
     ("text", 0)
+}
+
+pub(crate) fn parse_leading_oci_auth_options(
+    args: &[String],
+) -> Result<(Vec<String>, usize), String> {
+    let mut normalized = Vec::new();
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        if let Some(value) = arg.strip_prefix("--oci-auth-hardening=") {
+            normalized.push("--oci-auth-hardening".to_string());
+            normalized.push(value.to_string());
+            index += 1;
+            continue;
+        }
+        if arg == "--oci-auth-hardening" {
+            normalized.push(arg.clone());
+            if args.get(index + 1).is_some_and(|value| {
+                matches!(
+                    value.as_str(),
+                    "false" | "0" | "no" | "off" | "true" | "1" | "yes" | "on"
+                )
+            }) {
+                index += 1;
+                normalized.push(args[index].clone());
+            }
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--allow-cross-origin-auth-host=") {
+            if value.is_empty() {
+                return Err(
+                    "Missing value for option: --allow-cross-origin-auth-host".to_string(),
+                );
+            }
+            normalized.push("--allow-cross-origin-auth-host".to_string());
+            normalized.push(value.to_string());
+            index += 1;
+            continue;
+        }
+        if arg == "--allow-cross-origin-auth-host" {
+            let Some(value) = args.get(index + 1).filter(|value| !value.starts_with('-')) else {
+                return Err(
+                    "Missing value for option: --allow-cross-origin-auth-host".to_string(),
+                );
+            };
+            normalized.push(arg.clone());
+            normalized.push(value.clone());
+            index += 2;
+            continue;
+        }
+        break;
+    }
+    Ok((normalized, index))
 }
 
 pub fn emit_log(log_format: &str, message: &str) {
@@ -613,6 +668,19 @@ mod tests {
                 ],
             ),
             vec!["--target"]
+        );
+
+        assert_eq!(
+            command_positionals(
+                "features info",
+                &[
+                    "--allow-cross-origin-auth-host".to_string(),
+                    "registry.example=auth.example".to_string(),
+                    "manifest".to_string(),
+                    "registry.example/features/demo".to_string(),
+                ],
+            ),
+            vec!["manifest", "registry.example/features/demo"]
         );
     }
 

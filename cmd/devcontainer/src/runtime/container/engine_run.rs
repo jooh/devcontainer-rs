@@ -59,6 +59,7 @@ fn start_container_with_metadata(
     let default_labels =
         common::default_devcontainer_id_labels(&resolved.workspace_folder, &resolved.config_file);
     let metadata = metadata?;
+    let is_wslc = engine::is_wslc(args);
     let mut engine_args = vec![
         "run".to_string(),
         "-d".to_string(),
@@ -68,17 +69,19 @@ fn start_container_with_metadata(
         default_labels[1].clone(),
         "--label".to_string(),
         format!("devcontainer.metadata={metadata}"),
-        "--mount".to_string(),
-        workspace_mount_for_args(resolved, remote_workspace_folder, args),
     ];
+    engine_args.extend(mount_args_for_engine(
+        &workspace_mount_for_args(resolved, remote_workspace_folder, args),
+        is_wslc,
+    ));
     if resolved.configuration.get("workspaceMount").is_none() {
         for mount in additional_mounts_for_workspace_target(resolved, remote_workspace_folder, args)
         {
-            engine_args.push("--mount".to_string());
-            engine_args.push(mount);
+            engine_args.extend(mount_args_for_engine(&mount, is_wslc));
         }
     }
-    if resolved
+    if !is_wslc
+        && resolved
         .configuration
         .get("init")
         .and_then(Value::as_bool)
@@ -86,7 +89,8 @@ fn start_container_with_metadata(
     {
         engine_args.push("--init".to_string());
     }
-    if resolved
+    if !is_wslc
+        && resolved
         .configuration
         .get("privileged")
         .and_then(Value::as_bool)
@@ -104,13 +108,11 @@ fn start_container_with_metadata(
         .and_then(Value::as_array)
     {
         for mount in mounts.iter().filter_map(mount_value_to_engine_arg) {
-            engine_args.push("--mount".to_string());
-            engine_args.push(mount);
+            engine_args.extend(mount_args_for_engine(&mount, is_wslc));
         }
     }
     for mount in crate::runtime::mounts::cli_mount_values(args)? {
-        engine_args.push("--mount".to_string());
-        engine_args.push(mount);
+        engine_args.extend(mount_args_for_engine(&mount, is_wslc));
     }
     if let Some(run_args) = resolved
         .configuration
@@ -136,24 +138,26 @@ fn start_container_with_metadata(
             }
         }
     }
-    if let Some(cap_add) = resolved
-        .configuration
-        .get("capAdd")
-        .and_then(Value::as_array)
-    {
-        for capability in cap_add.iter().filter_map(Value::as_str) {
-            engine_args.push("--cap-add".to_string());
-            engine_args.push(capability.to_string());
+    if !is_wslc {
+        if let Some(cap_add) = resolved
+            .configuration
+            .get("capAdd")
+            .and_then(Value::as_array)
+        {
+            for capability in cap_add.iter().filter_map(Value::as_str) {
+                engine_args.push("--cap-add".to_string());
+                engine_args.push(capability.to_string());
+            }
         }
-    }
-    if let Some(security_opt) = resolved
-        .configuration
-        .get("securityOpt")
-        .and_then(Value::as_array)
-    {
-        for option in security_opt.iter().filter_map(Value::as_str) {
-            engine_args.push("--security-opt".to_string());
-            engine_args.push(option.to_string());
+        if let Some(security_opt) = resolved
+            .configuration
+            .get("securityOpt")
+            .and_then(Value::as_array)
+        {
+            for option in security_opt.iter().filter_map(Value::as_str) {
+                engine_args.push("--security-opt".to_string());
+                engine_args.push(option.to_string());
+            }
         }
     }
     if should_add_gpu_capability(&resolved.configuration, args)? {
@@ -280,6 +284,31 @@ fn is_missing_local_image_error(error: &str) -> bool {
     error.contains("no such image") || error.contains("image not known")
 }
 
+fn mount_args_for_engine(mount: &str, is_wslc: bool) -> Vec<String> {
+    if !is_wslc {
+        return vec!["--mount".to_string(), mount.to_string()];
+    }
+    let mut source = None;
+    let mut target = None;
+    for part in mount.split(',') {
+        let Some((key, value)) = part.split_once('=') else {
+            continue;
+        };
+        match key {
+            "source" | "src" => source = Some(value),
+            "target" | "dst" | "destination" => target = Some(value),
+            _ => {}
+        }
+    }
+    match (source, target) {
+        (Some(source), Some(target)) => {
+            vec!["-v".to_string(), format!("{source}:{target}")]
+        }
+        (None, Some(target)) => vec!["-v".to_string(), target.to_string()],
+        _ => vec!["--mount".to_string(), mount.to_string()],
+    }
+}
+
 pub(super) fn start_existing_container(args: &[String], container_id: &str) -> Result<(), String> {
     let result = engine::run_engine(args, vec!["start".to_string(), container_id.to_string()])?;
     if result.status_code != 0 {
@@ -363,9 +392,34 @@ mod tests {
 
     use super::{
         contains_environment_reference, expand_environment_references, inspect_image_environment,
-        remove_container, should_add_gpu_capability, start_container,
+        mount_args_for_engine, remove_container, should_add_gpu_capability, start_container,
         start_container_with_metadata, start_existing_container,
     };
+
+    #[test]
+    fn wslc_uses_volume_mount_syntax() {
+        assert_eq!(
+            mount_args_for_engine(
+                "type=bind,source=/workspace,target=/workspaces/project,consistency=cached",
+                true,
+            ),
+            vec![
+                "-v".to_string(),
+                "/workspace:/workspaces/project".to_string(),
+            ]
+        );
+        assert_eq!(
+            mount_args_for_engine("type=volume,target=/cache", true),
+            vec!["-v".to_string(), "/cache".to_string()]
+        );
+        assert_eq!(
+            mount_args_for_engine("type=bind,source=/a,target=/b", false),
+            vec![
+                "--mount".to_string(),
+                "type=bind,source=/a,target=/b".to_string(),
+            ]
+        );
+    }
 
     #[test]
     fn mount_argument_preserves_read_only_and_alias_keys() {
@@ -742,6 +796,60 @@ esac
         assert!(invocation.contains("--init"));
         assert!(invocation.contains("--privileged"));
         assert!(invocation.contains("--gpus all"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn start_container_uses_wslc_compatible_mounts_and_flags() {
+        let root = unique_temp_dir("devcontainer-start-container-wslc-test");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace dir");
+        let fake_engine = root.join("wslc");
+        let invocation_log = root.join("invocations.log");
+        write_executable_script(
+            &fake_engine,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "{invocation_log}"
+case "$1" in
+  -v) printf 'wslc version 0.1.0\n' ;;
+  run) printf 'created-container\n' ;;
+  *) echo "unexpected command $1" >&2; exit 2 ;;
+esac
+"#,
+                invocation_log = invocation_log.display()
+            ),
+        );
+        let resolved = resolved_config(
+            &workspace,
+            json!({
+                "workspaceMount": "type=bind,source=/host/workspace,target=/workspace",
+                "init": true,
+                "privileged": true,
+                "capAdd": ["SYS_PTRACE"],
+                "securityOpt": ["seccomp=unconfined"],
+                "mounts": ["type=volume,source=cache,target=/cache"]
+            }),
+        );
+
+        let container_id = start_container(
+            &resolved,
+            &engine_args(&fake_engine),
+            "alpine:3.20",
+            "/workspace",
+        )
+        .expect("container should start");
+
+        assert_eq!(container_id, "created-container");
+        let invocation = fs::read_to_string(&invocation_log).expect("invocation log");
+        assert!(invocation.contains("-v /host/workspace:/workspace"));
+        assert!(invocation.contains("-v cache:/cache"));
+        assert!(!invocation.contains("--mount"));
+        assert!(!invocation.contains("--init"));
+        assert!(!invocation.contains("--privileged"));
+        assert!(!invocation.contains("--cap-add"));
+        assert!(!invocation.contains("--security-opt"));
         let _ = fs::remove_dir_all(root);
     }
 

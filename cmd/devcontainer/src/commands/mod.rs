@@ -17,6 +17,21 @@ pub enum DispatchResult {
 }
 
 pub fn dispatch(command: &str, args: &[String]) -> DispatchResult {
+    let options = match common::oci_auth_options(args) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("{error}");
+            return DispatchResult::Complete(ExitCode::from(2));
+        }
+    };
+    if let Err(error) = collections::validate_oci_auth_options(&options) {
+        eprintln!("{error}");
+        return DispatchResult::Complete(ExitCode::from(2));
+    }
+    common::with_oci_auth_options(options, || dispatch_with_options(command, args))
+}
+
+fn dispatch_with_options(command: &str, args: &[String]) -> DispatchResult {
     match command {
         "read-configuration" => {
             if configuration::should_use_native_read_configuration(args) {

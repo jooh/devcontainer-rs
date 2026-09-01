@@ -73,18 +73,32 @@ pub fn run(raw_args: Vec<String>) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    if cli::is_command_version_request(&raw_args[offset..]) {
+    let (global_oci_args, global_oci_arg_count) =
+        match cli::parse_leading_oci_auth_options(&raw_args[offset..]) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::from(2);
+            }
+        };
+    let command_offset = offset + global_oci_arg_count;
+    if raw_args.len() <= command_offset {
+        cli::print_help();
+        return ExitCode::from(2);
+    }
+
+    if cli::is_command_version_request(&raw_args[command_offset..]) {
         println!("{VERSION}");
         return ExitCode::SUCCESS;
     }
 
-    let command = &raw_args[offset];
+    let command = &raw_args[command_offset];
     if !cli::SUPPORTED_TOP_LEVEL_COMMANDS.contains(&command.as_str()) {
         eprintln!("Unsupported command: {command}");
         return ExitCode::from(2);
     }
 
-    let command_args = &raw_args[offset + 1..];
+    let command_args = &raw_args[command_offset + 1..];
     let resolved_help = cli::resolve_command_help(command, command_args).expect("known command");
     let resolved_args = &command_args[resolved_help.consumed_args..];
 
@@ -99,6 +113,7 @@ pub fn run(raw_args: Vec<String>) -> ExitCode {
     }
 
     let mut normalized_command_args = command_args[..resolved_help.consumed_args].to_vec();
+    normalized_command_args.extend(global_oci_args);
     normalized_command_args.extend(cli::normalize_option_aliases(
         resolved_help.path,
         resolved_args,
@@ -238,6 +253,21 @@ mod tests {
                 "/tmp/devcontainer-user-data".to_string(),
             ]),
             ExitCode::from(2)
+        );
+    }
+
+    #[test]
+    fn run_accepts_global_oci_auth_options_before_the_command() {
+        assert_eq!(
+            run(vec![
+                "--oci-auth-hardening".to_string(),
+                "--allow-cross-origin-auth-host".to_string(),
+                "registry.example=auth.example".to_string(),
+                "features".to_string(),
+                "info".to_string(),
+                "--help".to_string(),
+            ]),
+            ExitCode::SUCCESS
         );
     }
 }

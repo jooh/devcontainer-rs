@@ -2,10 +2,10 @@
 
 Machine-readable upstream test coverage inventory for the native Rust CLI.
 
-- Upstream commit: `65f98a518a1f62355a08e6f38e9d6bfb9a0d8ac9`
-- Upstream tests inventoried: `36`
+- Upstream commit: `5dc7533314b5ba7ec3875c30143dfe1aec644870`
+- Upstream tests inventoried: `37`
 - Covered: `16`
-- Partial: `20`
+- Partial: `21`
 - Missing: `0`
 
 ## Summary
@@ -42,6 +42,7 @@ Machine-readable upstream test coverage inventory for the native Rust CLI.
 | `upstream/src/test/dotfiles.test.ts` | covered | `cmd/devcontainer/tests/runtime_lifecycle_smoke/dotfiles.rs` | Native dotfiles coverage includes ordering, reinstall markers, and personalization stop behavior. |
 | `upstream/src/test/getEntPasswd.test.ts` | covered | `cmd/devcontainer/src/runtime/user_resolution.rs` | Native unit coverage matches passwd row parsing and upstream getent/grep command generation, including empty lookup and escaping cases. |
 | `upstream/src/test/getHomeFolder.test.ts` | covered | `cmd/devcontainer/src/runtime/user_resolution.rs`<br>`cmd/devcontainer/tests/runtime_exec_smoke.rs`<br>`cmd/devcontainer/tests/runtime_lifecycle_smoke/commands.rs` | Native unit and fake-engine smoke coverage validates non-root HOME fallback, root HOME acceptance, explicit remote HOME precedence, and lifecycle/exec injection. |
+| `upstream/src/test/httpOCIRegistry.test.ts` | partial | `cmd/devcontainer/src/commands/collections/oci.rs` | Native OCI coverage validates hardened same-origin and trusted cross-origin token realms, mapping syntax, query encoding, redirect refusal for hardened token requests, and registry credential use. Upstream diagnostics and refresh-token POST coverage remain partial. |
 | `upstream/src/test/imageMetadata.test.ts` | partial | `cmd/devcontainer/tests/runtime_exec_smoke.rs`<br>`cmd/devcontainer/tests/runtime_configuration_smoke.rs`<br>`cmd/devcontainer/tests/runtime_container_smoke/basic.rs`<br>`cmd/devcontainer/tests/runtime_build_smoke/features.rs`<br>`cmd/devcontainer/src/runtime/metadata.rs` | Metadata persistence and merge behavior are covered, including array-only label serialization for single metadata entries, but upstream image metadata matrices are broader. |
 | `upstream/src/test/labelPathNormalization.test.ts` | covered | `cmd/devcontainer/src/commands/common/labels.rs`<br>`cmd/devcontainer/src/runtime/container/discovery.rs` | Native unit coverage now exercises Windows label normalization plus legacy workspace-only matching for default devcontainer labels. |
 | `upstream/src/test/updateUID.test.ts` | covered | `cmd/devcontainer/src/runtime/container/uid_update/tests.rs` | Native UID-update coverage includes image inspection, platform preservation, local tags, and podman behavior. |

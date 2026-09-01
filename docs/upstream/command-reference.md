@@ -2,8 +2,13 @@
 
 Generated from the pinned upstream CLI command matrix. This is a compatibility baseline, not a native behavior reference.
 
-- Upstream commit: `65f98a518a1f62355a08e6f38e9d6bfb9a0d8ac9`
+- Upstream commit: `5dc7533314b5ba7ec3875c30143dfe1aec644870`
 - Source: `upstream/src/spec-node/devContainersSpecCLI.ts`
+
+## Global Options
+
+- `--allow-cross-origin-auth-host`
+- `--oci-auth-hardening`
 
 ## Top-Level Commands
 

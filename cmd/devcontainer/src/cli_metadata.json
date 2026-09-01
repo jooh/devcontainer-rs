@@ -1,5 +1,5 @@
 {
-	"upstreamCommit": "65f98a518a1f62355a08e6f38e9d6bfb9a0d8ac9",
+	"upstreamCommit": "5dc7533314b5ba7ec3875c30143dfe1aec644870",
 	"sourcePath": "upstream/src/spec-node/devContainersSpecCLI.ts",
 	"root": {
 		"lines": [
@@ -79,16 +79,30 @@
 				"positionalNames": []
 			},
 			{
-				"text": "  --help     Show help  [boolean]",
+				"text": "  --help                          Show help  [boolean]",
 				"optionNames": [
 					"help"
 				],
 				"positionalNames": []
 			},
 			{
-				"text": "  --version  Show version number  [boolean]",
+				"text": "  --version                       Show version number  [boolean]",
 				"optionNames": [
 					"version"
+				],
+				"positionalNames": []
+			},
+			{
+				"text": "  --oci-auth-hardening            Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+				"optionNames": [
+					"oci-auth-hardening"
+				],
+				"positionalNames": []
+			},
+			{
+				"text": "  --allow-cross-origin-auth-host  Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+				"optionNames": [
+					"allow-cross-origin-auth-host"
 				],
 				"positionalNames": []
 			}
@@ -104,6 +118,18 @@
 				"name": "version",
 				"aliases": [],
 				"description": "Show version number  [boolean]",
+				"visible": true
+			},
+			{
+				"name": "oci-auth-hardening",
+				"aliases": [],
+				"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+				"visible": true
+			},
+			{
+				"name": "allow-cross-origin-auth-host",
+				"aliases": [],
+				"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
 				"visible": true
 			}
 		],
@@ -166,6 +192,20 @@
 					"text": "  --version                         Show version number  [boolean]",
 					"optionNames": [
 						"version"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --oci-auth-hardening              Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --allow-cross-origin-auth-host    Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
 					],
 					"positionalNames": []
 				},
@@ -754,6 +794,18 @@
 					"visible": true
 				},
 				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"visible": true
+				},
+				{
 					"name": "prebuild",
 					"aliases": [],
 					"description": "Stop after onCreateCommand and updateContentCommand, rerunning updateContentCommand if it has run before.  [boolean] [default: false]",
@@ -809,6 +861,20 @@
 					"text": "  --version                        Show version number  [boolean]",
 					"optionNames": [
 						"version"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --oci-auth-hardening             Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --allow-cross-origin-auth-host   Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
 					],
 					"positionalNames": []
 				},
@@ -1111,6 +1177,18 @@
 					"aliases": [],
 					"description": "Show version number  [boolean]",
 					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"visible": true
 				}
 			],
 			"positionals": [],
@@ -1152,147 +1230,161 @@
 					"positionalNames": []
 				},
 				{
-					"text": "  --help                 Show help  [boolean]",
+					"text": "  --help                          Show help  [boolean]",
 					"optionNames": [
 						"help"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --version              Show version number  [boolean]",
+					"text": "  --version                       Show version number  [boolean]",
 					"optionNames": [
 						"version"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --user-data-folder     Host path to a directory that is intended to be persisted and share state between sessions.  [string]",
+					"text": "  --oci-auth-hardening            Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --allow-cross-origin-auth-host  Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --user-data-folder              Host path to a directory that is intended to be persisted and share state between sessions.  [string]",
 					"optionNames": [
 						"user-data-folder"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --docker-path          Docker CLI path.  [string]",
+					"text": "  --docker-path                   Docker CLI path.  [string]",
 					"optionNames": [
 						"docker-path"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --docker-compose-path  Docker Compose CLI path.  [string]",
+					"text": "  --docker-compose-path           Docker Compose CLI path.  [string]",
 					"optionNames": [
 						"docker-compose-path"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --workspace-folder     Workspace folder path. The devcontainer.json will be looked up relative to this path. If not provided, defaults to the current directory.  [string]",
+					"text": "  --workspace-folder              Workspace folder path. The devcontainer.json will be looked up relative to this path. If not provided, defaults to the current directory.  [string]",
 					"optionNames": [
 						"workspace-folder"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --config               devcontainer.json path. The default is to use .devcontainer/devcontainer.json or, if that does not exist, .devcontainer.json in the workspace folder.  [string]",
+					"text": "  --config                        devcontainer.json path. The default is to use .devcontainer/devcontainer.json or, if that does not exist, .devcontainer.json in the workspace folder.  [string]",
 					"optionNames": [
 						"config"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --log-level            Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
+					"text": "  --log-level                     Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
 					"optionNames": [
 						"log-level"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --log-format           Log format.  [choices: \"text\", \"json\"] [default: \"text\"]",
+					"text": "  --log-format                    Log format.  [choices: \"text\", \"json\"] [default: \"text\"]",
 					"optionNames": [
 						"log-format"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --no-cache             Builds the image with `--no-cache`.  [boolean] [default: false]",
+					"text": "  --no-cache                      Builds the image with `--no-cache`.  [boolean] [default: false]",
 					"optionNames": [
 						"no-cache"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --image-name           Image name.  [string]",
+					"text": "  --image-name                    Image name.  [string]",
 					"optionNames": [
 						"image-name"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --cache-from           Additional image to use as potential layer cache  [string]",
+					"text": "  --cache-from                    Additional image to use as potential layer cache  [string]",
 					"optionNames": [
 						"cache-from"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --cache-to             A destination of buildx cache  [string]",
+					"text": "  --cache-to                      A destination of buildx cache  [string]",
 					"optionNames": [
 						"cache-to"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --buildkit             Control whether BuildKit should be used  [choices: \"auto\", \"never\"] [default: \"auto\"]",
+					"text": "  --buildkit                      Control whether BuildKit should be used  [choices: \"auto\", \"never\"] [default: \"auto\"]",
 					"optionNames": [
 						"buildkit"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --platform             Set target platforms.  [string]",
+					"text": "  --platform                      Set target platforms.  [string]",
 					"optionNames": [
 						"platform"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --push                 Push to a container registry.  [boolean] [default: false]",
+					"text": "  --push                          Push to a container registry.  [boolean] [default: false]",
 					"optionNames": [
 						"push"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --label                Provide key and value configuration that adds metadata to an image  [string]",
+					"text": "  --label                         Provide key and value configuration that adds metadata to an image  [string]",
 					"optionNames": [
 						"label"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --output               Overrides the default behavior to load built images into the local docker registry. Valid options are the same ones provided to the --output option of docker buildx build.  [string]",
+					"text": "  --output                        Overrides the default behavior to load built images into the local docker registry. Valid options are the same ones provided to the --output option of docker buildx build.  [string]",
 					"optionNames": [
 						"output"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --additional-features  Additional features to apply to the dev container (JSON as per \"features\" section in devcontainer.json)  [string]",
+					"text": "  --additional-features           Additional features to apply to the dev container (JSON as per \"features\" section in devcontainer.json)  [string]",
 					"optionNames": [
 						"additional-features"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --no-lockfile          Disable lockfile generation and verification.  [boolean] [default: false]",
+					"text": "  --no-lockfile                   Disable lockfile generation and verification.  [boolean] [default: false]",
 					"optionNames": [
 						"no-lockfile"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --frozen-lockfile      Ensure lockfile exists and remains unchanged; fail otherwise.  [boolean] [default: false]",
+					"text": "  --frozen-lockfile               Ensure lockfile exists and remains unchanged; fail otherwise.  [boolean] [default: false]",
 					"optionNames": [
 						"frozen-lockfile"
 					],
@@ -1468,6 +1560,18 @@
 					"aliases": [],
 					"description": "Show version number  [boolean]",
 					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"visible": true
 				}
 			],
 			"positionals": [
@@ -1524,6 +1628,20 @@
 					"text": "  --version                        Show version number  [boolean]",
 					"optionNames": [
 						"version"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --oci-auth-hardening             Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --allow-cross-origin-auth-host   Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
 					],
 					"positionalNames": []
 				},
@@ -1893,6 +2011,18 @@
 					"visible": true
 				},
 				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"visible": true
+				},
+				{
 					"name": "prebuild",
 					"aliases": [],
 					"description": "Stop after onCreateCommand and updateContentCommand, rerunning updateContentCommand if it has run before.  [boolean] [default: false]",
@@ -1948,6 +2078,20 @@
 					"text": "  --version                         Show version number  [boolean]",
 					"optionNames": [
 						"version"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --oci-auth-hardening              Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --allow-cross-origin-auth-host    Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
 					],
 					"positionalNames": []
 				},
@@ -2191,6 +2335,18 @@
 					"aliases": [],
 					"description": "Show version number  [boolean]",
 					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"visible": true
 				}
 			],
 			"positionals": [],
@@ -2232,70 +2388,84 @@
 					"positionalNames": []
 				},
 				{
-					"text": "  --help              Show help  [boolean]",
+					"text": "  --help                          Show help  [boolean]",
 					"optionNames": [
 						"help"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --version           Show version number  [boolean]",
+					"text": "  --version                       Show version number  [boolean]",
 					"optionNames": [
 						"version"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --user-data-folder  Host path to a directory that is intended to be persisted and share state between sessions.  [string]",
+					"text": "  --oci-auth-hardening            Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --allow-cross-origin-auth-host  Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --user-data-folder              Host path to a directory that is intended to be persisted and share state between sessions.  [string]",
 					"optionNames": [
 						"user-data-folder"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --workspace-folder  Workspace folder path. The devcontainer.json will be looked up relative to this path. If --workspace-folder is not provided, defaults to the current directory.  [string]",
+					"text": "  --workspace-folder              Workspace folder path. The devcontainer.json will be looked up relative to this path. If --workspace-folder is not provided, defaults to the current directory.  [string]",
 					"optionNames": [
 						"workspace-folder"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --config            devcontainer.json path. The default is to use .devcontainer/devcontainer.json or, if that does not exist, .devcontainer.json in the workspace folder.  [string]",
+					"text": "  --config                        devcontainer.json path. The default is to use .devcontainer/devcontainer.json or, if that does not exist, .devcontainer.json in the workspace folder.  [string]",
 					"optionNames": [
 						"config"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --output-format     Output format.  [choices: \"text\", \"json\"] [default: \"text\"]",
+					"text": "  --output-format                 Output format.  [choices: \"text\", \"json\"] [default: \"text\"]",
 					"optionNames": [
 						"output-format"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --log-level         Log level for the --terminal-log-file. When set to trace, the log level for --log-file will also be set to trace.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
+					"text": "  --log-level                     Log level for the --terminal-log-file. When set to trace, the log level for --log-file will also be set to trace.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
 					"optionNames": [
 						"log-level"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --log-format        Log format.  [choices: \"text\", \"json\"] [default: \"text\"]",
+					"text": "  --log-format                    Log format.  [choices: \"text\", \"json\"] [default: \"text\"]",
 					"optionNames": [
 						"log-format"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --terminal-columns  Number of columns to render the output for. This is required for some of the subprocesses to correctly render their output.  [number]",
+					"text": "  --terminal-columns              Number of columns to render the output for. This is required for some of the subprocesses to correctly render their output.  [number]",
 					"optionNames": [
 						"terminal-columns"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --terminal-rows     Number of rows to render the output for. This is required for some of the subprocesses to correctly render their output.  [number]",
+					"text": "  --terminal-rows                 Number of rows to render the output for. This is required for some of the subprocesses to correctly render their output.  [number]",
 					"optionNames": [
 						"terminal-rows"
 					],
@@ -2362,6 +2532,18 @@
 					"aliases": [],
 					"description": "Show version number  [boolean]",
 					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"visible": true
 				}
 			],
 			"positionals": [],
@@ -2403,56 +2585,70 @@
 					"positionalNames": []
 				},
 				{
-					"text": "  --help                 Show help  [boolean]",
+					"text": "  --help                          Show help  [boolean]",
 					"optionNames": [
 						"help"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --version              Show version number  [boolean]",
+					"text": "  --version                       Show version number  [boolean]",
 					"optionNames": [
 						"version"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --workspace-folder     Workspace folder. If --workspace-folder is not provided defaults to the current directory.  [string]",
+					"text": "  --oci-auth-hardening            Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --allow-cross-origin-auth-host  Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --workspace-folder              Workspace folder. If --workspace-folder is not provided defaults to the current directory.  [string]",
 					"optionNames": [
 						"workspace-folder"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --docker-path          Path to docker executable.  [string] [default: \"docker\"]",
+					"text": "  --docker-path                   Path to docker executable.  [string] [default: \"docker\"]",
 					"optionNames": [
 						"docker-path"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --docker-compose-path  Path to docker-compose executable.  [string] [default: \"docker-compose\"]",
+					"text": "  --docker-compose-path           Path to docker-compose executable.  [string] [default: \"docker-compose\"]",
 					"optionNames": [
 						"docker-compose-path"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --config               devcontainer.json path. The default is to use .devcontainer/devcontainer.json or, if that does not exist, .devcontainer.json in the workspace folder.  [string]",
+					"text": "  --config                        devcontainer.json path. The default is to use .devcontainer/devcontainer.json or, if that does not exist, .devcontainer.json in the workspace folder.  [string]",
 					"optionNames": [
 						"config"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --log-level            Log level.  [choices: \"error\", \"info\", \"debug\", \"trace\"] [default: \"info\"]",
+					"text": "  --log-level                     Log level.  [choices: \"error\", \"info\", \"debug\", \"trace\"] [default: \"info\"]",
 					"optionNames": [
 						"log-level"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --dry-run              Write generated lockfile to standard out instead of to disk.  [boolean]",
+					"text": "  --dry-run                       Write generated lockfile to standard out instead of to disk.  [boolean]",
 					"optionNames": [
 						"dry-run"
 					],
@@ -2522,6 +2718,18 @@
 					"name": "version",
 					"aliases": [],
 					"description": "Show version number  [boolean]",
+					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
 					"visible": true
 				}
 			],
@@ -2611,16 +2819,30 @@
 					"positionalNames": []
 				},
 				{
-					"text": "  --help     Show help  [boolean]",
+					"text": "  --help                          Show help  [boolean]",
 					"optionNames": [
 						"help"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --version  Show version number  [boolean]",
+					"text": "  --version                       Show version number  [boolean]",
 					"optionNames": [
 						"version"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --oci-auth-hardening            Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --allow-cross-origin-auth-host  Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
 					],
 					"positionalNames": []
 				}
@@ -2636,6 +2858,18 @@
 					"name": "version",
 					"aliases": [],
 					"description": "Show version number  [boolean]",
+					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
 					"visible": true
 				}
 			],
@@ -2696,105 +2930,119 @@
 					"positionalNames": []
 				},
 				{
-					"text": "      --help                      Show help  [boolean]",
+					"text": "      --help                          Show help  [boolean]",
 					"optionNames": [
 						"help"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --version                   Show version number  [boolean]",
+					"text": "      --version                       Show version number  [boolean]",
 					"optionNames": [
 						"version"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -p, --project-folder            Path to folder containing 'src' and 'test' sub-folders. This is likely the git root of the project.  [string] [default: \".\"]",
+					"text": "      --oci-auth-hardening            Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "      --allow-cross-origin-auth-host  Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  -p, --project-folder                Path to folder containing 'src' and 'test' sub-folders. This is likely the git root of the project.  [string] [default: \".\"]",
 					"optionNames": [
 						"project-folder"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -f, --features                  Feature(s) to test as space-separated parameters. Omit to run all tests.  Cannot be combined with '--global-scenarios-only'.  [array]",
+					"text": "  -f, --features                      Feature(s) to test as space-separated parameters. Omit to run all tests.  Cannot be combined with '--global-scenarios-only'.  [array]",
 					"optionNames": [
 						"features"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --filter                    Filter current tests to only run scenarios containing this string.  Cannot be combined with '--skip-scenarios'.  [string]",
+					"text": "      --filter                        Filter current tests to only run scenarios containing this string.  Cannot be combined with '--skip-scenarios'.  [string]",
 					"optionNames": [
 						"filter"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --global-scenarios-only     Run only scenario tests under 'tests/_global' .  Cannot be combined with '-f'.  [boolean] [default: false]",
+					"text": "      --global-scenarios-only         Run only scenario tests under 'tests/_global' .  Cannot be combined with '-f'.  [boolean] [default: false]",
 					"optionNames": [
 						"global-scenarios-only"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --skip-scenarios            Skip all 'scenario' style tests.  Cannot be combined with '--global--scenarios-only'.  [boolean] [default: false]",
+					"text": "      --skip-scenarios                Skip all 'scenario' style tests.  Cannot be combined with '--global--scenarios-only'.  [boolean] [default: false]",
 					"optionNames": [
 						"skip-scenarios"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --skip-autogenerated        Skip all 'autogenerated' style tests (test.sh).  [boolean] [default: false]",
+					"text": "      --skip-autogenerated            Skip all 'autogenerated' style tests (test.sh).  [boolean] [default: false]",
 					"optionNames": [
 						"skip-autogenerated"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --skip-duplicated           Skip all 'duplicate' style tests (duplicate.sh).  [boolean] [default: false]",
+					"text": "      --skip-duplicated               Skip all 'duplicate' style tests (duplicate.sh).  [boolean] [default: false]",
 					"optionNames": [
 						"skip-duplicated"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --permit-randomization      Allow an element of randomness in test cases.  [boolean] [default: false]",
+					"text": "      --permit-randomization          Allow an element of randomness in test cases.  [boolean] [default: false]",
 					"optionNames": [
 						"permit-randomization"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -i, --base-image                Base Image. Not used for scenarios.  [string] [default: \"ubuntu:focal\"]",
+					"text": "  -i, --base-image                    Base Image. Not used for scenarios.  [string] [default: \"ubuntu:focal\"]",
 					"optionNames": [
 						"base-image"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -u, --remote-user               Remote user.  Not used for scenarios.  [string]",
+					"text": "  -u, --remote-user                   Remote user.  Not used for scenarios.  [string]",
 					"optionNames": [
 						"remote-user"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --log-level                 Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
+					"text": "      --log-level                     Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
 					"optionNames": [
 						"log-level"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --preserve-test-containers  Do not remove test containers after running tests.  [boolean] [default: false]",
+					"text": "      --preserve-test-containers      Do not remove test containers after running tests.  [boolean] [default: false]",
 					"optionNames": [
 						"preserve-test-containers"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -q, --quiet                     Quiets output  [boolean] [default: false]",
+					"text": "  -q, --quiet                         Quiets output  [boolean] [default: false]",
 					"optionNames": [
 						"quiet"
 					],
@@ -2920,6 +3168,18 @@
 					"aliases": [],
 					"description": "Show version number  [boolean]",
 					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"visible": true
 				}
 			],
 			"positionals": [
@@ -3014,35 +3274,49 @@
 					"positionalNames": []
 				},
 				{
-					"text": "      --help                       Show help  [boolean]",
+					"text": "      --help                          Show help  [boolean]",
 					"optionNames": [
 						"help"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --version                    Show version number  [boolean]",
+					"text": "      --version                       Show version number  [boolean]",
 					"optionNames": [
 						"version"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -o, --output-folder              Path to output directory. Will create directories as needed.  [string] [default: \"./output\"]",
+					"text": "      --oci-auth-hardening            Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "      --allow-cross-origin-auth-host  Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  -o, --output-folder                 Path to output directory. Will create directories as needed.  [string] [default: \"./output\"]",
 					"optionNames": [
 						"output-folder"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -f, --force-clean-output-folder  Automatically delete previous output directory before packaging  [boolean] [default: false]",
+					"text": "  -f, --force-clean-output-folder     Automatically delete previous output directory before packaging  [boolean] [default: false]",
 					"optionNames": [
 						"force-clean-output-folder"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --log-level                  Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
+					"text": "      --log-level                     Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
 					"optionNames": [
 						"log-level"
 					],
@@ -3060,6 +3334,18 @@
 					"name": "version",
 					"aliases": [],
 					"description": "Show version number  [boolean]",
+					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
 					"visible": true
 				},
 				{
@@ -3167,35 +3453,49 @@
 					"positionalNames": []
 				},
 				{
-					"text": "      --help       Show help  [boolean]",
+					"text": "      --help                          Show help  [boolean]",
 					"optionNames": [
 						"help"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --version    Show version number  [boolean]",
+					"text": "      --version                       Show version number  [boolean]",
 					"optionNames": [
 						"version"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -r, --registry   Name of the OCI registry.  [string] [default: \"ghcr.io\"]",
+					"text": "      --oci-auth-hardening            Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "      --allow-cross-origin-auth-host  Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  -r, --registry                      Name of the OCI registry.  [string] [default: \"ghcr.io\"]",
 					"optionNames": [
 						"registry"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -n, --namespace  Unique indentifier for the collection of features. Example: <owner>/<repo>  [string] [required]",
+					"text": "  -n, --namespace                     Unique indentifier for the collection of features. Example: <owner>/<repo>  [string] [required]",
 					"optionNames": [
 						"namespace"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --log-level  Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
+					"text": "      --log-level                     Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
 					"optionNames": [
 						"log-level"
 					],
@@ -3226,6 +3526,18 @@
 					"name": "version",
 					"aliases": [],
 					"description": "Show version number  [boolean]",
+					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
 					"visible": true
 				},
 				{
@@ -3320,28 +3632,42 @@
 					"positionalNames": []
 				},
 				{
-					"text": "  --help           Show help  [boolean]",
+					"text": "  --help                          Show help  [boolean]",
 					"optionNames": [
 						"help"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --version        Show version number  [boolean]",
+					"text": "  --version                       Show version number  [boolean]",
 					"optionNames": [
 						"version"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --log-level      Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
+					"text": "  --oci-auth-hardening            Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --allow-cross-origin-auth-host  Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --log-level                     Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
 					"optionNames": [
 						"log-level"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --output-format  Output format.  [choices: \"text\", \"json\"] [default: \"text\"]",
+					"text": "  --output-format                 Output format.  [choices: \"text\", \"json\"] [default: \"text\"]",
 					"optionNames": [
 						"output-format"
 					],
@@ -3371,6 +3697,18 @@
 					"name": "version",
 					"aliases": [],
 					"description": "Show version number  [boolean]",
+					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
 					"visible": true
 				}
 			],
@@ -3423,28 +3761,42 @@
 					"positionalNames": []
 				},
 				{
-					"text": "  --help              Show help  [boolean]",
+					"text": "  --help                          Show help  [boolean]",
 					"optionNames": [
 						"help"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --version           Show version number  [boolean]",
+					"text": "  --version                       Show version number  [boolean]",
 					"optionNames": [
 						"version"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --log-level         Log level.  [choices: \"error\", \"info\", \"debug\", \"trace\"] [default: \"error\"]",
+					"text": "  --oci-auth-hardening            Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --allow-cross-origin-auth-host  Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --log-level                     Log level.  [choices: \"error\", \"info\", \"debug\", \"trace\"] [default: \"error\"]",
 					"optionNames": [
 						"log-level"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --workspace-folder  Workspace folder to use for the configuration. If --workspace-folder is not provided, this defaults to the current directory  [string]",
+					"text": "  --workspace-folder              Workspace folder to use for the configuration. If --workspace-folder is not provided, this defaults to the current directory  [string]",
 					"optionNames": [
 						"workspace-folder"
 					],
@@ -3474,6 +3826,18 @@
 					"name": "version",
 					"aliases": [],
 					"description": "Show version number  [boolean]",
+					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
 					"visible": true
 				}
 			],
@@ -3517,56 +3881,70 @@
 					"positionalNames": []
 				},
 				{
-					"text": "      --help            Show help  [boolean]",
+					"text": "      --help                          Show help  [boolean]",
 					"optionNames": [
 						"help"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --version         Show version number  [boolean]",
+					"text": "      --version                       Show version number  [boolean]",
 					"optionNames": [
 						"version"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -p, --project-folder  Path to folder containing 'src' and 'test' sub-folders. This is likely the git root of the project.  [string] [default: \".\"]",
+					"text": "      --oci-auth-hardening            Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "      --allow-cross-origin-auth-host  Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  -p, --project-folder                Path to folder containing 'src' and 'test' sub-folders. This is likely the git root of the project.  [string] [default: \".\"]",
 					"optionNames": [
 						"project-folder"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -r, --registry        Name of the OCI registry.  [string] [default: \"ghcr.io\"]",
+					"text": "  -r, --registry                      Name of the OCI registry.  [string] [default: \"ghcr.io\"]",
 					"optionNames": [
 						"registry"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -n, --namespace       Unique indentifier for the collection of features. Example: <owner>/<repo>  [string] [required]",
+					"text": "  -n, --namespace                     Unique indentifier for the collection of features. Example: <owner>/<repo>  [string] [required]",
 					"optionNames": [
 						"namespace"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --github-owner    GitHub owner for docs.  [string] [default: \"\"]",
+					"text": "      --github-owner                  GitHub owner for docs.  [string] [default: \"\"]",
 					"optionNames": [
 						"github-owner"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --github-repo     GitHub repo for docs.  [string] [default: \"\"]",
+					"text": "      --github-repo                   GitHub repo for docs.  [string] [default: \"\"]",
 					"optionNames": [
 						"github-repo"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --log-level       Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
+					"text": "      --log-level                     Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
 					"optionNames": [
 						"log-level"
 					],
@@ -3626,6 +4004,18 @@
 					"name": "version",
 					"aliases": [],
 					"description": "Show version number  [boolean]",
+					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
 					"visible": true
 				}
 			],
@@ -3708,16 +4098,30 @@
 					"positionalNames": []
 				},
 				{
-					"text": "  --help     Show help  [boolean]",
+					"text": "  --help                          Show help  [boolean]",
 					"optionNames": [
 						"help"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --version  Show version number  [boolean]",
+					"text": "  --version                       Show version number  [boolean]",
 					"optionNames": [
 						"version"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --oci-auth-hardening            Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --allow-cross-origin-auth-host  Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
 					],
 					"positionalNames": []
 				}
@@ -3733,6 +4137,18 @@
 					"name": "version",
 					"aliases": [],
 					"description": "Show version number  [boolean]",
+					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
 					"visible": true
 				}
 			],
@@ -3776,63 +4192,77 @@
 					"positionalNames": []
 				},
 				{
-					"text": "      --help              Show help  [boolean]",
+					"text": "      --help                          Show help  [boolean]",
 					"optionNames": [
 						"help"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --version           Show version number  [boolean]",
+					"text": "      --version                       Show version number  [boolean]",
 					"optionNames": [
 						"version"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -w, --workspace-folder  Target workspace folder to apply Template. If --workspace-folder is not provided, this defaults to the current directory  [string]",
+					"text": "      --oci-auth-hardening            Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "      --allow-cross-origin-auth-host  Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  -w, --workspace-folder              Target workspace folder to apply Template. If --workspace-folder is not provided, this defaults to the current directory  [string]",
 					"optionNames": [
 						"workspace-folder"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -t, --template-id       Reference to a Template in a supported OCI registry  [string] [required]",
+					"text": "  -t, --template-id                   Reference to a Template in a supported OCI registry  [string] [required]",
 					"optionNames": [
 						"template-id"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -a, --template-args     Arguments to replace within the provided Template, provided as JSON  [string] [default: \"{}\"]",
+					"text": "  -a, --template-args                 Arguments to replace within the provided Template, provided as JSON  [string] [default: \"{}\"]",
 					"optionNames": [
 						"template-args"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -f, --features          Features to add to the provided Template, provided as JSON.  [string] [default: \"[]\"]",
+					"text": "  -f, --features                      Features to add to the provided Template, provided as JSON.  [string] [default: \"[]\"]",
 					"optionNames": [
 						"features"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --log-level         Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
+					"text": "      --log-level                     Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
 					"optionNames": [
 						"log-level"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --tmp-dir           Directory to use for temporary files. If not provided, the system default will be inferred.  [string]",
+					"text": "      --tmp-dir                       Directory to use for temporary files. If not provided, the system default will be inferred.  [string]",
 					"optionNames": [
 						"tmp-dir"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --omit-paths        List of paths within the Template to omit applying, provided as JSON.  To ignore a directory append '/*'. Eg: '[\".github/*\", \"dir/a/*\", \"file.ts\"]'  [string] [default: \"[]\"]",
+					"text": "      --omit-paths                    List of paths within the Template to omit applying, provided as JSON.  To ignore a directory append '/*'. Eg: '[\".github/*\", \"dir/a/*\", \"file.ts\"]'  [string] [default: \"[]\"]",
 					"optionNames": [
 						"omit-paths"
 					],
@@ -3900,6 +4330,18 @@
 					"name": "version",
 					"aliases": [],
 					"description": "Show version number  [boolean]",
+					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
 					"visible": true
 				}
 			],
@@ -3985,35 +4427,49 @@
 					"positionalNames": []
 				},
 				{
-					"text": "      --help       Show help  [boolean]",
+					"text": "      --help                          Show help  [boolean]",
 					"optionNames": [
 						"help"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --version    Show version number  [boolean]",
+					"text": "      --version                       Show version number  [boolean]",
 					"optionNames": [
 						"version"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -r, --registry   Name of the OCI registry.  [string] [default: \"ghcr.io\"]",
+					"text": "      --oci-auth-hardening            Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "      --allow-cross-origin-auth-host  Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  -r, --registry                      Name of the OCI registry.  [string] [default: \"ghcr.io\"]",
 					"optionNames": [
 						"registry"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -n, --namespace  Unique indentifier for the collection of templates. Example: <owner>/<repo>  [string] [required]",
+					"text": "  -n, --namespace                     Unique indentifier for the collection of templates. Example: <owner>/<repo>  [string] [required]",
 					"optionNames": [
 						"namespace"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --log-level  Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
+					"text": "      --log-level                     Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
 					"optionNames": [
 						"log-level"
 					],
@@ -4044,6 +4500,18 @@
 					"name": "version",
 					"aliases": [],
 					"description": "Show version number  [boolean]",
+					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
 					"visible": true
 				},
 				{
@@ -4131,21 +4599,35 @@
 					"positionalNames": []
 				},
 				{
-					"text": "  --help       Show help  [boolean]",
+					"text": "  --help                          Show help  [boolean]",
 					"optionNames": [
 						"help"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --version    Show version number  [boolean]",
+					"text": "  --version                       Show version number  [boolean]",
 					"optionNames": [
 						"version"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  --log-level  Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
+					"text": "  --oci-auth-hardening            Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --allow-cross-origin-auth-host  Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --log-level                     Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
 					"optionNames": [
 						"log-level"
 					],
@@ -4182,6 +4664,18 @@
 					"name": "version",
 					"aliases": [],
 					"description": "Show version number  [boolean]",
+					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
 					"visible": true
 				}
 			],
@@ -4230,42 +4724,56 @@
 					"positionalNames": []
 				},
 				{
-					"text": "      --help            Show help  [boolean]",
+					"text": "      --help                          Show help  [boolean]",
 					"optionNames": [
 						"help"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --version         Show version number  [boolean]",
+					"text": "      --version                       Show version number  [boolean]",
 					"optionNames": [
 						"version"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "  -p, --project-folder  Path to folder containing 'src' and 'test' sub-folders. This is likely the git root of the project.  [string] [default: \".\"]",
+					"text": "      --oci-auth-hardening            Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "      --allow-cross-origin-auth-host  Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  -p, --project-folder                Path to folder containing 'src' and 'test' sub-folders. This is likely the git root of the project.  [string] [default: \".\"]",
 					"optionNames": [
 						"project-folder"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --github-owner    GitHub owner for docs.  [string] [default: \"\"]",
+					"text": "      --github-owner                  GitHub owner for docs.  [string] [default: \"\"]",
 					"optionNames": [
 						"github-owner"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --github-repo     GitHub repo for docs.  [string] [default: \"\"]",
+					"text": "      --github-repo                   GitHub repo for docs.  [string] [default: \"\"]",
 					"optionNames": [
 						"github-repo"
 					],
 					"positionalNames": []
 				},
 				{
-					"text": "      --log-level       Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
+					"text": "      --log-level                     Log level.  [choices: \"info\", \"debug\", \"trace\"] [default: \"info\"]",
 					"optionNames": [
 						"log-level"
 					],
@@ -4309,6 +4817,18 @@
 					"name": "version",
 					"aliases": [],
 					"description": "Show version number  [boolean]",
+					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
 					"visible": true
 				}
 			],
@@ -4390,6 +4910,20 @@
 					"text": "  --version                        Show version number  [boolean]",
 					"optionNames": [
 						"version"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --oci-auth-hardening             Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"optionNames": [
+						"oci-auth-hardening"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --allow-cross-origin-auth-host   Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
+					"optionNames": [
+						"allow-cross-origin-auth-host"
 					],
 					"positionalNames": []
 				},
@@ -4658,6 +5192,18 @@
 					"name": "version",
 					"aliases": [],
 					"description": "Show version number  [boolean]",
+					"visible": true
+				},
+				{
+					"name": "oci-auth-hardening",
+					"aliases": [],
+					"description": "Restrict OCI bearer authentication realms, registry credential forwarding, and token redirects.  [boolean] [default: false]",
+					"visible": true
+				},
+				{
+					"name": "allow-cross-origin-auth-host",
+					"aliases": [],
+					"description": "Allow an OCI registry to use a cross-origin HTTPS authentication host. Format: <registry-host>=<auth-host>. May be repeated.  [array]",
 					"visible": true
 				}
 			],
