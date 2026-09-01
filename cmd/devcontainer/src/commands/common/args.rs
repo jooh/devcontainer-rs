@@ -595,10 +595,9 @@ mod tests {
     use super::{
         env_default_bool_option, env_default_choice_value, env_default_option_value, has_flag,
         oci_auth_options, parse_array_option_values, parse_bool_option,
-        parse_json_string_array_option,
-        parse_option_value, parse_option_values, parse_remote_env, remote_env_overrides,
-        runtime_options, runtime_process_request, secrets_env, test_env_defaults,
-        validate_choice_option, validate_number_option, validate_option_values,
+        parse_json_string_array_option, parse_option_value, parse_option_values, parse_remote_env,
+        remote_env_overrides, runtime_options, runtime_process_request, secrets_env,
+        test_env_defaults, validate_choice_option, validate_number_option, validate_option_values,
         validate_paired_options, validate_runtime_env_defaults, DEVCONTAINER_BUILDKIT,
         DEVCONTAINER_CONTAINER_DATA_FOLDER, DEVCONTAINER_DOTFILES_INSTALL_COMMAND,
         DEVCONTAINER_DOTFILES_REPOSITORY, DEVCONTAINER_DOTFILES_TARGET_PATH,
