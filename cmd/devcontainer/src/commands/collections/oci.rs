@@ -2,10 +2,13 @@
 
 #[cfg(test)]
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::fs::OpenOptions;
 use std::io::{self, Cursor, Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
@@ -19,6 +22,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tar::Archive;
 
+use crate::commands::common;
 use crate::process_runner::{self, ProcessLogLevel, ProcessRequest};
 
 const OCI_MANIFEST_ACCEPT: &str =
@@ -87,8 +91,66 @@ struct OciHttpResponse {
     body: Vec<u8>,
 }
 
+#[derive(Debug)]
+struct OciHttpExchange {
+    response: OciHttpResponse,
+    response_url: String,
+    redirected: bool,
+}
+
 trait OciTransport {
     fn get(&self, url: &str, headers: &[(String, String)]) -> Result<OciHttpResponse, String>;
+
+    fn get_exchange(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+    ) -> Result<OciHttpExchange, String> {
+        self.get(url, headers).map(|response| OciHttpExchange {
+            response,
+            response_url: url.to_string(),
+            redirected: false,
+        })
+    }
+
+    fn get_no_redirects(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+    ) -> Result<OciHttpResponse, String> {
+        self.get(url, headers)
+    }
+
+    fn get_no_redirects_exchange(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+    ) -> Result<OciHttpExchange, String> {
+        self.get_no_redirects(url, headers)
+            .map(|response| OciHttpExchange {
+                response,
+                response_url: url.to_string(),
+                redirected: false,
+            })
+    }
+
+    fn post_no_redirects_exchange(
+        &self,
+        _url: &str,
+        _headers: &[(String, String)],
+        _body: &[u8],
+    ) -> Result<OciHttpExchange, String> {
+        Err("OCI transport does not support POST requests".to_string())
+    }
+
+    fn post_exchange(
+        &self,
+        _url: &str,
+        _headers: &[(String, String)],
+        _body: &[u8],
+    ) -> Result<OciHttpExchange, String> {
+        Err("OCI transport does not support POST requests".to_string())
+    }
 }
 
 struct CurlTransport;
@@ -298,8 +360,11 @@ fn registry_feature_artifact(
 ) -> Result<OciFeatureArtifact, String> {
     let manifest_reference = registry_manifest_reference(parsed, transport)?;
     let manifest_url = format!(
-        "https://{}/v2/{}/manifests/{}",
-        parsed.registry, parsed.repository, manifest_reference
+        "{}://{}/v2/{}/manifests/{}",
+        registry_scheme(&parsed.registry),
+        parsed.registry,
+        parsed.repository,
+        manifest_reference
     );
     let accept_headers = [("Accept".to_string(), OCI_MANIFEST_ACCEPT.to_string())];
     let response = registry_get(transport, &parsed.registry, &manifest_url, &accept_headers)?;
@@ -390,8 +455,10 @@ fn registry_tags(
     transport: &dyn OciTransport,
 ) -> Result<Vec<String>, String> {
     let url = format!(
-        "https://{}/v2/{}/tags/list",
-        parsed.registry, parsed.repository
+        "{}://{}/v2/{}/tags/list",
+        registry_scheme(&parsed.registry),
+        parsed.registry,
+        parsed.repository
     );
     let response = registry_get(transport, &parsed.registry, &url, &[])?;
     if response.status != 200 {
@@ -426,8 +493,11 @@ fn registry_blob(
     transport: &dyn OciTransport,
 ) -> Result<Vec<u8>, String> {
     let url = format!(
-        "https://{}/v2/{}/blobs/{}",
-        artifact.registry, artifact.repository, digest
+        "{}://{}/v2/{}/blobs/{}",
+        registry_scheme(&artifact.registry),
+        artifact.registry,
+        artifact.repository,
+        digest
     );
     let accept_headers = [("Accept".to_string(), OCI_BLOB_ACCEPT.to_string())];
     let response = registry_get(transport, &artifact.registry, &url, &accept_headers)?;
@@ -440,44 +510,385 @@ fn registry_blob(
     Ok(response.body)
 }
 
+const BUILT_IN_CROSS_ORIGIN_AUTH_HOSTS: &[&str] = &[
+    "registry-1.docker.io=auth.docker.io",
+    "registry.docker.io=auth.docker.io",
+    "docker.io=auth.docker.io",
+    "index.docker.io=auth.docker.io",
+    "registry.gitlab.com=gitlab.com",
+];
+const DOCKER_HUB_REGISTRY_HOSTS: &[&str] = &[
+    "registry-1.docker.io",
+    "registry.docker.io",
+    "docker.io",
+    "index.docker.io",
+];
+
+#[derive(Debug, Eq, PartialEq)]
+struct ParsedHttpUrl {
+    scheme: String,
+    authority: String,
+    hostname: String,
+}
+
+pub(crate) fn parse_cross_origin_auth_hosts(
+    entries: &[String],
+) -> Result<HashMap<String, HashSet<String>>, String> {
+    let mut mappings = HashMap::<String, HashSet<String>>::new();
+    for entry in entries {
+        let Some((registry, auth_host)) = entry.split_once('=') else {
+            return Err(invalid_cross_origin_auth_host(entry));
+        };
+        if registry.is_empty()
+            || auth_host.is_empty()
+            || auth_host.contains('=')
+            || registry.contains('=')
+        {
+            return Err(invalid_cross_origin_auth_host(entry));
+        }
+        let registry = normalize_authority(registry, Some(443))
+            .map_err(|_| invalid_cross_origin_auth_host(entry))?
+            .0;
+        let auth_host = normalize_authority(auth_host, Some(443))
+            .map_err(|_| invalid_cross_origin_auth_host(entry))?
+            .0;
+        mappings.entry(registry).or_default().insert(auth_host);
+    }
+    Ok(mappings)
+}
+
+pub(crate) fn is_allowed_token_service_realm(
+    realm: &str,
+    registry_url: &str,
+    configured_entries: &[String],
+) -> bool {
+    let Ok(realm) = parse_http_url(realm) else {
+        return false;
+    };
+    let Ok(registry) = parse_http_url(registry_url) else {
+        return false;
+    };
+    if realm.authority == registry.authority
+        && (realm.scheme == "https" || realm.scheme == "http" && realm.hostname == "localhost")
+    {
+        return true;
+    }
+    if realm.scheme != "https" {
+        return false;
+    }
+
+    let mut entries = BUILT_IN_CROSS_ORIGIN_AUTH_HOSTS
+        .iter()
+        .map(|entry| (*entry).to_string())
+        .collect::<Vec<_>>();
+    entries.extend_from_slice(configured_entries);
+    parse_cross_origin_auth_hosts(&entries)
+        .ok()
+        .and_then(|mappings| mappings.get(&registry.authority).cloned())
+        .is_some_and(|auth_hosts| auth_hosts.contains(&realm.authority))
+}
+
+fn invalid_cross_origin_auth_host(entry: &str) -> String {
+    format!("Invalid cross-origin auth host '{entry}'. Expected '<registry-host>=<auth-host>'.")
+}
+
+fn parse_http_url(value: &str) -> Result<ParsedHttpUrl, String> {
+    let Some((scheme, remainder)) = value.split_once("://") else {
+        return Err(format!("Invalid URL: {value}"));
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    if !matches!(scheme.as_str(), "http" | "https") {
+        return Err(format!("Invalid URL scheme: {scheme}"));
+    }
+    let authority_end = remainder.find(['/', '?', '#']).unwrap_or(remainder.len());
+    let authority = &remainder[..authority_end];
+    let default_port = if scheme == "https" { 443 } else { 80 };
+    let (authority, hostname) = normalize_authority(authority, Some(default_port))?;
+    Ok(ParsedHttpUrl {
+        scheme,
+        authority,
+        hostname,
+    })
+}
+
+fn registry_scheme(registry: &str) -> &'static str {
+    let authority = normalize_authority(registry, None);
+    match authority {
+        Ok((_, hostname)) if hostname.eq_ignore_ascii_case("localhost") => "http",
+        _ => "https",
+    }
+}
+
+fn is_oci_registry_origin(url: &str, registry: &str) -> bool {
+    let Ok(candidate) = parse_http_url(url) else {
+        return false;
+    };
+    let expected_url = format!("{}://{registry}/", registry_scheme(registry));
+    let Ok(expected) = parse_http_url(&expected_url) else {
+        return false;
+    };
+    if candidate.scheme == expected.scheme && candidate.authority == expected.authority {
+        return true;
+    }
+    candidate.scheme == "https"
+        && expected.scheme == "https"
+        && DOCKER_HUB_REGISTRY_HOSTS.contains(&candidate.authority.as_str())
+        && DOCKER_HUB_REGISTRY_HOSTS.contains(&expected.authority.as_str())
+}
+
+fn normalize_authority(
+    authority: &str,
+    default_port: Option<u16>,
+) -> Result<(String, String), String> {
+    if authority.is_empty()
+        || authority
+            .chars()
+            .any(|character| character.is_whitespace() || "/?#@\\".contains(character))
+    {
+        return Err(format!("Invalid authority: {authority}"));
+    }
+
+    let (hostname, port) = if let Some(bracketed) = authority.strip_prefix('[') {
+        let Some(closing) = bracketed.find(']') else {
+            return Err(format!("Invalid authority: {authority}"));
+        };
+        let hostname = &bracketed[..closing];
+        if hostname.is_empty()
+            || !hostname.chars().all(|character| {
+                character.is_ascii_hexdigit() || character == ':' || character == '.'
+            })
+        {
+            return Err(format!("Invalid authority: {authority}"));
+        }
+        let suffix = &bracketed[closing + 1..];
+        let port = if suffix.is_empty() {
+            None
+        } else {
+            Some(
+                suffix
+                    .strip_prefix(':')
+                    .ok_or_else(|| format!("Invalid authority: {authority}"))?,
+            )
+        };
+        (format!("[{}]", hostname.to_ascii_lowercase()), port)
+    } else {
+        if authority.matches(':').count() > 1 {
+            return Err(format!("Invalid authority: {authority}"));
+        }
+        let (hostname, port) = match authority.rsplit_once(':') {
+            Some((hostname, port)) => (hostname, Some(port)),
+            None => (authority, None),
+        };
+        if hostname.is_empty()
+            || !hostname.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
+            })
+        {
+            return Err(format!("Invalid authority: {authority}"));
+        }
+        (hostname.to_ascii_lowercase(), port)
+    };
+
+    let port = port
+        .map(|value| {
+            if value.is_empty() || !value.chars().all(|character| character.is_ascii_digit()) {
+                return Err(format!("Invalid authority: {authority}"));
+            }
+            value
+                .parse::<u16>()
+                .map_err(|_| format!("Invalid authority: {authority}"))
+        })
+        .transpose()?;
+    let normalized = match port.filter(|port| Some(*port) != default_port) {
+        Some(port) => format!("{hostname}:{port}"),
+        None => hostname.clone(),
+    };
+    Ok((normalized, hostname))
+}
+
+pub(crate) fn token_service_url(
+    realm: &str,
+    service: &str,
+    scope: Option<&str>,
+) -> Result<String, String> {
+    parse_http_url(realm)?;
+    let without_fragment = realm.split_once('#').map_or(realm, |(base, _)| base);
+    let (base, query) = without_fragment
+        .split_once('?')
+        .map_or((without_fragment, ""), |(base, query)| (base, query));
+    let mut parameters = query
+        .split('&')
+        .filter(|parameter| !parameter.is_empty())
+        .filter(|parameter| {
+            let key = parameter.split_once('=').map_or(*parameter, |(key, _)| key);
+            !matches!(form_urldecode_component(key).as_str(), "service" | "scope")
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    parameters.push(format!("service={}", form_urlencode_component(service)));
+    parameters.push(format!(
+        "scope={}",
+        form_urlencode_component(scope.unwrap_or_default())
+    ));
+    Ok(format!("{base}?{}", parameters.join("&")))
+}
+
+fn form_urldecode_component(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) =
+                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
+            {
+                decoded.push((high << 4) | low);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(if bytes[index] == b'+' {
+            b' '
+        } else {
+            bytes[index]
+        });
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn form_urlencode_component(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'*' | b'-' | b'.' | b'_') {
+            encoded.push(char::from(byte));
+        } else if byte == b' ' {
+            encoded.push('+');
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    encoded
+}
+
 fn registry_get(
     transport: &dyn OciTransport,
     registry: &str,
     url: &str,
     headers: &[(String, String)],
 ) -> Result<OciHttpResponse, String> {
-    let mut request_headers = headers.to_vec();
-    if let Some(authorization) = configured_authorization(registry) {
-        request_headers.push(("Authorization".to_string(), authorization));
-    }
-    let response = transport.get(url, &request_headers)?;
-    if response.status != 401 {
-        return Ok(response);
+    common::mark_oci_auth_attempted();
+    let auth_options = common::current_oci_auth_options();
+    let requested_registry_origin = is_oci_registry_origin(url, registry);
+    let safe_headers = headers
+        .iter()
+        .filter(|(name, _)| {
+            !auth_options.hardening
+                || requested_registry_origin
+                || !name.eq_ignore_ascii_case("authorization")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let initial_exchange = transport.get_exchange(url, &safe_headers)?;
+    if initial_exchange.response.status != 401 && initial_exchange.response.status != 403 {
+        return Ok(initial_exchange.response);
     }
 
-    let Some(challenge) = response.headers.get("www-authenticate") else {
-        return Ok(response);
+    let challenge_registry_origin =
+        is_oci_registry_origin(&initial_exchange.response_url, registry);
+    if !requested_registry_origin || !challenge_registry_origin {
+        common::record_oci_auth_diagnostic(
+            common::OciAuthDiagnostic::RegistryRedirectWouldPreventCredentialForwarding,
+        );
+    }
+
+    let Some(challenge) = initial_exchange.response.headers.get("www-authenticate") else {
+        return Ok(initial_exchange.response);
     };
-    let basic = configured_basic_authorization(registry);
-    let token = fetch_bearer_token(transport, registry, challenge, basic.as_deref())?;
-    let mut retry_headers = headers.to_vec();
+    let credentials_allowed =
+        !auth_options.hardening || requested_registry_origin && challenge_registry_origin;
+    if challenge
+        .split_whitespace()
+        .next()
+        .is_some_and(|method| method.eq_ignore_ascii_case("basic"))
+    {
+        if !credentials_allowed {
+            return Ok(initial_exchange.response);
+        }
+        let Some(authorization) = configured_registry_authorization(registry).basic else {
+            return Ok(initial_exchange.response);
+        };
+        let mut retry_headers = safe_headers.clone();
+        retry_headers.push(("Authorization".to_string(), authorization));
+        return transport.get(url, &retry_headers);
+    }
+
+    let authorization = if credentials_allowed {
+        configured_registry_authorization(registry)
+    } else {
+        ConfiguredRegistryAuthorization::default()
+    };
+    let token = fetch_bearer_token_for_registry_url(
+        transport,
+        registry,
+        &initial_exchange.response_url,
+        challenge,
+        authorization.basic.as_deref(),
+        authorization.refresh_token.as_deref(),
+        credentials_allowed,
+    )?;
+    let mut retry_headers = safe_headers;
     retry_headers.push(("Authorization".to_string(), format!("Bearer {token}")));
     transport.get(url, &retry_headers)
 }
 
+#[cfg(test)]
 fn fetch_bearer_token(
     transport: &dyn OciTransport,
     registry: &str,
     challenge: &str,
     basic_authorization: Option<&str>,
 ) -> Result<String, String> {
-    let challenge = match challenge.strip_prefix("Bearer ") {
-        Some(challenge) => challenge,
-        None => match challenge.strip_prefix("bearer ") {
-            Some(challenge) => challenge,
-            None => return Err(format!("Unsupported OCI auth challenge: {challenge}")),
-        },
+    let registry_url = format!("{}://{registry}/v2/", registry_scheme(registry));
+    fetch_bearer_token_for_registry_url(
+        transport,
+        registry,
+        &registry_url,
+        challenge,
+        basic_authorization,
+        None,
+        true,
+    )
+}
+
+fn fetch_bearer_token_for_registry_url(
+    transport: &dyn OciTransport,
+    registry: &str,
+    registry_url: &str,
+    challenge: &str,
+    basic_authorization: Option<&str>,
+    refresh_token: Option<&str>,
+    credentials_allowed: bool,
+) -> Result<String, String> {
+    let Some((method, challenge_value)) = challenge.split_once(' ') else {
+        return Err(format!("Unsupported OCI auth challenge: {challenge}"));
     };
+    if !method.eq_ignore_ascii_case("bearer") {
+        return Err(format!("Unsupported OCI auth challenge: {challenge}"));
+    }
+    let challenge = challenge_value;
     let parameters = challenge_parameters(challenge);
     let realm = match parameters.get("realm") {
         Some(realm) => realm,
@@ -491,17 +902,84 @@ fn fetch_bearer_token(
         .get("service")
         .cloned()
         .unwrap_or(registry.to_string());
-    let mut token_url = format!("{realm}?service={service}");
-    if let Some(scope) = parameters.get("scope") {
-        token_url.push_str("&scope=");
-        token_url.push_str(scope);
+    let auth_options = common::current_oci_auth_options();
+    let realm_allowed = is_allowed_token_service_realm(
+        realm,
+        registry_url,
+        &auth_options.allowed_cross_origin_auth_hosts,
+    );
+    if !realm_allowed {
+        common::record_oci_auth_diagnostic(common::OciAuthDiagnostic::AuthLookupWouldBeBlocked);
     }
-    let mut headers = Vec::new();
-    if let Some(authorization) = basic_authorization {
-        headers.push(("Authorization".to_string(), authorization.to_string()));
+    if auth_options.hardening && !realm_allowed {
+        let challenge_registry = parse_http_url(registry_url)
+            .map(|url| url.authority)
+            .unwrap_or_else(|_| registry.to_string());
+        let hint = parse_http_url(realm)
+            .ok()
+            .filter(|realm| realm.scheme == "https")
+            .map(|realm| {
+                format!(
+                    " Use '--allow-cross-origin-auth-host {challenge_registry}={}' to trust this registry-to-auth-host mapping.",
+                    realm.authority
+                )
+            })
+            .unwrap_or_default();
+        return Err(format!(
+            "Registry '{challenge_registry}' requested authentication from untrusted realm '{realm}'.{hint}"
+        ));
     }
-    let response = transport.get(&token_url, &headers)?;
-    if response.status != 200 {
+    let scope = parameters.get("scope").map(String::as_str);
+    let token_url = token_service_url(realm, &service, scope)?;
+    let refresh_token = credentials_allowed.then_some(refresh_token).flatten();
+    let basic_authorization = credentials_allowed.then_some(basic_authorization).flatten();
+    let sent_credentials = refresh_token.is_some() || basic_authorization.is_some();
+    let mut exchange = if let Some(refresh_token) = refresh_token {
+        let headers = [
+            ("User-Agent".to_string(), "devcontainer".to_string()),
+            (
+                "Content-Type".to_string(),
+                "application/x-www-form-urlencoded".to_string(),
+            ),
+        ];
+        let body = refresh_token_exchange_body(&service, scope, refresh_token);
+        if auth_options.hardening {
+            transport.post_no_redirects_exchange(realm, &headers, body.as_bytes())?
+        } else {
+            transport.post_exchange(realm, &headers, body.as_bytes())?
+        }
+    } else {
+        let mut headers = vec![("User-Agent".to_string(), "devcontainer".to_string())];
+        if let Some(authorization) = basic_authorization {
+            headers.push(("Authorization".to_string(), authorization.to_string()));
+        }
+        if auth_options.hardening {
+            transport.get_no_redirects_exchange(&token_url, &headers)?
+        } else {
+            transport.get_exchange(&token_url, &headers)?
+        }
+    };
+    if exchange.redirected {
+        common::record_oci_auth_diagnostic(common::OciAuthDiagnostic::AuthServerRedirect);
+    }
+    if sent_credentials && matches!(exchange.response.status, 401 | 403) {
+        let anonymous_headers = [("User-Agent".to_string(), "devcontainer".to_string())];
+        exchange = if auth_options.hardening {
+            transport.get_no_redirects_exchange(&token_url, &anonymous_headers)?
+        } else {
+            transport.get_exchange(&token_url, &anonymous_headers)?
+        };
+        if exchange.redirected {
+            common::record_oci_auth_diagnostic(common::OciAuthDiagnostic::AuthServerRedirect);
+        }
+    }
+    let response = exchange.response;
+    if auth_options.hardening && (300..400).contains(&response.status) {
+        return Err(format!(
+            "OCI token service redirected a hardened authentication request for {registry}"
+        ));
+    }
+    if !(200..300).contains(&response.status) {
         return Err(format!(
             "OCI token service returned HTTP {} for {registry}",
             response.status
@@ -511,26 +989,87 @@ fn fetch_bearer_token(
         Ok(payload) => payload,
         Err(error) => return Err(format!("OCI token service returned invalid JSON: {error}")),
     };
-    if let Some(token) = payload["token"].as_str() {
+    if let Some(token) = payload["token"].as_str().filter(|token| !token.is_empty()) {
         return Ok(token.to_string());
     }
-    if let Some(token) = payload["access_token"].as_str() {
+    if let Some(token) = payload["access_token"]
+        .as_str()
+        .filter(|token| !token.is_empty())
+    {
         return Ok(token.to_string());
     }
     Err("OCI token service response did not include a token".to_string())
 }
 
+fn refresh_token_exchange_body(service: &str, scope: Option<&str>, refresh_token: &str) -> String {
+    [
+        ("client_id", "devcontainer"),
+        ("grant_type", "refresh_token"),
+        ("service", service),
+        ("scope", scope.unwrap_or_default()),
+        ("refresh_token", refresh_token),
+    ]
+    .into_iter()
+    .map(|(name, value)| format!("{name}={}", form_urlencode_component(value)))
+    .collect::<Vec<_>>()
+    .join("&")
+}
+
 fn challenge_parameters(challenge: &str) -> HashMap<String, String> {
     let mut parameters = HashMap::new();
-    for entry in challenge.split(',') {
+    for entry in split_challenge_parameters(challenge) {
         if let Some((key, value)) = entry.split_once('=') {
-            parameters.insert(
-                key.trim().to_string(),
-                value.trim().trim_matches('"').to_string(),
-            );
+            parameters.insert(key.trim().to_string(), challenge_parameter_value(value));
         }
     }
     parameters
+}
+
+fn split_challenge_parameters(challenge: &str) -> Vec<&str> {
+    let mut parameters = Vec::new();
+    let mut start = 0;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, character) in challenge.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if quoted && character == '\\' {
+            escaped = true;
+        } else if character == '"' {
+            quoted = !quoted;
+        } else if character == ',' && !quoted {
+            parameters.push(&challenge[start..index]);
+            start = index + character.len_utf8();
+        }
+    }
+    parameters.push(&challenge[start..]);
+    parameters
+}
+
+fn challenge_parameter_value(raw_value: &str) -> String {
+    let value = raw_value.trim();
+    let Some(value) = value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+    else {
+        return value.to_string();
+    };
+
+    let mut unescaped = String::with_capacity(value.len());
+    let mut characters = value.chars();
+    while let Some(character) = characters.next() {
+        if character == '\\' {
+            match characters.next() {
+                Some(escaped) => unescaped.push(escaped),
+                None => unescaped.push(character),
+            }
+        } else {
+            unescaped.push(character);
+        }
+    }
+    unescaped
 }
 
 fn local_layout_feature_artifact(
@@ -924,53 +1463,93 @@ fn is_registry_qualified_resource(resource: &str) -> bool {
     registry.contains('.') || registry.contains(':') || registry == "localhost"
 }
 
+#[cfg(test)]
 fn configured_authorization(registry: &str) -> Option<String> {
-    match configured_bearer_authorization(registry) {
-        Some(authorization) => Some(authorization),
-        None => configured_basic_authorization(registry),
-    }
+    configured_basic_authorization(registry)
 }
 
-fn configured_bearer_authorization(registry: &str) -> Option<String> {
-    let config = docker_config_auth(registry)?;
-    config.identity_token.map(|token| format!("Bearer {token}"))
+#[cfg(test)]
+fn configured_refresh_token(registry: &str) -> Option<String> {
+    configured_registry_authorization(registry).refresh_token
 }
 
+#[cfg(test)]
 fn configured_basic_authorization(registry: &str) -> Option<String> {
-    if let Some(auth) = env_oci_auth(registry) {
-        return Some(auth);
+    configured_registry_authorization(registry).basic
+}
+
+#[derive(Default)]
+struct ConfiguredRegistryAuthorization {
+    basic: Option<String>,
+    refresh_token: Option<String>,
+}
+
+fn configured_registry_authorization(registry: &str) -> ConfiguredRegistryAuthorization {
+    if let Some(basic) = env_oci_auth(registry) {
+        return ConfiguredRegistryAuthorization {
+            basic: Some(basic),
+            refresh_token: None,
+        };
     }
-    if registry == "ghcr.io" {
-        let token = env::var("GITHUB_TOKEN").unwrap_or_default();
-        if !token.is_empty() {
-            return Some(basic_authorization("x-access-token", &token));
-        }
+    if let Some(auth) = docker_config_auth(registry) {
+        let RegistryAuth {
+            username,
+            secret,
+            refresh_token,
+        } = auth;
+        let basic = match (username, secret) {
+            (Some(username), Some(secret)) => Some(basic_authorization(&username, &secret)),
+            _ => None,
+        };
+        return ConfiguredRegistryAuthorization {
+            basic,
+            refresh_token,
+        };
     }
-    let auth = docker_config_auth(registry)?;
-    match (auth.username, auth.secret) {
-        (Some(username), Some(secret)) => Some(basic_authorization(&username, &secret)),
-        _ => None,
+    ConfiguredRegistryAuthorization {
+        basic: github_token_for_ghcr(registry)
+            .map(|token| basic_authorization("x-access-token", &token)),
+        refresh_token: None,
     }
+}
+
+fn github_token_for_ghcr(registry: &str) -> Option<String> {
+    if registry != "ghcr.io"
+        || env::var("GITHUB_HOST").is_ok_and(|host| !host.is_empty() && host != "github.com")
+    {
+        return None;
+    }
+    env::var("GITHUB_TOKEN")
+        .ok()
+        .filter(|token| !token.is_empty())
 }
 
 fn env_oci_auth(registry: &str) -> Option<String> {
     let raw = env::var("DEVCONTAINERS_OCI_AUTH").ok()?;
-    let parts = raw.splitn(3, '|').collect::<Vec<_>>();
-    let [configured_registry, username, token] = parts.as_slice() else {
-        return None;
-    };
-    if *configured_registry == registry {
+    raw.split(',').find_map(|context| {
+        let mut parts = context.split('|');
+        let configured_registry = parts.next()?;
+        let username = parts.next()?;
+        let token = parts.next()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        if configured_registry.is_empty()
+            || username.is_empty()
+            || token.is_empty()
+            || configured_registry != registry
+        {
+            return None;
+        }
         Some(basic_authorization(username, token))
-    } else {
-        None
-    }
+    })
 }
 
 #[derive(Default)]
 struct RegistryAuth {
     username: Option<String>,
     secret: Option<String>,
-    identity_token: Option<String>,
+    refresh_token: Option<String>,
 }
 
 fn docker_config_auth(registry: &str) -> Option<RegistryAuth> {
@@ -991,7 +1570,7 @@ fn docker_config_auth(registry: &str) -> Option<RegistryAuth> {
         if let Some(entry) = config["auths"].get(&key) {
             if let Some(token) = entry["identitytoken"].as_str() {
                 return Some(RegistryAuth {
-                    identity_token: Some(token.to_string()),
+                    refresh_token: Some(token.to_string()),
                     ..RegistryAuth::default()
                 });
             }
@@ -1002,7 +1581,7 @@ fn docker_config_auth(registry: &str) -> Option<RegistryAuth> {
                             return Some(RegistryAuth {
                                 username: Some(username.to_string()),
                                 secret: Some(secret.to_string()),
-                                identity_token: None,
+                                refresh_token: None,
                             });
                         }
                     }
@@ -1014,7 +1593,7 @@ fn docker_config_auth(registry: &str) -> Option<RegistryAuth> {
                 return Some(RegistryAuth {
                     username: Some(username.to_string()),
                     secret: Some(secret.to_string()),
-                    identity_token: None,
+                    refresh_token: None,
                 });
             }
         }
@@ -1090,10 +1669,16 @@ fn credential_helper_auth(helper: &str, registry: &str) -> Option<RegistryAuth> 
         return None;
     }
     let payload: Value = serde_json::from_slice(&output.stdout).ok()?;
+    if payload["Username"].as_str() == Some("<token>") {
+        return Some(RegistryAuth {
+            refresh_token: payload["Secret"].as_str().map(str::to_string),
+            ..RegistryAuth::default()
+        });
+    }
     Some(RegistryAuth {
         username: payload["Username"].as_str().map(str::to_string),
         secret: payload["Secret"].as_str().map(str::to_string),
-        identity_token: None,
+        refresh_token: None,
     })
 }
 
@@ -1438,9 +2023,68 @@ type Ordering = std::cmp::Ordering;
 
 impl OciTransport for CurlTransport {
     fn get(&self, url: &str, headers: &[(String, String)]) -> Result<OciHttpResponse, String> {
+        self.request(url, headers, None, true)
+            .map(|exchange| exchange.response)
+    }
+
+    fn get_exchange(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+    ) -> Result<OciHttpExchange, String> {
+        self.request(url, headers, None, true)
+    }
+
+    fn get_no_redirects(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+    ) -> Result<OciHttpResponse, String> {
+        self.request(url, headers, None, false)
+            .map(|exchange| exchange.response)
+    }
+
+    fn get_no_redirects_exchange(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+    ) -> Result<OciHttpExchange, String> {
+        self.request(url, headers, None, false)
+    }
+
+    fn post_no_redirects_exchange(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+        body: &[u8],
+    ) -> Result<OciHttpExchange, String> {
+        self.request(url, headers, Some(body), false)
+    }
+
+    fn post_exchange(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+        body: &[u8],
+    ) -> Result<OciHttpExchange, String> {
+        self.request(url, headers, Some(body), true)
+    }
+}
+
+impl CurlTransport {
+    fn request(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+        body: Option<&[u8]>,
+        follow_redirects: bool,
+    ) -> Result<OciHttpExchange, String> {
         let temp = TempHttpFiles::new();
+        write_private_file(&temp.headers, &[])?;
+        write_private_file(&temp.body, &[])?;
         let mut args = vec![
-            "-sSL".to_string(),
+            "-q".to_string(),
+            "-sS".to_string(),
             "--max-time".to_string(),
             "30".to_string(),
             "-D".to_string(),
@@ -1448,11 +2092,30 @@ impl OciTransport for CurlTransport {
             "-o".to_string(),
             temp.body.display().to_string(),
             "-w".to_string(),
-            "%{http_code}".to_string(),
+            "%{http_code}\n%{url_effective}\n%{num_redirects}".to_string(),
         ];
+        if follow_redirects {
+            args.push("-L".to_string());
+        }
+        let mut request_headers = String::new();
         for (name, value) in headers {
+            if name.contains(['\r', '\n']) || value.contains(['\r', '\n']) {
+                return Err("OCI HTTP headers must not contain newlines".to_string());
+            }
+            request_headers.push_str(name);
+            request_headers.push_str(": ");
+            request_headers.push_str(value);
+            request_headers.push('\n');
+        }
+        if !request_headers.is_empty() {
+            write_private_file(&temp.request_headers, request_headers.as_bytes())?;
             args.push("-H".to_string());
-            args.push(format!("{name}: {value}"));
+            args.push(format!("@{}", temp.request_headers.display()));
+        }
+        if let Some(body) = body {
+            write_private_file(&temp.request_body, body)?;
+            args.push("--data-binary".to_string());
+            args.push(format!("@{}", temp.request_body.display()));
         }
         args.push(url.to_string());
 
@@ -1470,23 +2133,44 @@ impl OciTransport for CurlTransport {
         if result.status_code != 0 {
             return Err(result.stderr);
         }
-        let status = match result.stdout.trim().parse::<u16>() {
+        let mut write_out = result.stdout.lines();
+        let status = match write_out.next().unwrap_or_default().trim().parse::<u16>() {
             Ok(status) => status,
             Err(error) => return Err(format!("curl did not return an HTTP status code: {error}")),
         };
+        let response_url = write_out.next().unwrap_or(url).trim().to_string();
+        let redirected = write_out
+            .next()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .is_some_and(|count| count > 0);
         let raw_headers = fs::read_to_string(&temp.headers).map_err(io_error_to_string)?;
         let body = fs::read(&temp.body).map_err(io_error_to_string)?;
-        Ok(OciHttpResponse {
-            status,
-            headers: parse_http_headers(&raw_headers),
-            body,
+        Ok(OciHttpExchange {
+            response: OciHttpResponse {
+                status,
+                headers: parse_http_headers(&raw_headers),
+                body,
+            },
+            redirected,
+            response_url,
         })
     }
+}
+
+fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), String> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(path).map_err(io_error_to_string)?;
+    file.write_all(contents).map_err(io_error_to_string)
 }
 
 struct TempHttpFiles {
     headers: PathBuf,
     body: PathBuf,
+    request_headers: PathBuf,
+    request_body: PathBuf,
 }
 
 impl TempHttpFiles {
@@ -1504,6 +2188,8 @@ impl TempHttpFiles {
         Self {
             headers: base.with_extension("headers"),
             body: base.with_extension("body"),
+            request_headers: base.with_extension("request-headers"),
+            request_body: base.with_extension("request-body"),
         }
     }
 }
@@ -1512,6 +2198,8 @@ impl Drop for TempHttpFiles {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.headers);
         let _ = fs::remove_file(&self.body);
+        let _ = fs::remove_file(&self.request_headers);
+        let _ = fs::remove_file(&self.request_body);
     }
 }
 
@@ -1548,23 +2236,30 @@ mod tests {
 
     use super::{
         canonical_feature_id, challenge_parameters, compare_versions_asc, compare_versions_desc,
-        configured_basic_authorization, configured_bearer_authorization, credential_helper_auth,
-        docker_config_auth, exact_semver, extract_feature_layer, feature_layer,
-        feature_manifest_from_layer, feature_ref_json, fetch_bearer_token,
-        fixture_feature_artifact, fixture_tags, is_registry_qualified_reference, list_feature_tags,
+        configured_basic_authorization, credential_helper_auth, docker_config_auth, exact_semver,
+        extract_feature_layer, feature_layer, feature_manifest_from_layer, feature_ref_json,
+        fetch_bearer_token, fixture_feature_artifact, fixture_tags, is_allowed_token_service_realm,
+        is_oci_registry_origin, is_registry_qualified_reference, list_feature_tags,
         local_layout_feature_artifact, local_layout_manifest_digest, materialize_feature_artifact,
         materialize_feature_artifact_with_transport, metadata_from_feature_layer,
-        parse_http_headers, parse_oci_reference, platform_default_credential_helper, registry_blob,
-        registry_config_keys, registry_feature_artifact, registry_get, registry_tags,
+        parse_cross_origin_auth_hosts, parse_http_headers, parse_oci_reference,
+        platform_default_credential_helper, registry_blob, registry_config_keys,
+        registry_feature_artifact, registry_get, registry_scheme, registry_tags,
         resolve_feature_artifact, resolve_feature_artifact_for_reference, safe_archive_path,
-        verify_manifest_digest, CurlTransport, OciFeatureArtifact, OciFeatureLayer,
-        OciHttpResponse, OciReference, OciTransport, VersionSelector, BASE64,
+        token_service_url, verify_manifest_digest, CurlTransport, OciFeatureArtifact,
+        OciFeatureLayer, OciHttpResponse, OciReference, OciTransport, VersionSelector, BASE64,
     };
+
+    type RequestHeaders = Vec<(String, String)>;
 
     #[derive(Clone, Default)]
     struct FakeTransport {
         routes: Arc<Mutex<HashMap<String, Vec<OciHttpResponse>>>>,
+        response_urls: Arc<Mutex<HashMap<String, Vec<String>>>>,
         seen_authorization: Arc<Mutex<Vec<Option<String>>>>,
+        seen_headers: Arc<Mutex<Vec<RequestHeaders>>>,
+        seen_methods: Arc<Mutex<Vec<String>>>,
+        seen_bodies: Arc<Mutex<Vec<Vec<u8>>>>,
     }
 
     impl FakeTransport {
@@ -1576,10 +2271,24 @@ mod tests {
                 .or_default()
                 .push(response);
         }
-    }
 
-    impl OciTransport for FakeTransport {
-        fn get(&self, url: &str, headers: &[(String, String)]) -> Result<OciHttpResponse, String> {
+        fn add_redirected(&self, url: &str, response_url: &str, response: OciHttpResponse) {
+            self.add(url, response);
+            self.response_urls
+                .lock()
+                .expect("response URLs")
+                .entry(url.to_string())
+                .or_default()
+                .push(response_url.to_string());
+        }
+
+        fn request(
+            &self,
+            method: &str,
+            url: &str,
+            headers: &[(String, String)],
+            body: &[u8],
+        ) -> Result<OciHttpResponse, String> {
             let authorization = headers
                 .iter()
                 .find(|(name, _)| name == "Authorization")
@@ -1588,6 +2297,15 @@ mod tests {
                 .lock()
                 .expect("seen")
                 .push(authorization);
+            self.seen_headers
+                .lock()
+                .expect("headers")
+                .push(headers.to_vec());
+            self.seen_methods
+                .lock()
+                .expect("methods")
+                .push(method.to_string());
+            self.seen_bodies.lock().expect("bodies").push(body.to_vec());
             let response = {
                 let mut routes = self.routes.lock().expect("routes");
                 match routes.get_mut(url) {
@@ -1599,6 +2317,84 @@ mod tests {
                 Some(response) => Ok(response),
                 None => Err(format!("missing fake route: {url}")),
             }
+        }
+
+        fn exchange(
+            &self,
+            method: &str,
+            url: &str,
+            headers: &[(String, String)],
+            body: &[u8],
+        ) -> Result<super::OciHttpExchange, String> {
+            let response = self.request(method, url, headers, body)?;
+            let response_url = self
+                .response_urls
+                .lock()
+                .expect("response URLs")
+                .get_mut(url)
+                .and_then(|urls| (!urls.is_empty()).then(|| urls.remove(0)))
+                .unwrap_or_else(|| url.to_string());
+            Ok(super::OciHttpExchange {
+                response,
+                redirected: response_url != url,
+                response_url,
+            })
+        }
+    }
+
+    impl OciTransport for FakeTransport {
+        fn get(&self, url: &str, headers: &[(String, String)]) -> Result<OciHttpResponse, String> {
+            self.request("GET", url, headers, &[])
+        }
+
+        fn get_exchange(
+            &self,
+            url: &str,
+            headers: &[(String, String)],
+        ) -> Result<super::OciHttpExchange, String> {
+            self.exchange("GET", url, headers, &[])
+        }
+
+        fn get_no_redirects_exchange(
+            &self,
+            url: &str,
+            headers: &[(String, String)],
+        ) -> Result<super::OciHttpExchange, String> {
+            self.exchange("GET", url, headers, &[])
+        }
+
+        fn post_no_redirects_exchange(
+            &self,
+            url: &str,
+            headers: &[(String, String)],
+            body: &[u8],
+        ) -> Result<super::OciHttpExchange, String> {
+            self.exchange("POST", url, headers, body)
+        }
+
+        fn post_exchange(
+            &self,
+            url: &str,
+            headers: &[(String, String)],
+            body: &[u8],
+        ) -> Result<super::OciHttpExchange, String> {
+            self.exchange("POST", url, headers, body)
+        }
+    }
+
+    struct DefaultMethodTransport;
+
+    impl OciTransport for DefaultMethodTransport {
+        fn get(
+            &self,
+            _url: &str,
+            _headers: &[(String, String)],
+        ) -> Result<OciHttpResponse, String> {
+            Ok(OciHttpResponse {
+                status: 204,
+                headers: HashMap::new(),
+                body: Vec::new(),
+            })
         }
     }
 
@@ -1787,6 +2583,41 @@ mod tests {
     }
 
     #[test]
+    fn transport_defaults_wrap_get_and_reject_post() {
+        let transport = DefaultMethodTransport;
+        let exchange = transport
+            .get_exchange("https://registry.example/v2/", &[])
+            .expect("default GET exchange");
+        assert_eq!(exchange.response.status, 204);
+        assert_eq!(exchange.response_url, "https://registry.example/v2/");
+        assert!(!exchange.redirected);
+
+        let response = transport
+            .get_no_redirects("https://registry.example/token", &[])
+            .expect("default GET without redirects");
+        assert_eq!(response.status, 204);
+        let exchange = transport
+            .get_no_redirects_exchange("https://registry.example/token", &[])
+            .expect("default GET exchange without redirects");
+        assert_eq!(exchange.response.status, 204);
+        assert_eq!(exchange.response_url, "https://registry.example/token");
+        assert!(!exchange.redirected);
+
+        assert_eq!(
+            transport
+                .post_no_redirects_exchange("https://registry.example/token", &[], b"body")
+                .expect_err("default POST without redirects"),
+            "OCI transport does not support POST requests"
+        );
+        assert_eq!(
+            transport
+                .post_exchange("https://registry.example/token", &[], b"body")
+                .expect_err("default POST"),
+            "OCI transport does not support POST requests"
+        );
+    }
+
+    #[test]
     fn parses_registry_refs_without_features_segment_and_with_ports() {
         let short = parse_oci_reference("git").expect("short reference");
         assert_eq!(short.registry, "ghcr.io");
@@ -1846,7 +2677,7 @@ mod tests {
             },
         );
         transport.add(
-            "https://ghcr.io/token?service=ghcr.io&scope=repository:acme/features/fake:pull",
+            "https://ghcr.io/token?service=ghcr.io&scope=repository%3Aacme%2Ffeatures%2Ffake%3Apull",
             OciHttpResponse {
                 status: 200,
                 headers: HashMap::new(),
@@ -2361,7 +3192,7 @@ esac
 
         let transport = FakeTransport::default();
         transport.add(
-            "https://issuer.example/token?service=registry.example.com",
+            "https://issuer.example/token?service=registry.example.com&scope=",
             OciHttpResponse {
                 status: 503,
                 headers: HashMap::new(),
@@ -2379,7 +3210,7 @@ esac
 
         let transport = FakeTransport::default();
         transport.add(
-            "https://issuer.example/token?service=registry.example.com",
+            "https://issuer.example/token?service=registry.example.com&scope=",
             OciHttpResponse {
                 status: 200,
                 headers: HashMap::new(),
@@ -2397,7 +3228,7 @@ esac
 
         let transport = FakeTransport::default();
         transport.add(
-            "https://issuer.example/token?service=registry.example.com",
+            "https://issuer.example/token?service=registry.example.com&scope=",
             OciHttpResponse {
                 status: 200,
                 headers: HashMap::new(),
@@ -2415,7 +3246,7 @@ esac
 
         let transport = FakeTransport::default();
         transport.add(
-            "https://issuer.example/token?service=registry.example.com&scope=repository:fake:pull",
+            "https://issuer.example/token?service=registry.example.com&scope=repository%3Afake%3Apull",
             OciHttpResponse {
                 status: 200,
                 headers: HashMap::new(),
@@ -2433,7 +3264,7 @@ esac
 
         let transport = FakeTransport::default();
         transport.add(
-            "https://issuer.example/token?service=registry.example.com",
+            "https://issuer.example/token?service=registry.example.com&scope=",
             OciHttpResponse {
                 status: 200,
                 headers: HashMap::new(),
@@ -2448,6 +3279,24 @@ esac
         )
         .expect("lowercase bearer token");
         assert_eq!(token, "lowercase-token");
+
+        let transport = FakeTransport::default();
+        transport.add(
+            "https://issuer.example/token?service=registry.example.com&scope=",
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: br#"{"token":"","access_token":"fallback-token"}"#.to_vec(),
+            },
+        );
+        let token = fetch_bearer_token(
+            &transport,
+            "registry.example.com",
+            r#"BEARER realm="https://issuer.example/token""#,
+            None,
+        )
+        .expect("uppercase bearer access token fallback");
+        assert_eq!(token, "fallback-token");
     }
 
     #[test]
@@ -2468,7 +3317,7 @@ esac
             },
         );
         transport.add(
-            "https://issuer.example/token?service=registry.example.com",
+            "https://issuer.example/token?service=registry.example.com&scope=",
             OciHttpResponse {
                 status: 200,
                 headers: HashMap::new(),
@@ -2496,11 +3345,541 @@ esac
         assert_eq!(
             *transport.seen_authorization.lock().expect("seen"),
             vec![
-                Some("Basic dXNlcjpzZWNyZXQ=".to_string()),
+                None,
                 Some("Basic dXNlcjpzZWNyZXQ=".to_string()),
                 Some("Bearer registry-token".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn registry_auth_retries_basic_and_reports_malformed_bearer_challenges() {
+        let mut env_guard = crate::test_support::process_env_guard();
+        env_guard.set_var("DEVCONTAINERS_OCI_AUTH", "registry.example.com|user|secret");
+        let registry_url = "https://registry.example.com/v2/acme/features/fake/manifests/latest";
+        let transport = FakeTransport::default();
+        transport.add(
+            registry_url,
+            OciHttpResponse {
+                status: 401,
+                headers: HashMap::from([(
+                    "www-authenticate".to_string(),
+                    "Basic realm=\"registry.example.com\"".to_string(),
+                )]),
+                body: Vec::new(),
+            },
+        );
+        transport.add(
+            registry_url,
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: Vec::new(),
+            },
+        );
+
+        let response = registry_get(&transport, "registry.example.com", registry_url, &[])
+            .expect("Basic auth retry");
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            *transport.seen_authorization.lock().expect("authorization"),
+            vec![None, Some("Basic dXNlcjpzZWNyZXQ=".to_string())]
+        );
+
+        env_guard.remove_var("DEVCONTAINERS_OCI_AUTH");
+        env_guard.set_var(
+            "DOCKER_CONFIG",
+            crate::test_support::unique_temp_dir("devcontainer-oci-no-basic-auth"),
+        );
+        let transport = FakeTransport::default();
+        transport.add(
+            registry_url,
+            OciHttpResponse {
+                status: 401,
+                headers: HashMap::from([(
+                    "www-authenticate".to_string(),
+                    "Basic realm=\"registry.example.com\"".to_string(),
+                )]),
+                body: Vec::new(),
+            },
+        );
+        let response = registry_get(&transport, "registry.example.com", registry_url, &[])
+            .expect("Basic challenge without configured credentials");
+        assert_eq!(response.status, 401);
+        assert_eq!(
+            *transport.seen_authorization.lock().expect("authorization"),
+            vec![None]
+        );
+
+        let transport = FakeTransport::default();
+        transport.add(
+            registry_url,
+            OciHttpResponse {
+                status: 401,
+                headers: HashMap::from([("www-authenticate".to_string(), "Bearer".to_string())]),
+                body: Vec::new(),
+            },
+        );
+        let error = registry_get(&transport, "registry.example.com", registry_url, &[])
+            .expect_err("malformed Bearer challenge");
+        assert!(error.contains("Unsupported OCI auth challenge"), "{error}");
+    }
+
+    #[test]
+    fn validates_oci_auth_realm_policy_and_configured_mappings() {
+        let mappings =
+            parse_cross_origin_auth_hosts(&["REGISTRY.EXAMPLE:8443=AUTH.EXAMPLE:9443".to_string()])
+                .expect("valid mapping");
+        assert_eq!(
+            mappings.get("registry.example:8443"),
+            Some(&std::collections::HashSet::from([
+                "auth.example:9443".to_string()
+            ]))
+        );
+
+        for (realm, registry_url, expected) in [
+            (
+                "https://registry.example/token",
+                "https://registry.example/v2/",
+                true,
+            ),
+            (
+                "https://REGISTRY.EXAMPLE/token",
+                "https://registry.example/v2/",
+                true,
+            ),
+            (
+                "http://registry.example/token",
+                "https://registry.example/v2/",
+                false,
+            ),
+            (
+                "http://localhost:5000/token",
+                "https://localhost:5000/v2/",
+                true,
+            ),
+            (
+                "https://auth.docker.io/token",
+                "https://registry-1.docker.io/v2/",
+                true,
+            ),
+            (
+                "https://gitlab.com/jwt/auth",
+                "https://registry.gitlab.com/v2/",
+                true,
+            ),
+            (
+                "https://auth.docker.io.attacker.example/token",
+                "https://registry-1.docker.io/v2/",
+                false,
+            ),
+        ] {
+            assert_eq!(
+                is_allowed_token_service_realm(realm, registry_url, &[]),
+                expected,
+                "{realm} for {registry_url}"
+            );
+        }
+        assert!(is_allowed_token_service_realm(
+            "https://auth.example/token",
+            "https://registry.example/v2/",
+            &["registry.example=auth.example".to_string()],
+        ));
+        assert!(!is_allowed_token_service_realm(
+            "not-a-url",
+            "https://registry.example/v2/",
+            &[],
+        ));
+        assert!(!is_allowed_token_service_realm(
+            "ftp://auth.example/token",
+            "https://registry.example/v2/",
+            &[],
+        ));
+        assert!(!is_allowed_token_service_realm(
+            "https://auth.example/token",
+            "not-a-url",
+            &[],
+        ));
+
+        let ipv6_mappings = parse_cross_origin_auth_hosts(&[
+            "[::1]=[::1]".to_string(),
+            "[::1]:443=[::2]:444".to_string(),
+        ])
+        .expect("IPv6 mappings");
+        assert_eq!(
+            ipv6_mappings.get("[::1]"),
+            Some(&std::collections::HashSet::from([
+                "[::1]".to_string(),
+                "[::2]:444".to_string(),
+            ]))
+        );
+
+        for invalid in [
+            "auth.example",
+            "=auth.example",
+            "registry.example=",
+            "https://registry.example=auth.example",
+            "registry.example=https://auth.example",
+            "registry.example/path=auth.example",
+            "[::1=auth.example",
+            "[]=auth.example",
+            "[gg::1]=auth.example",
+            "[::1]suffix=auth.example",
+            "2001:db8::1=auth.example",
+            "bad!host=auth.example",
+            "registry.example:=auth.example",
+            "registry.example:not-a-port=auth.example",
+            "registry.example:99999=auth.example",
+        ] {
+            assert!(
+                parse_cross_origin_auth_hosts(&[invalid.to_string()]).is_err(),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_origin_binding_preserves_scheme_ports_and_docker_aliases() {
+        assert_eq!(registry_scheme("localhost"), "http");
+        assert_eq!(registry_scheme("LOCALHOST:5000"), "http");
+        assert_eq!(registry_scheme("127.0.0.1:5000"), "https");
+        assert_eq!(registry_scheme("registry.example:5000"), "https");
+        assert!(is_oci_registry_origin(
+            "http://localhost:5000/v2/",
+            "localhost:5000"
+        ));
+        assert!(!is_oci_registry_origin(
+            "https://localhost:5000/v2/",
+            "localhost:5000"
+        ));
+        assert!(!is_oci_registry_origin(
+            "http://registry.example/v2/",
+            "registry.example"
+        ));
+        assert!(is_oci_registry_origin(
+            "https://registry.example:443/v2/",
+            "registry.example"
+        ));
+        assert!(!is_oci_registry_origin(
+            "https://registry.example:8443/v2/",
+            "registry.example"
+        ));
+
+        for expected in [
+            "registry-1.docker.io",
+            "registry.docker.io",
+            "docker.io",
+            "index.docker.io",
+        ] {
+            for candidate in [
+                "registry-1.docker.io",
+                "registry.docker.io",
+                "docker.io",
+                "index.docker.io",
+            ] {
+                assert!(
+                    is_oci_registry_origin(&format!("https://{candidate}/v2/"), expected),
+                    "{candidate} should be an HTTPS alias for {expected}"
+                );
+            }
+        }
+        assert!(!is_oci_registry_origin(
+            "http://registry-1.docker.io/v2/",
+            "docker.io"
+        ));
+        assert!(!is_oci_registry_origin(
+            "https://registry-1.docker.io:8443/v2/",
+            "docker.io"
+        ));
+        assert!(!is_oci_registry_origin("not-a-url", "registry.example"));
+        assert!(!is_oci_registry_origin(
+            "https://registry.example/v2/",
+            "bad registry"
+        ));
+    }
+
+    #[test]
+    fn hardened_redirected_challenge_does_not_reuse_registry_credentials() {
+        let mut env_guard = crate::test_support::process_env_guard();
+        env_guard.set_var(
+            "DEVCONTAINERS_OCI_AUTH",
+            "registry.example|user|registry-secret",
+        );
+        let transport = FakeTransport::default();
+        let registry_url = "https://registry.example/v2/test/manifests/latest";
+        transport.add_redirected(
+            registry_url,
+            "https://uploads.example/v2/test/manifests/latest",
+            OciHttpResponse {
+                status: 401,
+                headers: HashMap::from([(
+                    "www-authenticate".to_string(),
+                    r#"Bearer realm="https://uploads.example/token",service="uploads.example",scope="repository:test:pull""#.to_string(),
+                )]),
+                body: Vec::new(),
+            },
+        );
+        transport.add(
+            "https://uploads.example/token?service=uploads.example&scope=repository%3Atest%3Apull",
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: br#"{"token":"upload-token"}"#.to_vec(),
+            },
+        );
+        transport.add(
+            registry_url,
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: Vec::new(),
+            },
+        );
+
+        let options = crate::commands::common::OciAuthOptions {
+            hardening: true,
+            allowed_cross_origin_auth_hosts: Vec::new(),
+        };
+        crate::commands::common::with_oci_auth_options(options, || {
+            let response = registry_get(&transport, "registry.example", registry_url, &[])
+                .expect("anonymous redirected challenge");
+            assert_eq!(response.status, 200);
+            assert_eq!(
+                crate::commands::common::oci_auth_diagnostics_json().expect("diagnostics")
+                    ["registryRedirectWouldPreventCredentialForwarding"],
+                true
+            );
+        });
+
+        assert_eq!(
+            *transport.seen_authorization.lock().expect("authorization"),
+            vec![None, None, Some("Bearer upload-token".to_string()),]
+        );
+    }
+
+    #[test]
+    fn hardened_cross_origin_basic_challenge_never_receives_registry_credentials() {
+        let mut env_guard = crate::test_support::process_env_guard();
+        env_guard.set_var(
+            "DEVCONTAINERS_OCI_AUTH",
+            "registry.example|user|registry-secret",
+        );
+        let transport = FakeTransport::default();
+        let upload_url = "https://uploads.example/upload";
+        transport.add(
+            upload_url,
+            OciHttpResponse {
+                status: 401,
+                headers: HashMap::from([(
+                    "www-authenticate".to_string(),
+                    "Basic realm=\"uploads.example\"".to_string(),
+                )]),
+                body: Vec::new(),
+            },
+        );
+
+        let options = crate::commands::common::OciAuthOptions {
+            hardening: true,
+            allowed_cross_origin_auth_hosts: Vec::new(),
+        };
+        let response = crate::commands::common::with_oci_auth_options(options, || {
+            registry_get(
+                &transport,
+                "registry.example",
+                upload_url,
+                &[(
+                    "authorization".to_string(),
+                    "Bearer original-registry-token".to_string(),
+                )],
+            )
+        })
+        .expect("blocked Basic challenge response");
+
+        assert_eq!(response.status, 401);
+        assert_eq!(
+            *transport.seen_authorization.lock().expect("authorization"),
+            vec![None]
+        );
+    }
+
+    #[test]
+    fn legacy_auth_records_all_shadow_diagnostics() {
+        let transport = FakeTransport::default();
+        let registry_url = "https://registry.example/v2/test/manifests/latest";
+        transport.add_redirected(
+            registry_url,
+            "https://challenge.example/v2/test/manifests/latest",
+            OciHttpResponse {
+                status: 401,
+                headers: HashMap::from([(
+                    "www-authenticate".to_string(),
+                    r#"Bearer realm="http://localhost:5000/token",service="challenge.example",scope="repository:test:pull""#.to_string(),
+                )]),
+                body: Vec::new(),
+            },
+        );
+        let token_url =
+            "http://localhost:5000/token?service=challenge.example&scope=repository%3Atest%3Apull";
+        transport.add_redirected(
+            token_url,
+            "http://localhost:5001/token",
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: br#"{"token":"shadow-token"}"#.to_vec(),
+            },
+        );
+        transport.add(
+            registry_url,
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: Vec::new(),
+            },
+        );
+
+        crate::commands::common::with_oci_auth_options(
+            crate::commands::common::OciAuthOptions::default(),
+            || {
+                let response = registry_get(&transport, "registry.example", registry_url, &[])
+                    .expect("legacy shadow request");
+                assert_eq!(response.status, 200);
+                assert_eq!(
+                    crate::commands::common::oci_auth_diagnostics_json(),
+                    Some(json!({
+                        "authLookupWouldBeBlocked": true,
+                        "registryRedirectWouldPreventCredentialForwarding": true,
+                        "authServerRedirect": true,
+                    }))
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn legacy_refresh_exchange_and_anonymous_retry_follow_redirects() {
+        let transport = FakeTransport::default();
+        let realm = "https://auth.example/token";
+        let token_url =
+            "https://auth.example/token?service=registry.example&scope=repository%3Atest%3Apull";
+        transport.add_redirected(
+            realm,
+            "https://auth.example/refresh-redirect",
+            OciHttpResponse {
+                status: 403,
+                headers: HashMap::new(),
+                body: Vec::new(),
+            },
+        );
+        transport.add_redirected(
+            token_url,
+            "https://auth.example/anonymous-redirect",
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: br#"{"token":"anonymous-token"}"#.to_vec(),
+            },
+        );
+
+        let token = crate::commands::common::with_oci_auth_options(
+            crate::commands::common::OciAuthOptions::default(),
+            || {
+                super::fetch_bearer_token_for_registry_url(
+                    &transport,
+                    "registry.example",
+                    "https://registry.example/v2/",
+                    r#"Bearer realm="https://auth.example/token",service="registry.example",scope="repository:test:pull""#,
+                    None,
+                    Some("refresh-token"),
+                    true,
+                )
+            },
+        )
+        .expect("legacy anonymous token fallback");
+
+        assert_eq!(token, "anonymous-token");
+        assert_eq!(
+            *transport.seen_methods.lock().expect("methods"),
+            vec!["POST", "GET"]
+        );
+        assert_eq!(crate::commands::common::oci_auth_diagnostics_json(), None);
+    }
+
+    #[test]
+    fn encodes_token_service_query_values_without_overwriting_existing_parameters() {
+        assert_eq!(
+            token_service_url(
+                "https://registry.example/token?existing=value#fragment",
+                "registry.example&injected=service#fragment",
+                Some("repository:test:pull&injected=scope#fragment"),
+            )
+            .expect("token URL"),
+            "https://registry.example/token?existing=value&service=registry.example%26injected%3Dservice%23fragment&scope=repository%3Atest%3Apull%26injected%3Dscope%23fragment"
+        );
+        assert_eq!(
+            token_service_url(
+                "https://registry.example/token?%73ervice=old&%73%63%6f%70%65=old&%73%63%6F%70%65=old&ser+vice=kept&bad%GG=kept",
+                "registry example",
+                None,
+            )
+            .expect("encoded query keys"),
+            "https://registry.example/token?ser+vice=kept&bad%GG=kept&service=registry+example&scope="
+        );
+    }
+
+    #[test]
+    fn hardened_auth_rejects_untrusted_realms_and_token_redirects() {
+        let options = crate::commands::common::OciAuthOptions {
+            hardening: true,
+            allowed_cross_origin_auth_hosts: Vec::new(),
+        };
+        crate::commands::common::with_oci_auth_options(options, || {
+            let transport = FakeTransport::default();
+            let error = fetch_bearer_token(
+                &transport,
+                "registry.example",
+                r#"Bearer realm="https://attacker.example/token""#,
+                Some("Basic secret"),
+            )
+            .expect_err("untrusted realm");
+            assert!(error.contains("untrusted realm"), "{error}");
+            assert!(transport
+                .seen_authorization
+                .lock()
+                .expect("seen")
+                .is_empty());
+        });
+
+        let options = crate::commands::common::OciAuthOptions {
+            hardening: true,
+            allowed_cross_origin_auth_hosts: vec!["registry.example=auth.example".to_string()],
+        };
+        crate::commands::common::with_oci_auth_options(options, || {
+            let transport = FakeTransport::default();
+            transport.add(
+                "https://auth.example/token?service=registry.example&scope=",
+                OciHttpResponse {
+                    status: 302,
+                    headers: HashMap::from([(
+                        "location".to_string(),
+                        "https://attacker.example/token".to_string(),
+                    )]),
+                    body: Vec::new(),
+                },
+            );
+            let error = fetch_bearer_token(
+                &transport,
+                "registry.example",
+                r#"Bearer realm="https://auth.example/token""#,
+                Some("Basic secret"),
+            )
+            .expect_err("token redirect");
+            assert!(error.contains("redirected"), "{error}");
+            assert_eq!(
+                *transport.seen_authorization.lock().expect("seen"),
+                vec![Some("Basic secret".to_string())]
+            );
+        });
     }
 
     #[test]
@@ -2534,10 +3913,7 @@ esac
             let seen = transport.seen_authorization.lock().expect("seen");
             seen.last().cloned().flatten()
         };
-        assert_eq!(
-            last_authorization.as_deref(),
-            Some("Basic dXNlcjp0b2tlbg==")
-        );
+        assert_eq!(last_authorization.as_deref(), None);
         assert_eq!(super::env_oci_auth("other.example.com"), None);
         env_guard.set_var(
             "DEVCONTAINERS_OCI_AUTH",
@@ -2551,6 +3927,7 @@ esac
             configured_basic_authorization("ghcr.io").as_deref(),
             Some("Basic eC1hY2Nlc3MtdG9rZW46Z2l0aHViLXRva2Vu")
         );
+        assert_eq!(super::configured_refresh_token("ghcr.io"), None);
         let transport = FakeTransport::default();
         transport.add(
             "https://ghcr.io/v2/",
@@ -2569,7 +3946,7 @@ esac
                 .expect("seen")
                 .last()
                 .and_then(|value| value.as_deref()),
-            Some("Basic eC1hY2Nlc3MtdG9rZW46Z2l0aHViLXRva2Vu")
+            None
         );
         env_guard.remove_var("GITHUB_TOKEN");
 
@@ -2587,12 +3964,12 @@ esac
         )
         .expect("identity config");
         assert_eq!(
-            configured_bearer_authorization("registry.example.com").as_deref(),
-            Some("Bearer identity-1")
+            super::configured_authorization("registry.example.com").as_deref(),
+            None
         );
         assert_eq!(
-            super::configured_authorization("registry.example.com").as_deref(),
-            Some("Bearer identity-1")
+            super::configured_refresh_token("registry.example.com").as_deref(),
+            Some("identity-1")
         );
 
         fs::write(
@@ -2654,6 +4031,82 @@ esac
     }
 
     #[test]
+    fn environment_oci_auth_selects_only_a_well_formed_matching_context() {
+        let mut env_guard = crate::test_support::process_env_guard();
+        env_guard.set_var(
+            "DEVCONTAINERS_OCI_AUTH",
+            "first.example|first-user|first-token,second.example|second-user|second-token",
+        );
+
+        assert_eq!(
+            super::env_oci_auth("first.example"),
+            Some(super::basic_authorization("first-user", "first-token"))
+        );
+        assert_eq!(
+            super::env_oci_auth("second.example"),
+            Some(super::basic_authorization("second-user", "second-token"))
+        );
+        assert_eq!(super::env_oci_auth("missing.example"), None);
+
+        env_guard.set_var(
+            "DEVCONTAINERS_OCI_AUTH",
+            "broken,registry.example|user,registry.example||secret,registry.example|user|,registry.example|user|secret|tail,registry.example|right-user|right-token",
+        );
+        assert_eq!(
+            super::env_oci_auth("registry.example"),
+            Some(super::basic_authorization("right-user", "right-token"))
+        );
+    }
+
+    #[test]
+    fn github_token_auth_is_limited_to_the_public_github_host() {
+        let mut env_guard = crate::test_support::process_env_guard();
+        let config_dir = crate::test_support::unique_temp_dir("devcontainer-oci-github-host");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        env_guard.set_var("DOCKER_CONFIG", &config_dir);
+        env_guard.set_var("GITHUB_TOKEN", "github-token");
+
+        env_guard.remove_var("GITHUB_HOST");
+        assert_eq!(
+            configured_basic_authorization("ghcr.io"),
+            Some(super::basic_authorization("x-access-token", "github-token"))
+        );
+        assert_eq!(super::configured_refresh_token("ghcr.io"), None);
+
+        env_guard.set_var("GITHUB_HOST", "github.com");
+        assert_eq!(
+            configured_basic_authorization("ghcr.io"),
+            Some(super::basic_authorization("x-access-token", "github-token"))
+        );
+        assert_eq!(super::configured_refresh_token("ghcr.io"), None);
+
+        env_guard.set_var("GITHUB_HOST", "github.enterprise.example");
+        assert_eq!(configured_basic_authorization("ghcr.io"), None);
+        assert_eq!(super::configured_refresh_token("ghcr.io"), None);
+
+        fs::write(
+            config_dir.join("config.json"),
+            json!({
+                "auths": {
+                    "ghcr.io": {
+                        "identitytoken": "docker-refresh-token"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("docker config");
+        env_guard.set_var("GITHUB_HOST", "github.com");
+        assert_eq!(configured_basic_authorization("ghcr.io"), None);
+        assert_eq!(
+            super::configured_refresh_token("ghcr.io").as_deref(),
+            Some("docker-refresh-token")
+        );
+
+        let _ = fs::remove_dir_all(config_dir);
+    }
+
+    #[test]
     fn configured_registry_authorization_reads_credential_helpers_and_restores_env() {
         let mut env_guard = crate::test_support::process_env_guard();
         let config_dir = crate::test_support::unique_temp_dir("devcontainer-oci-helper-config");
@@ -2666,6 +4119,10 @@ esac
         crate::test_support::write_executable_script(
             &bin_dir.join("docker-credential-fails"),
             "#!/bin/sh\ncat >/dev/null\nexit 1\n",
+        );
+        crate::test_support::write_executable_script(
+            &bin_dir.join("docker-credential-token"),
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"Username\":\"<token>\",\"Secret\":\"helper-refresh\"}'\n",
         );
         let _tools = TestToolDirGuard::new(&bin_dir);
         env_guard.set_var("DOCKER_CONFIG", &config_dir);
@@ -2696,6 +4153,11 @@ esac
         assert_eq!(auth.username.as_deref(), Some("helper-user"));
         assert_eq!(auth.secret.as_deref(), Some("helper-secret"));
         assert!(credential_helper_auth("fails", "registry.example.com").is_none());
+        let auth =
+            credential_helper_auth("token", "registry.example.com").expect("token helper auth");
+        assert_eq!(auth.refresh_token.as_deref(), Some("helper-refresh"));
+        assert_eq!(auth.username, None);
+        assert_eq!(auth.secret, None);
 
         for auth in [
             "not-base64".to_string(),
@@ -2742,6 +4204,106 @@ esac
     }
 
     #[test]
+    fn identity_token_is_exchanged_as_refresh_token_then_retried_anonymously() {
+        let mut env_guard = crate::test_support::process_env_guard();
+        let config_dir = crate::test_support::unique_temp_dir("devcontainer-oci-refresh-token");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        env_guard.set_var("DOCKER_CONFIG", &config_dir);
+        fs::write(
+            config_dir.join("config.json"),
+            json!({
+                "auths": {
+                    "registry.example.com": {
+                        "identitytoken": "refresh secret&value"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("docker config");
+
+        let transport = FakeTransport::default();
+        let registry_url = "https://registry.example.com/v2/acme/features/fake/manifests/latest";
+        transport.add(
+            registry_url,
+            OciHttpResponse {
+                status: 403,
+                headers: HashMap::from([(
+                    "www-authenticate".to_string(),
+                    r#"Bearer realm="https://registry.example.com/token?existing=value",service="registry.example.com",scope="repository:acme/features/fake:pull""#.to_string(),
+                )]),
+                body: Vec::new(),
+            },
+        );
+        transport.add(
+            "https://registry.example.com/token?existing=value",
+            OciHttpResponse {
+                status: 403,
+                headers: HashMap::new(),
+                body: Vec::new(),
+            },
+        );
+        transport.add(
+            "https://registry.example.com/token?existing=value&service=registry.example.com&scope=repository%3Aacme%2Ffeatures%2Ffake%3Apull",
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: br#"{"access_token":"registry-token"}"#.to_vec(),
+            },
+        );
+        transport.add(
+            registry_url,
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: Vec::new(),
+            },
+        );
+
+        let options = crate::commands::common::OciAuthOptions {
+            hardening: true,
+            allowed_cross_origin_auth_hosts: Vec::new(),
+        };
+        let response = crate::commands::common::with_oci_auth_options(options, || {
+            registry_get(&transport, "registry.example.com", registry_url, &[])
+        })
+        .expect("refresh-token auth");
+
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            *transport.seen_methods.lock().expect("methods"),
+            vec!["GET", "POST", "GET", "GET"]
+        );
+        let bodies = transport.seen_bodies.lock().expect("bodies");
+        assert_eq!(
+            String::from_utf8_lossy(&bodies[1]),
+            "client_id=devcontainer&grant_type=refresh_token&service=registry.example.com&scope=repository%3Aacme%2Ffeatures%2Ffake%3Apull&refresh_token=refresh+secret%26value"
+        );
+        assert!(bodies[2].is_empty());
+        let headers = transport.seen_headers.lock().expect("headers");
+        assert_eq!(
+            headers[1],
+            vec![
+                ("User-Agent".to_string(), "devcontainer".to_string()),
+                (
+                    "Content-Type".to_string(),
+                    "application/x-www-form-urlencoded".to_string(),
+                ),
+            ]
+        );
+        assert_eq!(
+            headers[2],
+            vec![("User-Agent".to_string(), "devcontainer".to_string())]
+        );
+        assert_eq!(
+            *transport.seen_authorization.lock().expect("authorization"),
+            vec![None, None, None, Some("Bearer registry-token".to_string())]
+        );
+
+        let _ = fs::remove_dir_all(config_dir);
+    }
+
+    #[test]
     fn curl_transport_reports_process_failures_without_network() {
         let missing_bin_dir = crate::test_support::unique_temp_dir("devcontainer-oci-curl-missing");
         fs::create_dir_all(&missing_bin_dir).expect("missing bin dir");
@@ -2750,6 +4312,10 @@ esac
             let error = CurlTransport
                 .get("https://registry.example.com/v2/", &[])
                 .expect_err("curl spawn failure");
+            assert!(!error.is_empty());
+            let error = CurlTransport
+                .get_no_redirects("https://registry.example.com/token", &[])
+                .expect_err("curl spawn failure without redirects");
             assert!(!error.is_empty());
         }
         let _ = fs::remove_dir_all(missing_bin_dir);
@@ -2768,6 +4334,221 @@ esac
 
         assert!(error.contains("curl failed"), "{error}");
         let _ = fs::remove_dir_all(bin_dir);
+    }
+
+    #[test]
+    fn curl_transport_disables_curlrc_before_any_other_argument() {
+        let bin_dir = crate::test_support::unique_temp_dir("devcontainer-oci-curlrc");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        crate::test_support::write_executable_script(
+            &bin_dir.join("curl"),
+            r#"#!/bin/sh
+test "$1" = "-q" || {
+    echo "curlrc was not disabled first" >&2
+    exit 77
+}
+shift
+headers=
+body=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -D) headers="$2"; shift 2 ;;
+        -o) body="$2"; shift 2 ;;
+        -H|-w|--max-time) shift 2 ;;
+        *) shift ;;
+    esac
+done
+printf 'HTTP/1.1 200 OK\r\n\r\n' > "$headers"
+: > "$body"
+printf '200'
+"#,
+        );
+        let _tools = TestToolDirGuard::new(&bin_dir);
+
+        let response = CurlTransport
+            .get_no_redirects("https://registry.example.com/token", &[])
+            .expect("curlrc-independent response");
+
+        assert_eq!(response.status, 200);
+        let _ = fs::remove_dir_all(bin_dir);
+    }
+
+    #[test]
+    fn curl_transport_preserves_effective_url_and_redirect_state() {
+        let bin_dir = crate::test_support::unique_temp_dir("devcontainer-oci-curl-effective-url");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        crate::test_support::write_executable_script(
+            &bin_dir.join("curl"),
+            r#"#!/bin/sh
+headers=
+body=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -D) headers="$2"; shift 2 ;;
+        -o) body="$2"; shift 2 ;;
+        -H|-w|--max-time) shift 2 ;;
+        *) shift ;;
+    esac
+done
+printf 'HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer realm="https://challenge.example/token"\r\n\r\n' > "$headers"
+: > "$body"
+printf '401\nhttps://challenge.example/v2/test/manifests/latest\n1'
+"#,
+        );
+        let _tools = TestToolDirGuard::new(&bin_dir);
+
+        let exchange = CurlTransport
+            .get_exchange("https://registry.example/v2/test/manifests/latest", &[])
+            .expect("curl exchange");
+
+        assert_eq!(exchange.response.status, 401);
+        assert_eq!(
+            exchange.response_url,
+            "https://challenge.example/v2/test/manifests/latest"
+        );
+        assert!(exchange.redirected);
+        let _ = fs::remove_dir_all(bin_dir);
+    }
+
+    #[test]
+    fn curl_transport_supports_post_modes_and_rejects_header_newlines() {
+        let error = CurlTransport
+            .get(
+                "https://registry.example/v2/",
+                &[(
+                    "Authorization".to_string(),
+                    "Bearer token\nleak".to_string(),
+                )],
+            )
+            .expect_err("header newline");
+        assert_eq!(error, "OCI HTTP headers must not contain newlines");
+
+        let bin_dir = crate::test_support::unique_temp_dir("devcontainer-oci-curl-post");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        crate::test_support::write_executable_script(
+            &bin_dir.join("curl"),
+            r#"#!/bin/sh
+headers=
+body=
+request_headers=
+request_body=
+url=
+redirects=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -D) headers="$2"; shift 2 ;;
+        -o) body="$2"; shift 2 ;;
+        -H) request_headers="${2#@}"; shift 2 ;;
+        --data-binary) request_body="${2#@}"; shift 2 ;;
+        -w|--max-time) shift 2 ;;
+        -L) redirects=1; shift ;;
+        -q|-sS) shift ;;
+        *) url="$1"; shift ;;
+    esac
+done
+if [ -n "$request_headers" ]; then
+    test "$(cat "$request_headers")" = "Content-Type: application/x-www-form-urlencoded" || exit 71
+fi
+if [ -n "$request_body" ]; then
+    test "$(cat "$request_body")" = "refresh_token=secret" || exit 72
+fi
+printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n' > "$headers"
+printf '{"token":"curl-token"}' > "$body"
+printf '200\n%s\n%s' "$url" "$redirects"
+"#,
+        );
+        let _tools = TestToolDirGuard::new(&bin_dir);
+        let headers = [(
+            "Content-Type".to_string(),
+            "application/x-www-form-urlencoded".to_string(),
+        )];
+
+        let exchange = CurlTransport
+            .get_no_redirects_exchange("https://registry.example/token", &[])
+            .expect("GET exchange without redirects");
+        assert!(!exchange.redirected);
+        assert_eq!(exchange.response_url, "https://registry.example/token");
+
+        let exchange = CurlTransport
+            .post_no_redirects_exchange(
+                "https://registry.example/token",
+                &headers,
+                b"refresh_token=secret",
+            )
+            .expect("POST exchange without redirects");
+        assert!(!exchange.redirected);
+        assert_eq!(exchange.response.body, br#"{"token":"curl-token"}"#);
+
+        let exchange = CurlTransport
+            .post_exchange(
+                "https://registry.example/token",
+                &headers,
+                b"refresh_token=secret",
+            )
+            .expect("POST exchange with redirects");
+        assert!(exchange.redirected);
+        assert_eq!(exchange.response.status, 200);
+        let _ = fs::remove_dir_all(bin_dir);
+    }
+
+    #[test]
+    fn localhost_registry_uses_plain_http_for_tags_manifests_and_blobs() {
+        let reference = OciReference {
+            original: "localhost:5000/acme/features/fake:1.0.0".to_string(),
+            resource: "localhost:5000/acme/features/fake".to_string(),
+            registry: "localhost:5000".to_string(),
+            repository: "acme/features/fake".to_string(),
+            tag: Some("1.0.0".to_string()),
+            digest: None,
+        };
+        let transport = FakeTransport::default();
+        transport.add(
+            "http://localhost:5000/v2/acme/features/fake/tags/list",
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: br#"{"tags":["1.0.0"]}"#.to_vec(),
+            },
+        );
+        assert_eq!(
+            registry_tags(&reference, &transport).expect("localhost tags"),
+            vec!["1.0.0"]
+        );
+
+        let layer = layer_bytes(false);
+        let layer_digest = format!("sha256:{}", super::sha256_digest(&layer));
+        let manifest = json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "layers": [{
+                "mediaType": "application/vnd.devcontainers.layer.v1+tar",
+                "digest": layer_digest,
+                "size": layer.len(),
+            }],
+            "annotations": {
+                "dev.containers.metadata": json!({"id":"fake","version":"1.0.0"}).to_string(),
+            },
+        });
+        transport.add(
+            "http://localhost:5000/v2/acme/features/fake/manifests/1.0.0",
+            manifest_response(&manifest),
+        );
+        let artifact =
+            registry_feature_artifact(&reference, &transport).expect("localhost manifest");
+        transport.add(
+            &format!("http://localhost:5000/v2/acme/features/fake/blobs/{layer_digest}"),
+            OciHttpResponse {
+                status: 200,
+                headers: HashMap::new(),
+                body: layer,
+            },
+        );
+        let destination = crate::test_support::unique_temp_dir("devcontainer-localhost-oci-layer");
+        materialize_feature_artifact_with_transport(&artifact, &destination, &transport)
+            .expect("localhost blob");
+        assert!(destination.join("install.sh").is_file());
+
+        let _ = fs::remove_dir_all(destination);
     }
 
     #[test]
@@ -3571,13 +5352,27 @@ esac
 
     #[test]
     fn auth_and_header_helpers_parse_registry_shapes() {
+        let challenge = challenge_parameters(
+            r#"realm="https://example.com/token",service="registry",scope="repository:acme/features:pull,push",note="escaped \"quote\", comma",path="C:\\tmp""#,
+        );
         assert_eq!(
-            challenge_parameters(
-                r#"realm="https://example.com/token",service="registry",scope="repo:pull""#
-            )
-            .get("scope")
-            .map(String::as_str),
-            Some("repo:pull")
+            challenge.get("scope").map(String::as_str),
+            Some("repository:acme/features:pull,push")
+        );
+        assert_eq!(
+            challenge.get("note").map(String::as_str),
+            Some("escaped \"quote\", comma")
+        );
+        assert_eq!(challenge.get("path").map(String::as_str), Some("C:\\tmp"));
+        assert_eq!(
+            challenge_parameters("realm=https://example.com/token")
+                .get("realm")
+                .map(String::as_str),
+            Some("https://example.com/token")
+        );
+        assert_eq!(
+            super::challenge_parameter_value(r#""trailing\""#),
+            "trailing\\"
         );
         assert_eq!(
             parse_http_headers("HTTP/1.1 401 Unauthorized\r\nx-old: ignored\r\n\r\nHTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:abc\r\nContent-Type: application/json\r\n\r\n")

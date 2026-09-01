@@ -15,8 +15,17 @@ use super::{
     inspect_image_details_without_variant, parse_image_inspect_details, prepare_up_image,
     prepare_up_image_for_platform, should_update_remote_user_uid, uid_update_base_image,
     uid_update_details, uid_update_local_image_name, uid_update_run_args_user,
-    unique_uid_update_build_context,
+    unique_uid_update_build_context, UID_UPDATE_DOCKERFILE,
 };
+
+#[test]
+fn uid_update_dockerfile_defines_from_arguments_to_avoid_buildkit_lint() {
+    assert_eq!(
+        from_args_without_default(UID_UPDATE_DOCKERFILE),
+        Vec::<String>::new(),
+        "updateUID.Dockerfile must not trigger BuildKit's InvalidDefaultArgInFrom check"
+    );
+}
 
 #[test]
 fn remote_user_uid_update_defaults_to_on_for_supported_platforms() {
@@ -914,4 +923,55 @@ impl Drop for FakeEngineFixture {
 
 fn image_inspect_output(user: &str, platform: Option<&str>) -> String {
     format!("{user}\n{}\n", platform.unwrap_or_default())
+}
+
+fn from_args_without_default(dockerfile: &str) -> Vec<String> {
+    let mut preamble_args_with_defaults = Vec::new();
+    let mut offenders = Vec::new();
+    let mut before_first_from = true;
+
+    for raw_line in dockerfile.lines() {
+        let line = raw_line.trim();
+        if let Some(arg) = line.strip_prefix("ARG ") {
+            if before_first_from {
+                if let Some((name, default)) = arg.split_once('=') {
+                    if !name.trim().is_empty() && !default.trim().is_empty() {
+                        preamble_args_with_defaults.push(name.trim().to_string());
+                    }
+                }
+            }
+            continue;
+        }
+
+        if let Some(from) = line.strip_prefix("FROM ") {
+            let image = from
+                .strip_prefix("--platform=")
+                .and_then(|value| value.split_once(' ').map(|(_, image)| image))
+                .unwrap_or(from);
+            if let Some(argument) = image
+                .strip_prefix("${")
+                .and_then(|value| value.split_once('}').map(|(name, _)| name))
+                .or_else(|| {
+                    image.strip_prefix('$').map(|value| {
+                        value
+                            .split(|character: char| {
+                                !character.is_ascii_alphanumeric() && character != '_'
+                            })
+                            .next()
+                            .unwrap_or(value)
+                    })
+                })
+            {
+                if !preamble_args_with_defaults
+                    .iter()
+                    .any(|candidate| candidate == argument)
+                {
+                    offenders.push(argument.to_string());
+                }
+            }
+            before_first_from = false;
+        }
+    }
+
+    offenders
 }

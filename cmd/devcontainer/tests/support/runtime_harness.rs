@@ -91,6 +91,27 @@ impl RuntimeHarness {
         fs::read_to_string(self.log_dir.join("invocations.log")).expect("invocations")
     }
 
+    pub(crate) fn read_engine_argv(&self) -> Vec<Vec<String>> {
+        let contents =
+            fs::read_to_string(self.log_dir.join("engine-argv.log")).expect("engine argv log");
+        let mut invocations = Vec::new();
+        let mut current = None;
+        for line in contents.lines() {
+            match line {
+                "BEGIN" => current = Some(Vec::new()),
+                "END" => invocations.push(current.take().expect("argv block")),
+                _ => current.as_mut().expect("argv entry inside block").push(
+                    line.strip_prefix('[')
+                        .and_then(|line| line.strip_suffix(']'))
+                        .expect("bracketed argv entry")
+                        .to_string(),
+                ),
+            }
+        }
+        assert!(current.is_none(), "unterminated argv block");
+        invocations
+    }
+
     pub(crate) fn read_exec_log(&self) -> String {
         fs::read_to_string(self.log_dir.join("exec.log")).expect("exec log")
     }

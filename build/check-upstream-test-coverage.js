@@ -98,6 +98,16 @@ function validateCoverageMap(report) {
 			fail(`Coverage map entry ${suite.upstreamTest} must list native tests for status ${suite.status}.`);
 		}
 
+		if (suite.unportedScenarios !== undefined) {
+			if (suite.status !== 'partial') {
+				fail(`Coverage map entry ${suite.upstreamTest} may only enumerate unported scenarios when marked partial.`);
+			}
+			if (!Array.isArray(suite.unportedScenarios) || suite.unportedScenarios.length === 0
+				|| suite.unportedScenarios.some(scenario => typeof scenario !== 'string' || !scenario.trim())) {
+				fail(`Coverage map entry ${suite.upstreamTest} must contain a non-empty unportedScenarios string array.`);
+			}
+		}
+
 		for (const nativeTest of suite.nativeTests) {
 			const absoluteNativePath = path.join(repositoryRoot, nativeTest);
 			if (!fs.existsSync(absoluteNativePath)) {
@@ -132,8 +142,11 @@ function renderMarkdown(report) {
 	];
 
 	for (const suite of [...report.suites].sort((left, right) => left.upstreamTest.localeCompare(right.upstreamTest))) {
+		const unportedScenarios = suite.unportedScenarios?.length
+			? ` Still unported: ${suite.unportedScenarios.join('; ')}.`
+			: '';
 		lines.push(
-			`| \`${suite.upstreamTest}\` | ${suite.status} | ${suite.nativeTests.length ? suite.nativeTests.map(test => `\`${test}\``).join('<br>') : 'none'} | ${suite.notes || ''} |`
+			`| \`${suite.upstreamTest}\` | ${suite.status} | ${suite.nativeTests.length ? suite.nativeTests.map(test => `\`${test}\``).join('<br>') : 'none'} | ${suite.notes || ''}${unportedScenarios} |`
 		);
 	}
 

@@ -4,6 +4,8 @@ mod support;
 
 #[path = "cli_smoke/collections.rs"]
 mod collections;
+#[path = "cli_smoke/global_options.rs"]
+mod global_options;
 #[path = "cli_smoke/help.rs"]
 mod help;
 #[path = "cli_smoke/lockfile.rs"]

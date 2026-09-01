@@ -1,5 +1,5 @@
 {
-	"upstreamCommit": "65f98a518a1f62355a08e6f38e9d6bfb9a0d8ac9",
+	"upstreamCommit": "5dc7533314b5ba7ec3875c30143dfe1aec644870",
 	"suites": [
 		{
 			"upstreamTest": "upstream/src/test/cli.build.test.ts",
@@ -95,10 +95,16 @@
 			"upstreamTest": "upstream/src/test/container-features/containerFeaturesOCI.test.ts",
 			"status": "partial",
 			"nativeTests": [
+				"cmd/devcontainer/src/commands/collections/oci.rs",
 				"cmd/devcontainer/src/commands/collections/tests/features.rs",
 				"cmd/devcontainer/tests/network_smoke/ghcr.rs"
 			],
-			"notes": "Published Feature identifiers and metadata are covered, and a dedicated GHCR network smoke test now verifies real anonymous OCI manifest resolution for a public Feature, but broader OCI fetch coverage is still partial."
+			"notes": "Native tests cover localhost HTTP and remote HTTPS registry selection, fixture-backed OCI manifest and tag handling, plus anonymous GHCR manifest and build smoke paths; they do not cover the upstream suite's full identifier and live-pull matrix.",
+			"unportedScenarios": [
+				"collection-reference normalization and malformed collection-path rejection",
+				"the complete valid and invalid reference matrix for duplicate tags, invalid names, missing paths, and digest validation",
+				"the upstream ruby artifact's live canonical-manifest and downloaded-file-list assertions"
+			]
 		},
 		{
 			"upstreamTest": "upstream/src/test/container-features/containerFeaturesOCIPush.test.ts",
@@ -158,12 +164,18 @@
 		},
 		{
 			"upstreamTest": "upstream/src/test/container-features/generateFeaturesConfig.test.ts",
-			"status": "covered",
+			"status": "partial",
 			"nativeTests": [
 				"cmd/devcontainer/src/commands/configuration/tests/read.rs",
-				"cmd/devcontainer/tests/runtime_build_smoke/features.rs"
+				"cmd/devcontainer/tests/runtime_build_smoke/features.rs",
+				"cmd/devcontainer/src/runtime/container/uid_update/tests.rs"
 			],
-			"notes": "Native read-configuration coverage validates generated local Feature sets, option values, published Feature customizations, metadata merge behavior, and runtime build smoke coverage validates install materialization."
+			"notes": "Native tests cover local Feature sets and options, fixture-backed published customizations, install materialization, and the updateUID.Dockerfile InvalidDefaultArgInFrom regression.",
+			"unportedScenarios": [
+				"the upstream-exact Feature layer Dockerfile text, built-in user-home environment commands, and _DEV_CONTAINERS_BASE_IMAGE preamble",
+				"published customization resolution through live OCI metadata instead of the native fixture and manual catalog",
+				"the skipFeatureAutoMapping behavior used by the upstream customization scenario"
+			]
 		},
 		{
 			"upstreamTest": "upstream/src/test/container-features/generateLockfile.test.ts",
@@ -282,6 +294,18 @@
 				"cmd/devcontainer/tests/runtime_lifecycle_smoke/commands.rs"
 			],
 			"notes": "Native unit and fake-engine smoke coverage validates non-root HOME fallback, root HOME acceptance, explicit remote HOME precedence, and lifecycle/exec injection."
+		},
+		{
+			"upstreamTest": "upstream/src/test/httpOCIRegistry.test.ts",
+			"status": "partial",
+			"nativeTests": [
+				"cmd/devcontainer/src/commands/collections/oci.rs"
+			],
+			"notes": "Native OCI coverage validates hardened same-origin and trusted cross-origin token realms, origin-bound credential forwarding, cross-origin Basic suppression, shadow diagnostics, refresh-token POST with anonymous retry, query encoding, and redirect refusal for hardened token requests. Cached bearer-token reuse and redirect-without-challenge coverage remain partial.",
+			"unportedScenarios": [
+				"cached bearer-token reuse and invalidation, including redirected challenges that must not populate the original registry cache",
+				"an explicit cross-origin registry redirect that returns successfully without an authentication challenge"
+			]
 		},
 		{
 			"upstreamTest": "upstream/src/test/imageMetadata.test.ts",

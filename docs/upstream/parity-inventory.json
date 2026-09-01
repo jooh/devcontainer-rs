@@ -1,13 +1,32 @@
 {
-	"upstreamCommit": "65f98a518a1f62355a08e6f38e9d6bfb9a0d8ac9",
+	"upstreamCommit": "5dc7533314b5ba7ec3875c30143dfe1aec644870",
 	"sourcePath": "upstream/src/spec-node/devContainersSpecCLI.ts",
 	"summary": {
 		"commandPathsTotal": 20,
 		"commandPathsDeclared": 20,
-		"optionsTotal": 204,
-		"optionsReferenced": 204,
+		"optionsTotal": 206,
+		"optionsReferenced": 206,
 		"optionsMissing": 0
 	},
+	"globalOptions": [
+		{
+			"name": "allow-cross-origin-auth-host",
+			"sourceReferenced": true,
+			"evidence": [
+				"cmd/devcontainer/src/cli.rs",
+				"cmd/devcontainer/src/commands/collections/mod.rs",
+				"cmd/devcontainer/src/commands/collections/oci.rs"
+			]
+		},
+		{
+			"name": "oci-auth-hardening",
+			"sourceReferenced": true,
+			"evidence": [
+				"cmd/devcontainer/src/cli.rs",
+				"cmd/devcontainer/src/commands/collections/mod.rs"
+			]
+		}
+	],
 	"commands": [
 		{
 			"group": null,
@@ -227,7 +246,6 @@
 					"sourceReferenced": true,
 					"evidence": [
 						"cmd/devcontainer/src/commands/configuration/read.rs",
-						"cmd/devcontainer/src/runtime/container/engine_run.rs",
 						"cmd/devcontainer/src/runtime/context/workspace.rs",
 						"cmd/devcontainer/src/runtime/exec.rs",
 						"cmd/devcontainer/src/runtime/mounts.rs"
@@ -712,6 +730,7 @@
 					"sourceReferenced": true,
 					"evidence": [
 						"cmd/devcontainer/src/commands/configuration/upgrade.rs",
+						"cmd/devcontainer/src/runtime/build.rs",
 						"cmd/devcontainer/src/runtime/compose/args.rs"
 					]
 				},

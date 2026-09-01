@@ -1,6 +1,5 @@
 //! Shared command-line parsing and runtime option helpers.
 
-#[cfg(test)]
 use std::cell::RefCell;
 use std::collections::HashMap;
 #[cfg(not(test))]
@@ -10,6 +9,7 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value};
 
+use crate::cli::OciAuthOptions;
 use crate::config;
 use crate::process_runner::{ProcessLogLevel, ProcessRequest};
 
@@ -32,6 +32,41 @@ pub(crate) const DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR: &str =
     "DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR";
 pub(crate) const DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY: &str =
     "DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY";
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct OciAuthDiagnostics {
+    pub(crate) auth_lookup_would_be_blocked: bool,
+    pub(crate) registry_redirect_would_prevent_credential_forwarding: bool,
+    pub(crate) auth_server_redirect: bool,
+    attempted: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OciAuthDiagnostic {
+    AuthLookupWouldBeBlocked,
+    RegistryRedirectWouldPreventCredentialForwarding,
+    AuthServerRedirect,
+}
+thread_local! {
+    static CURRENT_OCI_AUTH_OPTIONS: RefCell<OciAuthOptions> = RefCell::new(OciAuthOptions::default());
+    static CURRENT_OCI_AUTH_DIAGNOSTICS: RefCell<OciAuthDiagnostics> = RefCell::new(OciAuthDiagnostics::default());
+}
+
+struct OciAuthOptionsGuard {
+    previous: OciAuthOptions,
+    previous_diagnostics: OciAuthDiagnostics,
+}
+
+impl Drop for OciAuthOptionsGuard {
+    fn drop(&mut self) {
+        CURRENT_OCI_AUTH_OPTIONS.with(|current| {
+            *current.borrow_mut() = std::mem::take(&mut self.previous);
+        });
+        CURRENT_OCI_AUTH_DIAGNOSTICS.with(|current| {
+            *current.borrow_mut() = self.previous_diagnostics;
+        });
+    }
+}
 
 #[cfg(test)]
 thread_local! {
@@ -111,6 +146,75 @@ pub(crate) fn env_default_option_value(
 
 pub(crate) fn config_option_value(args: &[String]) -> Option<String> {
     env_default_option_value(args, "--config", DEVCONTAINER_CONFIG)
+}
+
+pub(crate) fn current_oci_auth_options() -> OciAuthOptions {
+    CURRENT_OCI_AUTH_OPTIONS.with(|current| current.borrow().clone())
+}
+
+pub(crate) fn mark_oci_auth_attempted() {
+    CURRENT_OCI_AUTH_DIAGNOSTICS.with(|current| current.borrow_mut().attempted = true);
+}
+
+pub(crate) fn record_oci_auth_diagnostic(diagnostic: OciAuthDiagnostic) {
+    CURRENT_OCI_AUTH_DIAGNOSTICS.with(|current| {
+        let mut current = current.borrow_mut();
+        current.attempted = true;
+        let (flag, message) = match diagnostic {
+            OciAuthDiagnostic::AuthLookupWouldBeBlocked => (
+                &mut current.auth_lookup_would_be_blocked,
+                "Authentication lookup would be blocked by OCI auth hardening.",
+            ),
+            OciAuthDiagnostic::RegistryRedirectWouldPreventCredentialForwarding => (
+                &mut current.registry_redirect_would_prevent_credential_forwarding,
+                "A registry redirect would prevent forwarding registry credentials with OCI auth hardening.",
+            ),
+            OciAuthDiagnostic::AuthServerRedirect => (
+                &mut current.auth_server_redirect,
+                "Authentication server redirected a token request.",
+            ),
+        };
+        if !*flag {
+            *flag = true;
+            eprintln!("[httpOci] OCI auth diagnostics: {message}");
+        }
+    });
+}
+
+pub(crate) fn oci_auth_diagnostics_json() -> Option<Value> {
+    CURRENT_OCI_AUTH_DIAGNOSTICS.with(|current| {
+        let current = *current.borrow();
+        current.attempted.then(|| {
+            serde_json::json!({
+                "authLookupWouldBeBlocked": current.auth_lookup_would_be_blocked,
+                "registryRedirectWouldPreventCredentialForwarding": current.registry_redirect_would_prevent_credential_forwarding,
+                "authServerRedirect": current.auth_server_redirect,
+            })
+        })
+    })
+}
+
+pub(crate) fn attach_oci_auth_diagnostics(payload: &mut Value) {
+    let Some(diagnostics) = oci_auth_diagnostics_json() else {
+        return;
+    };
+    if let Some(payload) = payload.as_object_mut() {
+        payload.insert("ociAuthDiagnostics".to_string(), diagnostics);
+    }
+}
+
+pub(crate) fn with_oci_auth_options<T>(
+    options: OciAuthOptions,
+    operation: impl FnOnce() -> T,
+) -> T {
+    let previous = CURRENT_OCI_AUTH_OPTIONS.with(|current| current.replace(options));
+    let previous_diagnostics =
+        CURRENT_OCI_AUTH_DIAGNOSTICS.with(|current| current.replace(OciAuthDiagnostics::default()));
+    let _guard = OciAuthOptionsGuard {
+        previous,
+        previous_diagnostics,
+    };
+    operation()
 }
 
 pub(crate) fn env_default_choice_value(
@@ -545,17 +649,19 @@ mod tests {
     use crate::test_support::unique_temp_dir;
 
     use super::{
-        env_default_bool_option, env_default_choice_value, env_default_option_value, has_flag,
-        parse_array_option_values, parse_bool_option, parse_json_string_array_option,
-        parse_option_value, parse_option_values, parse_remote_env, remote_env_overrides,
-        runtime_options, runtime_process_request, secrets_env, test_env_defaults,
-        validate_choice_option, validate_number_option, validate_option_values,
-        validate_paired_options, validate_runtime_env_defaults, DEVCONTAINER_BUILDKIT,
-        DEVCONTAINER_CONTAINER_DATA_FOLDER, DEVCONTAINER_DOTFILES_INSTALL_COMMAND,
-        DEVCONTAINER_DOTFILES_REPOSITORY, DEVCONTAINER_DOTFILES_TARGET_PATH,
-        DEVCONTAINER_GPU_AVAILABILITY, DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR,
-        DEVCONTAINER_MOUNT_WORKSPACE_GIT_ROOT, DEVCONTAINER_UPDATE_REMOTE_USER_UID_DEFAULT,
-        DEVCONTAINER_USER_DATA_FOLDER, DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY,
+        attach_oci_auth_diagnostics, env_default_bool_option, env_default_choice_value,
+        env_default_option_value, has_flag, mark_oci_auth_attempted, parse_array_option_values,
+        parse_bool_option, parse_json_string_array_option, parse_option_value, parse_option_values,
+        parse_remote_env, record_oci_auth_diagnostic, remote_env_overrides, runtime_options,
+        runtime_process_request, secrets_env, test_env_defaults, validate_choice_option,
+        validate_number_option, validate_option_values, validate_paired_options,
+        validate_runtime_env_defaults, with_oci_auth_options, OciAuthDiagnostic, OciAuthOptions,
+        DEVCONTAINER_BUILDKIT, DEVCONTAINER_CONTAINER_DATA_FOLDER,
+        DEVCONTAINER_DOTFILES_INSTALL_COMMAND, DEVCONTAINER_DOTFILES_REPOSITORY,
+        DEVCONTAINER_DOTFILES_TARGET_PATH, DEVCONTAINER_GPU_AVAILABILITY,
+        DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR, DEVCONTAINER_MOUNT_WORKSPACE_GIT_ROOT,
+        DEVCONTAINER_UPDATE_REMOTE_USER_UID_DEFAULT, DEVCONTAINER_USER_DATA_FOLDER,
+        DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY,
     };
 
     #[test]
@@ -584,6 +690,34 @@ mod tests {
         assert_eq!(parse_option_value(&args, "--after"), None);
         assert!(!has_flag(&args, "--after"));
         assert!(validate_option_values(&args, &["--after"]).is_ok());
+    }
+
+    #[test]
+    fn oci_auth_diagnostics_are_shared_deduplicated_and_attached_to_json() {
+        with_oci_auth_options(OciAuthOptions::default(), || {
+            mark_oci_auth_attempted();
+            record_oci_auth_diagnostic(OciAuthDiagnostic::AuthLookupWouldBeBlocked);
+            record_oci_auth_diagnostic(OciAuthDiagnostic::AuthLookupWouldBeBlocked);
+            record_oci_auth_diagnostic(
+                OciAuthDiagnostic::RegistryRedirectWouldPreventCredentialForwarding,
+            );
+            record_oci_auth_diagnostic(OciAuthDiagnostic::AuthServerRedirect);
+
+            let mut payload = json!({"outcome":"success"});
+            attach_oci_auth_diagnostics(&mut payload);
+            assert_eq!(
+                payload["ociAuthDiagnostics"],
+                json!({
+                    "authLookupWouldBeBlocked": true,
+                    "registryRedirectWouldPreventCredentialForwarding": true,
+                    "authServerRedirect": true,
+                })
+            );
+        });
+
+        let mut unrelated_payload = json!({"outcome":"success"});
+        attach_oci_auth_diagnostics(&mut unrelated_payload);
+        assert!(unrelated_payload.get("ociAuthDiagnostics").is_none());
     }
 
     #[test]

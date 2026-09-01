@@ -85,6 +85,14 @@ pub(crate) fn effective_engine_program(args: &[String]) -> String {
     requested_engine_program(args).unwrap_or_else(|| "docker".to_string())
 }
 
+pub(crate) fn is_wslc(args: &[String]) -> bool {
+    run_engine(args, vec!["-v".to_string()])
+        .map(|result| {
+            result.status_code == 0 && result.stdout.to_ascii_lowercase().contains("wslc")
+        })
+        .unwrap_or(false)
+}
+
 pub(crate) fn requested_compose_program(args: &[String]) -> Option<String> {
     common::env_default_option_value(
         args,
@@ -233,7 +241,7 @@ mod tests {
 
     use super::{
         compose_request, default_compose_subcommand_available, engine_request, is_build_request,
-        normalize_process_error, pull_always_requested, run_compose, run_engine,
+        is_wslc, normalize_process_error, pull_always_requested, run_compose, run_engine,
         run_engine_streaming, stderr_or_stdout,
     };
 
@@ -298,6 +306,23 @@ mod tests {
         assert_eq!(request.log_level, ProcessLogLevel::Debug);
         assert_eq!(request.env.get("COLUMNS").map(String::as_str), Some("160"));
         assert_eq!(request.env.get("LINES").map(String::as_str), Some("48"));
+    }
+
+    #[test]
+    fn detects_wslc_from_the_engine_version_banner() {
+        let root = crate::test_support::unique_temp_dir("devcontainer-wslc-engine-test");
+        std::fs::create_dir_all(&root).expect("root");
+        let engine = root.join("docker");
+        crate::test_support::write_executable_script(
+            &engine,
+            "#!/bin/sh\nprintf 'wslc version 0.1.0\\n'\n",
+        );
+
+        assert!(is_wslc(&[
+            "--docker-path".to_string(),
+            engine.display().to_string(),
+        ]));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

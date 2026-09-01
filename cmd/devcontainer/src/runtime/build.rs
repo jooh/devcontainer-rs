@@ -13,6 +13,12 @@ use super::context::ResolvedConfig;
 use super::engine;
 use super::paths::{resolve_relative, unique_temp_path};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BuildStage {
+    Intermediate,
+    Terminal,
+}
+
 pub(crate) fn runtime_image_name(
     resolved: &ResolvedConfig,
     args: &[String],
@@ -40,6 +46,7 @@ pub(crate) fn runtime_image_name(
 }
 
 pub(crate) fn build_image(resolved: &ResolvedConfig, args: &[String]) -> Result<String, String> {
+    validate_build_output_options(args)?;
     if compose::uses_compose_config(&resolved.configuration) {
         return compose::build_service(resolved, args);
     }
@@ -104,7 +111,7 @@ pub(crate) fn build_image(resolved: &ResolvedConfig, args: &[String]) -> Result<
         );
         lockfile_validation?;
         let base_image = format!("{image_name}-base");
-        build_base_image(resolved, args, &base_image)?;
+        build_base_image(resolved, args, &base_image, BuildStage::Intermediate)?;
         let installations = &feature_support.installations;
         let built = build_feature_image(args, &image_name, &base_image, installations, false)?;
         maybe_push_image(args, &built)?;
@@ -118,7 +125,7 @@ pub(crate) fn build_image(resolved: &ResolvedConfig, args: &[String]) -> Result<
         return Ok(built);
     }
 
-    build_base_image(resolved, args, &image_name)?;
+    build_base_image(resolved, args, &image_name, BuildStage::Terminal)?;
     maybe_push_image(args, &image_name)?;
     Ok(image_name)
 }
@@ -127,6 +134,7 @@ fn build_base_image(
     resolved: &ResolvedConfig,
     args: &[String],
     image_name: &str,
+    stage: BuildStage,
 ) -> Result<(), String> {
     let build = resolved
         .configuration
@@ -145,7 +153,7 @@ fn build_base_image(
     let context = build.get("context").and_then(Value::as_str).unwrap_or(".");
     let dockerfile_path = resolve_relative(config_root, dockerfile);
     let context_path = resolve_relative(config_root, context);
-    let mut engine_args = engine_build_args(args, image_name, &dockerfile_path);
+    let mut engine_args = engine_build_args(args, image_name, &dockerfile_path, stage);
     if engine::pull_always_requested(args) {
         engine_args.push("--pull".to_string());
     }
@@ -178,7 +186,8 @@ pub(crate) fn build_feature_image(
     fs::create_dir_all(&build_context_dir).map_err(|error| error.to_string())?;
     let dockerfile_path =
         write_feature_dockerfile(args, &build_context_dir, base_image, installations)?;
-    let mut engine_args = engine_build_args(args, image_name, &dockerfile_path);
+    let mut engine_args =
+        engine_build_args(args, image_name, &dockerfile_path, BuildStage::Terminal);
     if pull_base_image {
         engine_args.push("--pull".to_string());
     }
@@ -206,7 +215,7 @@ fn pull_source_image_if_requested(args: &[String], image_name: &str) -> Result<(
 }
 
 fn maybe_push_image(args: &[String], image_name: &str) -> Result<(), String> {
-    if !common::has_flag(args, "--push") {
+    if !push_requested(args) {
         return Ok(());
     }
 
@@ -216,6 +225,17 @@ fn maybe_push_image(args: &[String], image_name: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn validate_build_output_options(args: &[String]) -> Result<(), String> {
+    if common::parse_option_value(args, "--output").is_some() && push_requested(args) {
+        return Err("--push true cannot be used with --output.".to_string());
+    }
+    Ok(())
+}
+
+fn push_requested(args: &[String]) -> bool {
+    common::parse_bool_option(args, "--push", false)
 }
 
 fn write_feature_dockerfile(
@@ -261,7 +281,12 @@ fn dockerfile_prefix(args: &[String]) -> &'static str {
     }
 }
 
-fn engine_build_args(args: &[String], image_name: &str, dockerfile_path: &Path) -> Vec<String> {
+fn engine_build_args(
+    args: &[String],
+    image_name: &str,
+    dockerfile_path: &Path,
+    stage: BuildStage,
+) -> Vec<String> {
     let mut engine_args = vec![
         "build".to_string(),
         "--tag".to_string(),
@@ -295,6 +320,12 @@ fn engine_build_args(args: &[String], image_name: &str, dockerfile_path: &Path) 
     if let Some(platform) = common::parse_option_value(args, "--platform") {
         engine_args.push("--platform".to_string());
         engine_args.push(platform);
+    }
+    if let (BuildStage::Terminal, Some(output)) =
+        (stage, common::parse_option_value(args, "--output"))
+    {
+        engine_args.push("--output".to_string());
+        engine_args.push(output);
     }
     engine_args
 }
@@ -378,7 +409,7 @@ mod tests {
     use super::{
         build_base_image, build_feature_image, build_image, default_image_name, dockerfile_prefix,
         engine_build_args, has_build_definition, is_buildx_cache_to_inline, maybe_push_image,
-        runtime_image_name, shell_single_quote,
+        runtime_image_name, shell_single_quote, BuildStage,
     };
 
     fn contains_arg(args: &[String], expected: &str) -> bool {
@@ -442,7 +473,12 @@ mod tests {
 
     #[test]
     fn engine_build_args_adds_inline_cache_build_arg_by_default() {
-        let engine_args = engine_build_args(&[], "example/native:test", Path::new("Dockerfile"));
+        let engine_args = engine_build_args(
+            &[],
+            "example/native:test",
+            Path::new("Dockerfile"),
+            BuildStage::Terminal,
+        );
 
         assert!(contains_arg(&engine_args, "--build-arg"));
         assert!(contains_arg(&engine_args, "BUILDKIT_INLINE_CACHE=1"));
@@ -457,6 +493,7 @@ mod tests {
             ],
             "example/native:test",
             Path::new("Dockerfile"),
+            BuildStage::Terminal,
         );
 
         assert!(contains_arg(&engine_args, "--cache-to"));
@@ -476,6 +513,7 @@ mod tests {
             ],
             "example/native:test",
             Path::new("Dockerfile"),
+            BuildStage::Terminal,
         );
 
         assert!(contains_arg(&engine_args, "--cache-to"));
@@ -497,6 +535,7 @@ mod tests {
             ],
             "example/native:test",
             Path::new("Dockerfile"),
+            BuildStage::Terminal,
         );
 
         assert!(!contains_arg(&engine_args, "BUILDKIT_INLINE_CACHE=1"));
@@ -518,6 +557,7 @@ mod tests {
             ],
             "example/native:test",
             Path::new("Dockerfile"),
+            BuildStage::Terminal,
         );
 
         assert!(contains_arg(&engine_args, "--no-cache"));
@@ -1057,6 +1097,7 @@ exit 0
             &resolved,
             &["--docker-path".to_string(), engine.display().to_string()],
             "example/native:test",
+            BuildStage::Terminal,
         )
         .expect("base image");
 
@@ -1085,6 +1126,7 @@ exit 0
             &resolved,
             &["--docker-path".to_string(), engine.display().to_string()],
             "example/native:test",
+            BuildStage::Terminal,
         )
         .expect("base image");
 

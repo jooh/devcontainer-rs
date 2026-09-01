@@ -33,7 +33,7 @@ pub(super) fn reject_unsupported_build_options(args: &[String]) -> Result<(), St
         return Err("--cache-to not supported for compose builds.".to_string());
     }
     if compose_build_option_is_present(args, "--platform")
-        || compose_build_option_is_present(args, "--push")
+        || common::parse_bool_option(args, "--push", false)
     {
         return Err("--platform or --push not supported.".to_string());
     }

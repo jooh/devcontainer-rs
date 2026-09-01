@@ -23,10 +23,16 @@ use super::{
 };
 use crate::runtime::context::ResolvedConfig;
 use crate::test_support::{
-    init_git_repo, process_env_guard, unique_temp_dir, write_executable_script,
+    init_git_repo, process_env_guard, unique_temp_dir, write_executable_script, ProcessEnvGuard,
 };
 
 static PATH_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn compose_project_name_env_guard() -> ProcessEnvGuard {
+    let mut env_guard = process_env_guard();
+    env_guard.remove_var("COMPOSE_PROJECT_NAME");
+    env_guard
+}
 
 struct PathEnvGuard {
     original: Option<std::ffi::OsString>,
@@ -318,6 +324,7 @@ services:
 
 #[test]
 fn compose_project_name_defaults_to_workspace_devcontainer() {
+    let _env_guard = compose_project_name_env_guard();
     let root = unique_temp_dir("devcontainer-compose-test");
     let compose_file = root.join(".devcontainer").join("docker-compose.yml");
     fs::create_dir_all(compose_file.parent().expect("compose dir")).expect("compose dir");
@@ -334,6 +341,7 @@ fn compose_project_name_defaults_to_workspace_devcontainer() {
 
 #[test]
 fn compose_project_name_defaults_to_compose_working_dir_basename() {
+    let _env_guard = compose_project_name_env_guard();
     let root = unique_temp_dir("devcontainer-compose-test");
     let compose_file = root.join("docker-compose.yml");
     fs::create_dir_all(&root).expect("compose dir");
@@ -350,6 +358,7 @@ fn compose_project_name_defaults_to_compose_working_dir_basename() {
 
 #[test]
 fn compose_project_name_reports_missing_files_and_sanitizes_names() {
+    let _env_guard = compose_project_name_env_guard();
     assert_eq!(sanitize_project_name("My Project! 123"), "myproject123");
     assert!(compose_project_name(&[])
         .expect_err("missing compose files should fail")
@@ -358,6 +367,7 @@ fn compose_project_name_reports_missing_files_and_sanitizes_names() {
 
 #[test]
 fn compose_project_name_reads_dotenv_and_reports_read_errors() {
+    let _env_guard = compose_project_name_env_guard();
     let root = unique_temp_dir("devcontainer-compose-test");
     let compose_dir = root.join("compose");
     let compose_file = compose_dir.join("docker-compose.yml");
@@ -385,6 +395,7 @@ fn compose_project_name_reads_dotenv_and_reports_read_errors() {
 
 #[test]
 fn compose_project_name_reads_top_level_name_from_compose_files() {
+    let _env_guard = compose_project_name_env_guard();
     let root = unique_temp_dir("devcontainer-compose-test");
     let compose_file = root.join("docker-compose.yml");
     fs::create_dir_all(&root).expect("compose dir");
@@ -403,7 +414,7 @@ fn compose_project_name_reads_top_level_name_from_compose_files() {
 
 #[test]
 fn compose_project_name_honors_environment_before_files() {
-    let mut env_guard = process_env_guard();
+    let mut env_guard = compose_project_name_env_guard();
     env_guard.set_var("COMPOSE_PROJECT_NAME", "Env Project!");
 
     let project_name = compose_project_name(&[]).expect("env project name");
@@ -413,7 +424,7 @@ fn compose_project_name_honors_environment_before_files() {
 
 #[test]
 fn compose_project_name_ignores_blank_environment_values() {
-    let mut env_guard = process_env_guard();
+    let mut env_guard = compose_project_name_env_guard();
     env_guard.set_var("COMPOSE_PROJECT_NAME", "  ");
     let root = unique_temp_dir("devcontainer-compose-test");
     let compose_file = root.join("docker-compose.yml");

@@ -71,6 +71,9 @@ jobs:
       - name: Command matrix drift check
         run: node build/generate-command-matrix.js --check
 
+      - name: Generated parity artifact checks
+        run: make parity-artifact-tests check-parity-inventory check-upstream-test-coverage
+
       - name: Schema drift check
         run: node build/check-spec-drift.js
 

@@ -2,12 +2,17 @@
 
 Generated from the pinned upstream CLI command matrix and static source evidence in the Rust implementation.
 
-- Upstream commit: `65f98a518a1f62355a08e6f38e9d6bfb9a0d8ac9`
+- Upstream commit: `5dc7533314b5ba7ec3875c30143dfe1aec644870`
 - Source: `upstream/src/spec-node/devContainersSpecCLI.ts`
 - Declared upstream command paths present natively: `20/20`
-- Upstream options with a native source reference in mapped files: `204/204`
+- Upstream options with a native source reference in mapped files: `206/206`
 
 This report is a static inventory, not a semantic parity proof. A referenced option can still be only partially implemented, and command-level known gaps are called out explicitly below.
+
+## Global options
+
+- `--allow-cross-origin-auth-host`: referenced (`cmd/devcontainer/src/cli.rs`, `cmd/devcontainer/src/commands/collections/mod.rs`, `cmd/devcontainer/src/commands/collections/oci.rs`)
+- `--oci-auth-hardening`: referenced (`cmd/devcontainer/src/cli.rs`, `cmd/devcontainer/src/commands/collections/mod.rs`)
 
 ## Summary
 

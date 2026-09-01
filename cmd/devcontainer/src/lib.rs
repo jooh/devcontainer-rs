@@ -73,18 +73,38 @@ pub fn run(raw_args: Vec<String>) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    if cli::is_command_version_request(&raw_args[offset..]) {
+    let cli::ParsedGlobalOptions {
+        command_line,
+        oci_auth,
+    } = match cli::parse_global_options(&raw_args[offset..]) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
+    };
+    if command_line.is_empty() {
+        cli::print_help();
+        return ExitCode::from(2);
+    }
+
+    if cli::is_command_help_request(&command_line) {
+        cli::print_help();
+        return ExitCode::SUCCESS;
+    }
+
+    if cli::is_command_version_request(&command_line) {
         println!("{VERSION}");
         return ExitCode::SUCCESS;
     }
 
-    let command = &raw_args[offset];
+    let command = &command_line[0];
     if !cli::SUPPORTED_TOP_LEVEL_COMMANDS.contains(&command.as_str()) {
         eprintln!("Unsupported command: {command}");
         return ExitCode::from(2);
     }
 
-    let command_args = &raw_args[offset + 1..];
+    let command_args = &command_line[1..];
     let resolved_help = cli::resolve_command_help(command, command_args).expect("known command");
     let resolved_args = &command_args[resolved_help.consumed_args..];
 
@@ -111,7 +131,7 @@ pub fn run(raw_args: Vec<String>) -> ExitCode {
         return exit_code;
     }
 
-    match commands::dispatch(command, &normalized_command_args) {
+    match commands::dispatch(command, &normalized_command_args, oci_auth) {
         commands::DispatchResult::Complete(code) => code,
         commands::DispatchResult::UnsupportedNativePath => {
             cli::emit_log(log_format, "Unsupported native command path.");
@@ -237,6 +257,29 @@ mod tests {
                 "--user-data-folder".to_string(),
                 "/tmp/devcontainer-user-data".to_string(),
             ]),
+            ExitCode::from(2)
+        );
+    }
+
+    #[test]
+    fn run_accepts_global_oci_auth_options_before_the_command() {
+        assert_eq!(
+            run(vec![
+                "--oci-auth-hardening".to_string(),
+                "--allow-cross-origin-auth-host".to_string(),
+                "registry.example=auth.example".to_string(),
+                "features".to_string(),
+                "info".to_string(),
+                "--help".to_string(),
+            ]),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            run(vec!["--allow-cross-origin-auth-host=".to_string()]),
+            ExitCode::from(2)
+        );
+        assert_eq!(
+            run(vec!["--oci-auth-hardening".to_string()]),
             ExitCode::from(2)
         );
     }

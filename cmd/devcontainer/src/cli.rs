@@ -93,9 +93,11 @@ impl CommandOption {
     }
 
     fn takes_multiple_values(&self) -> bool {
-        self.description
-            .as_deref()
-            .is_some_and(|description| description.contains("[array]"))
+        self.name != "allow-cross-origin-auth-host"
+            && self
+                .description
+                .as_deref()
+                .is_some_and(|description| description.contains("[array]"))
     }
 }
 
@@ -108,6 +110,18 @@ impl CommandPositional {
 pub struct ResolvedCommandHelp<'a> {
     pub path: &'a str,
     pub consumed_args: usize,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct OciAuthOptions {
+    pub(crate) hardening: bool,
+    pub(crate) allowed_cross_origin_auth_hosts: Vec<String>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct ParsedGlobalOptions {
+    pub(crate) command_line: Vec<String>,
+    pub(crate) oci_auth: OciAuthOptions,
 }
 
 fn cli_metadata() -> &'static CliMetadata {
@@ -209,6 +223,127 @@ pub fn parse_log_format(args: &[String]) -> (&str, usize) {
         return (args[1].as_str(), 2);
     }
     ("text", 0)
+}
+
+pub(crate) fn parse_global_options(args: &[String]) -> Result<ParsedGlobalOptions, String> {
+    let mut command_line = Vec::with_capacity(args.len());
+    let mut oci_auth = OciAuthOptions::default();
+    let mut hardening_value = None;
+    let mut parsing_exec_options = false;
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        if arg == "--" || (parsing_exec_options && !arg.starts_with('-')) {
+            command_line.extend_from_slice(&args[index..]);
+            break;
+        }
+
+        if let Some(value) = arg.strip_prefix("--oci-auth-hardening=") {
+            let value = parse_global_bool_value(value)?;
+            set_oci_auth_hardening(&mut hardening_value, value)?;
+            oci_auth.hardening = value;
+            index += 1;
+            continue;
+        }
+        if arg == "--oci-auth-hardening" {
+            let value = match args
+                .get(index + 1)
+                .and_then(|value| global_bool_value(value))
+            {
+                Some(value) => {
+                    index += 1;
+                    value
+                }
+                None => true,
+            };
+            set_oci_auth_hardening(&mut hardening_value, value)?;
+            oci_auth.hardening = value;
+            index += 1;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--allow-cross-origin-auth-host=") {
+            if value.is_empty() {
+                return Err("Missing value for option: --allow-cross-origin-auth-host".to_string());
+            }
+            oci_auth
+                .allowed_cross_origin_auth_hosts
+                .push(value.to_string());
+            index += 1;
+            continue;
+        }
+        if arg == "--allow-cross-origin-auth-host" {
+            let Some(value) = args.get(index + 1).filter(|value| !value.starts_with('-')) else {
+                return Err("Missing value for option: --allow-cross-origin-auth-host".to_string());
+            };
+            oci_auth.allowed_cross_origin_auth_hosts.push(value.clone());
+            index += 2;
+            continue;
+        }
+
+        let starts_exec = command_line.is_empty() && arg == "exec";
+        command_line.push(arg.clone());
+        index += 1;
+        if starts_exec {
+            parsing_exec_options = true;
+            continue;
+        }
+
+        if parsing_exec_options && arg.starts_with('-') {
+            let additional_args = exec_option_additional_args(arg, &args[index..]);
+            if additional_args > 0 {
+                command_line.extend_from_slice(&args[index..index + additional_args]);
+                index += additional_args;
+            }
+        }
+    }
+    Ok(ParsedGlobalOptions {
+        command_line,
+        oci_auth,
+    })
+}
+
+fn parse_global_bool_value(value: &str) -> Result<bool, String> {
+    global_bool_value(value).ok_or_else(|| {
+        format!("Invalid value for option --oci-auth-hardening: {value}. Expected true or false")
+    })
+}
+
+fn global_bool_value(value: &str) -> Option<bool> {
+    match value {
+        "false" | "0" | "no" | "off" => Some(false),
+        "true" | "1" | "yes" | "on" => Some(true),
+        _ => None,
+    }
+}
+
+fn set_oci_auth_hardening(previous: &mut Option<bool>, value: bool) -> Result<(), String> {
+    if previous.is_some_and(|previous| previous != value) {
+        return Err(
+            "Option --oci-auth-hardening may not be repeated with conflicting values".to_string(),
+        );
+    }
+    *previous = Some(value);
+    Ok(())
+}
+
+fn exec_option_additional_args(arg: &str, remaining_args: &[String]) -> usize {
+    if arg.contains('=') {
+        return 0;
+    }
+    let command = command_help("exec").expect("exec command metadata");
+    let short_alias = match arg.strip_prefix('-') {
+        Some(alias) if !alias.starts_with('-') => Some(alias),
+        _ => None,
+    };
+    let Some(option) = find_command_option(command, arg, short_alias) else {
+        return 0;
+    };
+    if remaining_args.first().is_some_and(|value| {
+        value != "--"
+            && (option.takes_value() || option.accepts_explicit_boolean_value(Some(value)))
+    }) {
+        return 1;
+    }
+    0
 }
 
 pub fn emit_log(log_format: &str, message: &str) {
@@ -496,8 +631,9 @@ mod tests {
     use super::{
         cli_metadata, command_help, command_help_text, command_positionals,
         is_command_help_request, is_command_version_request, normalize_option_aliases,
-        rendered_cli_log, rendered_lines, resolve_command_help, unsupported_argument_error,
-        unsupported_argument_error_for, CommandHelp, CommandOption, CommandPositional, HelpLine,
+        parse_global_options, rendered_cli_log, rendered_lines, resolve_command_help,
+        unsupported_argument_error, unsupported_argument_error_for, CommandHelp, CommandOption,
+        CommandPositional, HelpLine, OciAuthOptions, ParsedGlobalOptions,
     };
 
     #[test]
@@ -614,6 +750,110 @@ mod tests {
             ),
             vec!["--target"]
         );
+
+        assert_eq!(
+            command_positionals(
+                "features info",
+                &[
+                    "--allow-cross-origin-auth-host".to_string(),
+                    "registry.example=auth.example".to_string(),
+                    "manifest".to_string(),
+                    "registry.example/features/demo".to_string(),
+                ],
+            ),
+            vec!["manifest", "registry.example/features/demo"]
+        );
+    }
+
+    #[test]
+    fn parses_and_removes_global_oci_auth_option_forms() {
+        let parsed = parse_global_options(&[
+            "--oci-auth-hardening=false".to_string(),
+            "--oci-auth-hardening".to_string(),
+            "false".to_string(),
+            "--allow-cross-origin-auth-host=registry.example=auth.example".to_string(),
+            "features".to_string(),
+            "--allow-cross-origin-auth-host".to_string(),
+            "registry.example=login.example".to_string(),
+            "info".to_string(),
+        ])
+        .expect("global options");
+        assert_eq!(
+            parsed,
+            ParsedGlobalOptions {
+                command_line: vec!["features".to_string(), "info".to_string()],
+                oci_auth: OciAuthOptions {
+                    hardening: false,
+                    allowed_cross_origin_auth_hosts: vec![
+                        "registry.example=auth.example".to_string(),
+                        "registry.example=login.example".to_string(),
+                    ],
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn global_oci_auth_options_report_invalid_values() {
+        for args in [
+            vec!["--allow-cross-origin-auth-host=".to_string()],
+            vec!["--allow-cross-origin-auth-host".to_string()],
+            vec![
+                "--allow-cross-origin-auth-host".to_string(),
+                "--oci-auth-hardening".to_string(),
+            ],
+            vec!["--oci-auth-hardening=maybe".to_string()],
+        ] {
+            assert!(parse_global_options(&args).is_err());
+        }
+    }
+
+    #[test]
+    fn global_oci_auth_options_reject_conflicting_boolean_values() {
+        let error = parse_global_options(&[
+            "--oci-auth-hardening".to_string(),
+            "--oci-auth-hardening=false".to_string(),
+            "up".to_string(),
+        ])
+        .expect_err("conflicting hardening values");
+
+        assert!(error.contains("conflicting values"), "{error}");
+    }
+
+    #[test]
+    fn global_oci_auth_options_stop_at_exec_payload_boundaries() {
+        for args in [
+            vec![
+                "exec".to_string(),
+                "--workspace-folder".to_string(),
+                "/workspace".to_string(),
+                "/bin/echo".to_string(),
+                "--allow-cross-origin-auth-host".to_string(),
+                "payload".to_string(),
+            ],
+            vec![
+                "exec".to_string(),
+                "--workspace-folder=/workspace".to_string(),
+                "--".to_string(),
+                "/bin/echo".to_string(),
+                "--oci-auth-hardening".to_string(),
+            ],
+            vec![
+                "exec".to_string(),
+                "--unknown".to_string(),
+                "/bin/echo".to_string(),
+            ],
+            vec![
+                "exec".to_string(),
+                "--mount-git-worktree-common-dir".to_string(),
+                "/bin/echo".to_string(),
+            ],
+        ] {
+            let parsed = parse_global_options(&args).expect("global options");
+
+            assert_eq!(parsed.command_line, args);
+            assert_eq!(parsed.oci_auth, OciAuthOptions::default());
+        }
     }
 
     #[test]
