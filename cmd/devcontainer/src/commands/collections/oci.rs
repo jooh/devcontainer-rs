@@ -827,7 +827,7 @@ fn registry_get(
         if !credentials_allowed {
             return Ok(initial_exchange.response);
         }
-        let Some(authorization) = configured_basic_authorization(registry) else {
+        let Some(authorization) = configured_registry_authorization(registry).basic else {
             return Ok(initial_exchange.response);
         };
         let mut retry_headers = safe_headers.clone();
@@ -835,19 +835,18 @@ fn registry_get(
         return transport.get(url, &retry_headers);
     }
 
-    let basic = credentials_allowed
-        .then(|| configured_basic_authorization(registry))
-        .flatten();
-    let refresh_token = credentials_allowed
-        .then(|| configured_refresh_token(registry))
-        .flatten();
+    let authorization = if credentials_allowed {
+        configured_registry_authorization(registry)
+    } else {
+        ConfiguredRegistryAuthorization::default()
+    };
     let token = fetch_bearer_token_for_registry_url(
         transport,
         registry,
         &initial_exchange.response_url,
         challenge,
-        basic.as_deref(),
-        refresh_token.as_deref(),
+        authorization.basic.as_deref(),
+        authorization.refresh_token.as_deref(),
         credentials_allowed,
     )?;
     let mut retry_headers = safe_headers;
@@ -1469,44 +1468,81 @@ fn configured_authorization(registry: &str) -> Option<String> {
     configured_basic_authorization(registry)
 }
 
+#[cfg(test)]
 fn configured_refresh_token(registry: &str) -> Option<String> {
-    if env_oci_auth(registry).is_some() {
-        return None;
-    }
-    if registry == "ghcr.io" && env::var("GITHUB_TOKEN").is_ok_and(|token| !token.is_empty()) {
-        return None;
-    }
-    docker_config_auth(registry)?.refresh_token
+    configured_registry_authorization(registry).refresh_token
 }
 
+#[cfg(test)]
 fn configured_basic_authorization(registry: &str) -> Option<String> {
-    if let Some(auth) = env_oci_auth(registry) {
-        return Some(auth);
+    configured_registry_authorization(registry).basic
+}
+
+#[derive(Default)]
+struct ConfiguredRegistryAuthorization {
+    basic: Option<String>,
+    refresh_token: Option<String>,
+}
+
+fn configured_registry_authorization(registry: &str) -> ConfiguredRegistryAuthorization {
+    if let Some(basic) = env_oci_auth(registry) {
+        return ConfiguredRegistryAuthorization {
+            basic: Some(basic),
+            refresh_token: None,
+        };
     }
-    if registry == "ghcr.io" {
-        let token = env::var("GITHUB_TOKEN").unwrap_or_default();
-        if !token.is_empty() {
-            return Some(basic_authorization("x-access-token", &token));
-        }
+    if let Some(auth) = docker_config_auth(registry) {
+        let RegistryAuth {
+            username,
+            secret,
+            refresh_token,
+        } = auth;
+        let basic = match (username, secret) {
+            (Some(username), Some(secret)) => Some(basic_authorization(&username, &secret)),
+            _ => None,
+        };
+        return ConfiguredRegistryAuthorization {
+            basic,
+            refresh_token,
+        };
     }
-    let auth = docker_config_auth(registry)?;
-    match (auth.username, auth.secret) {
-        (Some(username), Some(secret)) => Some(basic_authorization(&username, &secret)),
-        _ => None,
+    ConfiguredRegistryAuthorization {
+        basic: github_token_for_ghcr(registry)
+            .map(|token| basic_authorization("x-access-token", &token)),
+        refresh_token: None,
     }
+}
+
+fn github_token_for_ghcr(registry: &str) -> Option<String> {
+    if registry != "ghcr.io"
+        || env::var("GITHUB_HOST").is_ok_and(|host| !host.is_empty() && host != "github.com")
+    {
+        return None;
+    }
+    env::var("GITHUB_TOKEN")
+        .ok()
+        .filter(|token| !token.is_empty())
 }
 
 fn env_oci_auth(registry: &str) -> Option<String> {
     let raw = env::var("DEVCONTAINERS_OCI_AUTH").ok()?;
-    let parts = raw.splitn(3, '|').collect::<Vec<_>>();
-    let [configured_registry, username, token] = parts.as_slice() else {
-        return None;
-    };
-    if *configured_registry == registry {
+    raw.split(',').find_map(|context| {
+        let mut parts = context.split('|');
+        let configured_registry = parts.next()?;
+        let username = parts.next()?;
+        let token = parts.next()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        if configured_registry.is_empty()
+            || username.is_empty()
+            || token.is_empty()
+            || configured_registry != registry
+        {
+            return None;
+        }
         Some(basic_authorization(username, token))
-    } else {
-        None
-    }
+    })
 }
 
 #[derive(Default)]
@@ -3990,6 +4026,82 @@ esac
             assert_eq!(platform_default_credential_helper(), None);
             assert!(super::platform_default_credential_auth("registry.example.com").is_none());
         }
+
+        let _ = fs::remove_dir_all(config_dir);
+    }
+
+    #[test]
+    fn environment_oci_auth_selects_only_a_well_formed_matching_context() {
+        let mut env_guard = crate::test_support::process_env_guard();
+        env_guard.set_var(
+            "DEVCONTAINERS_OCI_AUTH",
+            "first.example|first-user|first-token,second.example|second-user|second-token",
+        );
+
+        assert_eq!(
+            super::env_oci_auth("first.example"),
+            Some(super::basic_authorization("first-user", "first-token"))
+        );
+        assert_eq!(
+            super::env_oci_auth("second.example"),
+            Some(super::basic_authorization("second-user", "second-token"))
+        );
+        assert_eq!(super::env_oci_auth("missing.example"), None);
+
+        env_guard.set_var(
+            "DEVCONTAINERS_OCI_AUTH",
+            "broken,registry.example|user,registry.example||secret,registry.example|user|,registry.example|user|secret|tail,registry.example|right-user|right-token",
+        );
+        assert_eq!(
+            super::env_oci_auth("registry.example"),
+            Some(super::basic_authorization("right-user", "right-token"))
+        );
+    }
+
+    #[test]
+    fn github_token_auth_is_limited_to_the_public_github_host() {
+        let mut env_guard = crate::test_support::process_env_guard();
+        let config_dir = crate::test_support::unique_temp_dir("devcontainer-oci-github-host");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        env_guard.set_var("DOCKER_CONFIG", &config_dir);
+        env_guard.set_var("GITHUB_TOKEN", "github-token");
+
+        env_guard.remove_var("GITHUB_HOST");
+        assert_eq!(
+            configured_basic_authorization("ghcr.io"),
+            Some(super::basic_authorization("x-access-token", "github-token"))
+        );
+        assert_eq!(super::configured_refresh_token("ghcr.io"), None);
+
+        env_guard.set_var("GITHUB_HOST", "github.com");
+        assert_eq!(
+            configured_basic_authorization("ghcr.io"),
+            Some(super::basic_authorization("x-access-token", "github-token"))
+        );
+        assert_eq!(super::configured_refresh_token("ghcr.io"), None);
+
+        env_guard.set_var("GITHUB_HOST", "github.enterprise.example");
+        assert_eq!(configured_basic_authorization("ghcr.io"), None);
+        assert_eq!(super::configured_refresh_token("ghcr.io"), None);
+
+        fs::write(
+            config_dir.join("config.json"),
+            json!({
+                "auths": {
+                    "ghcr.io": {
+                        "identitytoken": "docker-refresh-token"
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("docker config");
+        env_guard.set_var("GITHUB_HOST", "github.com");
+        assert_eq!(configured_basic_authorization("ghcr.io"), None);
+        assert_eq!(
+            super::configured_refresh_token("ghcr.io").as_deref(),
+            Some("docker-refresh-token")
+        );
 
         let _ = fs::remove_dir_all(config_dir);
     }
