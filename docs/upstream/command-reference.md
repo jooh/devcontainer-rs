@@ -2,7 +2,7 @@
 
 Generated from the pinned upstream CLI command matrix. This is a compatibility baseline, not a native behavior reference.
 
-- Upstream commit: `5dc7533314b5ba7ec3875c30143dfe1aec644870`
+- Upstream commit: `a190a3f86fe20b582c25c4dcb7bbf5fdb739ab26`
 - Source: `upstream/src/spec-node/devContainersSpecCLI.ts`
 
 ## Global Options
@@ -42,6 +42,7 @@ Options:
 - `--container-session-data-folder`
 - `--container-system-data-folder`
 - `--default-user-env-probe`
+- `--docker-arg`
 - `--docker-compose-path`
 - `--docker-path`
 - `--dotfiles-install-command`
@@ -89,6 +90,7 @@ Options:
 - `--container-session-data-folder`
 - `--container-system-data-folder`
 - `--default-user-env-probe`
+- `--docker-arg`
 - `--docker-path`
 - `--dotfiles-install-command`
 - `--dotfiles-repository`
@@ -114,6 +116,7 @@ Options:
 - `--cache-from`
 - `--cache-to`
 - `--config`
+- `--docker-arg`
 - `--docker-compose-path`
 - `--docker-path`
 - `--experimental-frozen-lockfile`
@@ -145,6 +148,7 @@ Options:
 - `--container-session-data-folder`
 - `--container-system-data-folder`
 - `--default-user-env-probe`
+- `--docker-arg`
 - `--docker-compose-path`
 - `--docker-path`
 - `--dotfiles-install-command`
@@ -175,6 +179,7 @@ Options:
 - `--additional-features`
 - `--config`
 - `--container-id`
+- `--docker-arg`
 - `--docker-compose-path`
 - `--docker-path`
 - `--id-label`
@@ -211,6 +216,7 @@ Upgrade lockfile
 
 Options:
 - `--config`
+- `--docker-arg`
 - `--docker-compose-path`
 - `--docker-path`
 - `--dry-run`
@@ -243,6 +249,7 @@ Options:
 - `--container-id`
 - `--container-system-data-folder`
 - `--default-user-env-probe`
+- `--docker-arg`
 - `--docker-compose-path`
 - `--docker-path`
 - `--id-label`

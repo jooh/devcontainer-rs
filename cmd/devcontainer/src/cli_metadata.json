@@ -1,5 +1,5 @@
 {
-	"upstreamCommit": "5dc7533314b5ba7ec3875c30143dfe1aec644870",
+	"upstreamCommit": "a190a3f86fe20b582c25c4dcb7bbf5fdb739ab26",
 	"sourcePath": "upstream/src/spec-node/devContainersSpecCLI.ts",
 	"root": {
 		"lines": [
@@ -213,6 +213,13 @@
 					"text": "  --docker-path                     Docker CLI path.  [string]",
 					"optionNames": [
 						"docker-path"
+					],
+					"positionalNames": []
+				},
+				{
+					"text": "  --docker-arg                      Global argument for the Docker CLI, inserted before the subcommand of every Docker CLI invocation (including the Docker Compose plugin, but not a separate --docker-compose-path executable). Repeat --docker-arg=VALUE for each argument.  [string]",
+					"optionNames": [
+						"docker-arg"
 					],
 					"positionalNames": []
 				},
@@ -566,6 +573,12 @@
 					"visible": true
 				},
 				{
+					"name": "docker-arg",
+					"aliases": [],
+					"description": "Global argument for the Docker CLI, inserted before the subcommand of every Docker CLI invocation (including the Docker Compose plugin, but not a separate --docker-compose-path executable). Repeat --docker-arg=VALUE for each argument.  [string]",
+					"visible": true
+				},
+				{
 					"name": "docker-compose-path",
 					"aliases": [],
 					"description": "Docker Compose CLI path.  [string]",
@@ -886,6 +899,13 @@
 					"positionalNames": []
 				},
 				{
+					"text": "  --docker-arg                     Global argument for the Docker CLI, inserted before the subcommand of every Docker CLI invocation (including the Docker Compose plugin, but not a separate --docker-compose-path executable). Repeat --docker-arg=VALUE for each argument.  [string]",
+					"optionNames": [
+						"docker-arg"
+					],
+					"positionalNames": []
+				},
+				{
 					"text": "  --container-data-folder          Container data folder where user data inside the container will be stored.  [string]",
 					"optionNames": [
 						"container-data-folder"
@@ -1068,6 +1088,12 @@
 					"name": "default-user-env-probe",
 					"aliases": [],
 					"description": "Default value for the devcontainer.json's \"userEnvProbe\".  [choices: \"none\", \"loginInteractiveShell\", \"interactiveShell\", \"loginShell\"] [default: \"loginInteractiveShell\"]",
+					"visible": true
+				},
+				{
+					"name": "docker-arg",
+					"aliases": [],
+					"description": "Global argument for the Docker CLI, inserted before the subcommand of every Docker CLI invocation (including the Docker Compose plugin, but not a separate --docker-compose-path executable). Repeat --docker-arg=VALUE for each argument.  [string]",
 					"visible": true
 				},
 				{
@@ -1272,6 +1298,13 @@
 					"positionalNames": []
 				},
 				{
+					"text": "  --docker-arg                    Global argument for the Docker CLI, inserted before the subcommand of every Docker CLI invocation (including the Docker Compose plugin, but not a separate --docker-compose-path executable). Repeat --docker-arg=VALUE for each argument.  [string]",
+					"optionNames": [
+						"docker-arg"
+					],
+					"positionalNames": []
+				},
+				{
 					"text": "  --docker-compose-path           Docker Compose CLI path.  [string]",
 					"optionNames": [
 						"docker-compose-path"
@@ -1427,6 +1460,12 @@
 					"name": "config",
 					"aliases": [],
 					"description": "devcontainer.json path. The default is to use .devcontainer/devcontainer.json or, if that does not exist, .devcontainer.json in the workspace folder.  [string]",
+					"visible": true
+				},
+				{
+					"name": "docker-arg",
+					"aliases": [],
+					"description": "Global argument for the Docker CLI, inserted before the subcommand of every Docker CLI invocation (including the Docker Compose plugin, but not a separate --docker-compose-path executable). Repeat --docker-arg=VALUE for each argument.  [string]",
 					"visible": true
 				},
 				{
@@ -1660,6 +1699,13 @@
 					"positionalNames": []
 				},
 				{
+					"text": "  --docker-arg                     Global argument for the Docker CLI, inserted before the subcommand of every Docker CLI invocation (including the Docker Compose plugin, but not a separate --docker-compose-path executable). Repeat --docker-arg=VALUE for each argument.  [string]",
+					"optionNames": [
+						"docker-arg"
+					],
+					"positionalNames": []
+				},
+				{
 					"text": "  --docker-compose-path            Docker Compose CLI path.  [string]",
 					"optionNames": [
 						"docker-compose-path"
@@ -1870,6 +1916,12 @@
 					"name": "default-user-env-probe",
 					"aliases": [],
 					"description": "Default value for the devcontainer.json's \"userEnvProbe\".  [choices: \"none\", \"loginInteractiveShell\", \"interactiveShell\", \"loginShell\"] [default: \"loginInteractiveShell\"]",
+					"visible": true
+				},
+				{
+					"name": "docker-arg",
+					"aliases": [],
+					"description": "Global argument for the Docker CLI, inserted before the subcommand of every Docker CLI invocation (including the Docker Compose plugin, but not a separate --docker-compose-path executable). Repeat --docker-arg=VALUE for each argument.  [string]",
 					"visible": true
 				},
 				{
@@ -2110,6 +2162,13 @@
 					"positionalNames": []
 				},
 				{
+					"text": "  --docker-arg                      Global argument for the Docker CLI, inserted before the subcommand of every Docker CLI invocation (including the Docker Compose plugin, but not a separate --docker-compose-path executable). Repeat --docker-arg=VALUE for each argument.  [string]",
+					"optionNames": [
+						"docker-arg"
+					],
+					"positionalNames": []
+				},
+				{
 					"text": "  --docker-compose-path             Docker Compose CLI path.  [string]",
 					"optionNames": [
 						"docker-compose-path"
@@ -2232,6 +2291,12 @@
 					"name": "container-id",
 					"aliases": [],
 					"description": "Id of the container to run the user commands for.  [string]",
+					"visible": true
+				},
+				{
+					"name": "docker-arg",
+					"aliases": [],
+					"description": "Global argument for the Docker CLI, inserted before the subcommand of every Docker CLI invocation (including the Docker Compose plugin, but not a separate --docker-compose-path executable). Repeat --docker-arg=VALUE for each argument.  [string]",
 					"visible": true
 				},
 				{
@@ -2627,6 +2692,13 @@
 					"positionalNames": []
 				},
 				{
+					"text": "  --docker-arg                    Global argument for the Docker CLI, inserted before the subcommand of every Docker CLI invocation (including the Docker Compose plugin, but not a separate --docker-compose-path executable). Repeat --docker-arg=VALUE for each argument.  [string]",
+					"optionNames": [
+						"docker-arg"
+					],
+					"positionalNames": []
+				},
+				{
 					"text": "  --docker-compose-path           Path to docker-compose executable.  [string] [default: \"docker-compose\"]",
 					"optionNames": [
 						"docker-compose-path"
@@ -2660,6 +2732,12 @@
 					"name": "config",
 					"aliases": [],
 					"description": "devcontainer.json path. The default is to use .devcontainer/devcontainer.json or, if that does not exist, .devcontainer.json in the workspace folder.  [string]",
+					"visible": true
+				},
+				{
+					"name": "docker-arg",
+					"aliases": [],
+					"description": "Global argument for the Docker CLI, inserted before the subcommand of every Docker CLI invocation (including the Docker Compose plugin, but not a separate --docker-compose-path executable). Repeat --docker-arg=VALUE for each argument.  [string]",
 					"visible": true
 				},
 				{
@@ -4942,6 +5020,13 @@
 					"positionalNames": []
 				},
 				{
+					"text": "  --docker-arg                     Global argument for the Docker CLI, inserted before the subcommand of every Docker CLI invocation (including the Docker Compose plugin, but not a separate --docker-compose-path executable). Repeat --docker-arg=VALUE for each argument.  [string]",
+					"optionNames": [
+						"docker-arg"
+					],
+					"positionalNames": []
+				},
+				{
 					"text": "  --docker-compose-path            Docker Compose CLI path.  [string]",
 					"optionNames": [
 						"docker-compose-path"
@@ -5090,6 +5175,12 @@
 					"name": "default-user-env-probe",
 					"aliases": [],
 					"description": "Default value for the devcontainer.json's \"userEnvProbe\".  [choices: \"none\", \"loginInteractiveShell\", \"interactiveShell\", \"loginShell\"] [default: \"loginInteractiveShell\"]",
+					"visible": true
+				},
+				{
+					"name": "docker-arg",
+					"aliases": [],
+					"description": "Global argument for the Docker CLI, inserted before the subcommand of every Docker CLI invocation (including the Docker Compose plugin, but not a separate --docker-compose-path executable). Repeat --docker-arg=VALUE for each argument.  [string]",
 					"visible": true
 				},
 				{

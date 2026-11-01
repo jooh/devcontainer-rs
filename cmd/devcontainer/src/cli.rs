@@ -237,6 +237,14 @@ pub(crate) fn parse_global_options(args: &[String]) -> Result<ParsedGlobalOption
             break;
         }
 
+        if arg == "--docker-arg" {
+            if let Some(value) = args.get(index + 1).filter(|value| *value != "--") {
+                command_line.push(format!("--docker-arg={value}"));
+                index += 2;
+                continue;
+            }
+        }
+
         if let Some(value) = arg.strip_prefix("--oci-auth-hardening=") {
             let value = parse_global_bool_value(value)?;
             set_oci_auth_hardening(&mut hardening_value, value)?;
@@ -412,6 +420,17 @@ pub(crate) fn normalize_option_aliases(command_path: &str, args: &[String]) -> V
         };
         let option = find_command_option(command, flag, short_alias);
         if let Some(option) = option {
+            if option.name == "docker-arg" {
+                if let Some(value) = inline_value.or_else(|| {
+                    args.get(index + 1)
+                        .map(String::as_str)
+                        .filter(|value| *value != "--")
+                }) {
+                    normalized.push(format!("--docker-arg={value}"));
+                    index += if inline_value.is_some() { 1 } else { 2 };
+                    continue;
+                }
+            }
             normalized.push(format!("--{}", option.name));
             if let Some(value) = inline_value {
                 normalized.push(value.to_string());
@@ -605,6 +624,12 @@ fn unsupported_argument_error_for(
         }
 
         let next = args.get(index + 1);
+        if option.name == "docker-arg"
+            && !arg.contains('=')
+            && next.is_none_or(|value| value == "--")
+        {
+            return Some("Missing value for option: --docker-arg".to_string());
+        }
         if !arg.contains('=') && option.takes_multiple_values() {
             index += 1;
             while args
@@ -635,6 +660,64 @@ mod tests {
         unsupported_argument_error, unsupported_argument_error_for, CommandHelp, CommandOption,
         CommandPositional, HelpLine, OciAuthOptions, ParsedGlobalOptions,
     };
+
+    /// Preserve literal Docker arguments through global parsing and option normalization.
+    #[test]
+    fn docker_argument_values_are_not_devcontainer_options() {
+        for command in [
+            "up",
+            "set-up",
+            "build",
+            "run-user-commands",
+            "read-configuration",
+            "exec",
+            "upgrade",
+        ] {
+            let parsed = parse_global_options(&[
+                command.into(),
+                "--docker-arg".into(),
+                "--oci-auth-hardening".into(),
+                "--docker-arg=--".into(),
+                "--docker-arg=".into(),
+                "--docker-arg=001".into(),
+            ])
+            .expect("literal Docker values");
+            assert!(!parsed.oci_auth.hardening);
+            let normalized = normalize_option_aliases(command, &parsed.command_line[1..]);
+            assert_eq!(
+                normalized,
+                [
+                    "--docker-arg=--oci-auth-hardening",
+                    "--docker-arg=--",
+                    "--docker-arg=",
+                    "--docker-arg=001"
+                ]
+            );
+            assert_eq!(unsupported_argument_error(command, &normalized), None);
+            assert_eq!(
+                unsupported_argument_error(command, &["--docker-arg".into()]),
+                Some("Missing value for option: --docker-arg".into())
+            );
+            assert_eq!(
+                unsupported_argument_error(command, &["--docker-arg".into(), "--".into()]),
+                Some("Missing value for option: --docker-arg".into())
+            );
+            let missing = normalize_option_aliases(command, &["--docker-arg".into(), "--".into()]);
+            assert_eq!(
+                unsupported_argument_error(command, &missing),
+                Some("Missing value for option: --docker-arg".into())
+            );
+            let missing = normalize_option_aliases(command, &["--docker-arg".into()]);
+            assert_eq!(
+                unsupported_argument_error(command, &missing),
+                Some("Missing value for option: --docker-arg".into())
+            );
+            let parsed =
+                parse_global_options(&[command.into(), "--docker-arg".into(), "--".into()])
+                    .expect("missing argument is validated later");
+            assert_eq!(parsed.command_line, [command, "--docker-arg", "--"]);
+        }
+    }
 
     #[test]
     fn detects_subcommand_help_requests() {

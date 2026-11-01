@@ -46,9 +46,14 @@ pub(crate) fn parse_exec_arguments(args: &[String]) -> Result<ParsedExecArgument
         if arg == "--" {
             break (index, index + 1);
         }
+        if arg.starts_with("--docker-arg=") {
+            index += 1;
+            continue;
+        }
         if matches!(
             arg.as_str(),
             "--docker-path"
+                | "--docker-arg"
                 | "--docker-compose-path"
                 | "--workspace-folder"
                 | "--config"

@@ -2,10 +2,10 @@
 
 Machine-readable upstream test coverage inventory for the native Rust CLI.
 
-- Upstream commit: `5dc7533314b5ba7ec3875c30143dfe1aec644870`
-- Upstream tests inventoried: `37`
+- Upstream commit: `a190a3f86fe20b582c25c4dcb7bbf5fdb739ab26`
+- Upstream tests inventoried: `38`
 - Covered: `15`
-- Partial: `22`
+- Partial: `23`
 - Missing: `0`
 
 ## Summary
@@ -13,6 +13,7 @@ Machine-readable upstream test coverage inventory for the native Rust CLI.
 | Upstream test | Status | Native tests | Notes |
 | --- | --- | --- | --- |
 | `upstream/src/test/cli.build.test.ts` | partial | `cmd/devcontainer/tests/runtime_build_smoke.rs`<br>`cmd/devcontainer/tests/runtime_build_smoke/compose.rs`<br>`cmd/devcontainer/tests/runtime_build_smoke/dockerfile.rs`<br>`cmd/devcontainer/tests/runtime_build_smoke/features.rs` | Native build coverage is broad, but the upstream CLI build matrix is still larger. |
+| `upstream/src/test/cli.docker-arg.test.ts` | partial | `cmd/devcontainer/tests/docker_arg_smoke.rs`<br>`cmd/devcontainer/src/runtime/engine.rs`<br>`cmd/devcontainer/src/runtime/exec.rs` | Public CLI tests verify literal prefixes across runtime commands and the Compose plugin with a checking engine wrapper; real Docker endpoint integration remains in upstream. |
 | `upstream/src/test/cli.exec.buildKit.1.test.ts` | partial | `cmd/devcontainer/tests/runtime_exec_smoke.rs`<br>`cmd/devcontainer/tests/runtime_context_smoke.rs`<br>`cmd/devcontainer/tests/runtime_container_smoke/basic.rs` | Exec coverage exists, but not in the same buildkit matrix shape as upstream. |
 | `upstream/src/test/cli.exec.buildKit.2.test.ts` | partial | `cmd/devcontainer/tests/runtime_exec_smoke.rs`<br>`cmd/devcontainer/tests/runtime_context_smoke.rs`<br>`cmd/devcontainer/tests/runtime_container_smoke/basic.rs` | Exec semantics are covered, but not with upstream's full buildkit CLI matrix. |
 | `upstream/src/test/cli.exec.nonBuildKit.1.test.ts` | partial | `cmd/devcontainer/tests/runtime_exec_smoke.rs`<br>`cmd/devcontainer/tests/runtime_context_smoke.rs`<br>`cmd/devcontainer/tests/runtime_container_smoke/basic.rs` | Non-buildkit exec behavior is exercised indirectly, not with direct upstream-equivalent scenarios. |

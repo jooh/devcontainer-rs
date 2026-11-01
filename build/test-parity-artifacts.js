@@ -11,9 +11,17 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { buildInventory } = require('./generate-parity-inventory');
+const { generateCommandMatrix } = require('./generate-command-matrix');
 
 const repositoryRoot = path.join(__dirname, '..');
 const coverageMapPath = path.join(repositoryRoot, 'docs', 'upstream', 'test-coverage-map.json');
+
+test('shared upstream Docker argument definitions appear in every supported command', () => {
+	const matrix = generateCommandMatrix();
+	for (const command of ['up', 'set-up', 'build', 'run-user-commands', 'read-configuration', 'exec', 'upgrade']) {
+		assert.ok(matrix.commands.find(entry => entry.path === command)?.options.includes('docker-arg'), command);
+	}
+});
 
 test('generated CLI metadata is not accepted as native option evidence', () => {
 	const inventory = buildInventory();

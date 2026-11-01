@@ -55,6 +55,14 @@ export HOME="$runtime_home"
 export TMPDIR="$runtime_tmp"
 cd "$runtime_workdir"
 
+mkdir -p "$tmp_dir/link-chain"
+ln -s "$binary" "$tmp_dir/link-chain/native"
+ln -s ../link-chain/native "$fake_bin/devcontainer-link"
+if [[ "$("$fake_bin/devcontainer-link" --version)" != "$("$binary" --version)" ]]; then
+  echo "relative symlink chain changed the standalone binary version" >&2
+  exit 1
+fi
+
 cat >"$workspace/.devcontainer/devcontainer.json" <<'EOF'
 {
   "image": "alpine:3.20",

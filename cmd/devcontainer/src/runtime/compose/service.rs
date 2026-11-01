@@ -5,10 +5,10 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use saphyr::{MappingOwned as Mapping, ScalarOwned, YamlOwned as YamlValue};
 use serde_json::Value;
-use serde_yaml::{Mapping, Value as YamlValue};
 
-use super::ComposeSpec;
+use super::{yaml, ComposeSpec};
 use crate::runtime::engine;
 use crate::runtime::paths::resolve_relative;
 
@@ -118,20 +118,27 @@ pub(super) fn inspect_service_definition(
 
     for compose_file in compose_files {
         let raw = std::fs::read_to_string(compose_file).map_err(|error| error.to_string())?;
-        let parsed: YamlValue = serde_yaml::from_str(&raw).map_err(|error| error.to_string())?;
-        let Some(service_definition) = parsed
-            .as_mapping()
-            .and_then(|root| root.get(YamlValue::String("services".to_string())))
-            .and_then(YamlValue::as_mapping)
-            .and_then(|services| services.get(YamlValue::String(service.to_string())))
-            .and_then(YamlValue::as_mapping)
+        let parsed: YamlValue = yaml::from_str(&raw)?;
+        let Some(service_definition) = yaml::as_mapping(&parsed)
+            .and_then(|root| {
+                root.get(&YamlValue::Value(ScalarOwned::String(
+                    "services".to_string(),
+                )))
+            })
+            .and_then(yaml::as_mapping)
+            .and_then(|services| {
+                services.get(&YamlValue::Value(ScalarOwned::String(service.to_string())))
+            })
+            .and_then(yaml::as_mapping)
         else {
             continue;
         };
 
         found_service = true;
 
-        if service_definition.contains_key(YamlValue::String("build".to_string())) {
+        if service_definition
+            .contains_key(&YamlValue::Value(ScalarOwned::String("build".to_string())))
+        {
             has_build = true;
         }
         if let Some(value) = service_field(service_definition, "build") {
@@ -173,12 +180,12 @@ pub(super) fn inspect_service_definition(
 }
 
 fn service_field<'a>(mapping: &'a Mapping, key: &str) -> Option<&'a YamlValue> {
-    mapping.get(YamlValue::String(key.to_string()))
+    mapping.get(&YamlValue::Value(ScalarOwned::String(key.to_string())))
 }
 
 fn parse_service_build(value: &YamlValue, default_context: &str) -> Option<ServiceBuildInfo> {
     match value {
-        YamlValue::String(context) => Some(ServiceBuildInfo {
+        YamlValue::Value(ScalarOwned::String(context)) => Some(ServiceBuildInfo {
             context: context.to_string(),
             dockerfile_path: "Dockerfile".to_string(),
             target: None,
@@ -203,7 +210,7 @@ fn parse_service_build(value: &YamlValue, default_context: &str) -> Option<Servi
 }
 
 fn parse_build_args(value: &YamlValue) -> Option<HashMap<String, String>> {
-    let mapping = value.as_mapping()?;
+    let mapping = yaml::as_mapping(value)?;
     let args = mapping
         .iter()
         .filter_map(|(key, value)| {
@@ -233,24 +240,25 @@ pub(super) fn read_version_prefix(compose_files: &[PathBuf]) -> Result<String, S
 
 fn parse_service_command(value: &YamlValue) -> Option<Vec<String>> {
     match value {
-        YamlValue::String(text) => Some(split_shell_words(text)),
+        YamlValue::Value(ScalarOwned::String(text)) => Some(split_shell_words(text)),
         YamlValue::Sequence(values) => Some(
             values
                 .iter()
                 .filter_map(yaml_scalar_to_string)
                 .collect::<Vec<_>>(),
         ),
-        YamlValue::Null => Some(Vec::new()),
+        YamlValue::Value(ScalarOwned::Null) => Some(Vec::new()),
         _ => None,
     }
 }
 
 fn yaml_scalar_to_string(value: &YamlValue) -> Option<String> {
     match value {
-        YamlValue::String(text) => Some(text.to_string()),
-        YamlValue::Bool(value) => Some(value.to_string()),
-        YamlValue::Number(value) => Some(value.to_string()),
-        YamlValue::Null => Some(String::new()),
+        YamlValue::Value(ScalarOwned::String(text)) => Some(text.to_string()),
+        YamlValue::Value(ScalarOwned::Boolean(value)) => Some(value.to_string()),
+        YamlValue::Value(ScalarOwned::Integer(value)) => Some(value.to_string()),
+        YamlValue::Value(ScalarOwned::FloatingPoint(value)) => Some(format!("{:?}", value.0)),
+        YamlValue::Value(ScalarOwned::Null) => Some(String::new()),
         _ => None,
     }
 }
@@ -354,7 +362,10 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    use saphyr::{ScalarOwned, YamlOwned as YamlValue};
     use serde_json::json;
+
+    use super::yaml;
 
     use super::{
         compose_files, compose_files_from_env, default_service_image_name,
@@ -418,6 +429,8 @@ mod tests {
 
     #[test]
     fn compose_files_default_to_standard_files_and_optional_override() {
+        let mut env_guard = crate::test_support::process_env_guard();
+        env_guard.remove_var("COMPOSE_FILE");
         let root = crate::test_support::unique_temp_dir("devcontainer-compose-service-test");
         fs::create_dir_all(&root).expect("workspace");
         fs::write(root.join("docker-compose.override.yml"), "services: {}\n").expect("override");
@@ -457,6 +470,8 @@ mod tests {
 
     #[test]
     fn compose_files_ignore_dotenv_without_compose_file() {
+        let mut env_guard = crate::test_support::process_env_guard();
+        env_guard.remove_var("COMPOSE_FILE");
         let root = crate::test_support::unique_temp_dir("devcontainer-compose-service-test");
         fs::create_dir_all(&root).expect("workspace");
         fs::write(root.join(".env"), "OTHER=value\nCOMPOSE_FILE=\n").expect("env");
@@ -595,15 +610,16 @@ services:
     #[test]
     fn service_build_and_command_parsers_handle_edge_shapes() {
         assert_eq!(
-            parse_service_build(&serde_yaml::Value::Bool(true), "."),
+            parse_service_build(&YamlValue::Value(ScalarOwned::Boolean(true)), "."),
             None
         );
         let build = parse_service_build(
-            &serde_yaml::from_str(
+            &yaml::from_str(
                 r#"
 args:
   one: 1
   enabled: true
+  floating: 1.0
   blank:
   nested:
     skip: true
@@ -616,14 +632,16 @@ args:
         assert_eq!(build.context, "/workspace");
         assert_eq!(build.dockerfile_path, "Dockerfile");
         assert_eq!(build.target, None);
-        assert_eq!(build.args.expect("args").len(), 3);
+        let args = build.args.expect("args");
+        assert_eq!(args.len(), 4);
+        assert_eq!(args.get("floating").map(String::as_str), Some("1.0"));
 
         assert_eq!(
-            parse_build_args(&serde_yaml::from_str("[one, two]").expect("yaml")),
+            parse_build_args(&yaml::from_str("[one, two]").expect("yaml")),
             None
         );
         let args_with_non_scalar_key = parse_build_args(
-            &serde_yaml::from_str(
+            &yaml::from_str(
                 r#"
 ? [compound, key]
 : skipped
@@ -639,12 +657,15 @@ kept: value
             Some("value")
         );
         assert_eq!(
-            parse_service_command(&serde_yaml::Value::Null),
+            parse_service_command(&YamlValue::Value(ScalarOwned::Null)),
             Some(Vec::new())
         );
-        assert_eq!(parse_service_command(&serde_yaml::Value::Bool(true)), None);
         assert_eq!(
-            yaml_scalar_to_string(&serde_yaml::Value::Bool(false)),
+            parse_service_command(&YamlValue::Value(ScalarOwned::Boolean(true))),
+            None
+        );
+        assert_eq!(
+            yaml_scalar_to_string(&YamlValue::Value(ScalarOwned::Boolean(false))),
             Some("false".into())
         );
         assert_eq!(
@@ -669,6 +690,23 @@ kept: value
             split_shell_words(r#"cmd trailing\"#),
             vec!["cmd", "trailing"]
         );
+    }
+
+    /// Compose replacement tags must not hide service mappings from inspection.
+    #[test]
+    fn tagged_service_maps_remain_visible_to_inspection() {
+        let root = crate::test_support::unique_temp_dir("devcontainer-tagged-compose");
+        fs::create_dir_all(&root).expect("workspace");
+        let compose_file = root.join("compose.yml");
+        fs::write(
+            &compose_file,
+            "services: !override\n  app: !override\n    image: alpine:3.20\n    user: '1000'\n",
+        )
+        .expect("tagged Compose file");
+        let service = inspect_service_definition(&[compose_file], "app").expect("tagged service");
+        assert_eq!(service.image.as_deref(), Some("alpine:3.20"));
+        assert_eq!(service.user.as_deref(), Some("1000"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

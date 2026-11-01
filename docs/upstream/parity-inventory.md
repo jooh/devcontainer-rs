@@ -2,10 +2,10 @@
 
 Generated from the pinned upstream CLI command matrix and static source evidence in the Rust implementation.
 
-- Upstream commit: `5dc7533314b5ba7ec3875c30143dfe1aec644870`
+- Upstream commit: `a190a3f86fe20b582c25c4dcb7bbf5fdb739ab26`
 - Source: `upstream/src/spec-node/devContainersSpecCLI.ts`
 - Declared upstream command paths present natively: `20/20`
-- Upstream options with a native source reference in mapped files: `206/206`
+- Upstream options with a native source reference in mapped files: `213/213`
 
 This report is a static inventory, not a semantic parity proof. A referenced option can still be only partially implemented, and command-level known gaps are called out explicitly below.
 
@@ -18,13 +18,13 @@ This report is a static inventory, not a semantic parity proof. A referenced opt
 
 | Command | Declared | Option refs | Missing refs | Known gaps |
 | --- | --- | --- | --- | --- |
-| `up` | yes | 45/45 | 0 | 2 |
-| `set-up` | yes | 20/20 | 0 | 1 |
-| `build` | yes | 24/24 | 0 | 2 |
-| `run-user-commands` | yes | 27/27 | 0 | 1 |
-| `read-configuration` | yes | 18/18 | 0 | 2 |
+| `up` | yes | 46/46 | 0 | 2 |
+| `set-up` | yes | 21/21 | 0 | 1 |
+| `build` | yes | 25/25 | 0 | 2 |
+| `run-user-commands` | yes | 28/28 | 0 | 1 |
+| `read-configuration` | yes | 19/19 | 0 | 2 |
 | `outdated` | yes | 8/8 | 0 | 1 |
-| `upgrade` | yes | 8/8 | 0 | 1 |
+| `upgrade` | yes | 9/9 | 0 | 1 |
 | `features` | yes | 0/0 | 0 | 1 |
 | `features test` | yes | 13/13 | 0 | 1 |
 | `features package` | yes | 0/0 | 0 | 1 |
@@ -37,13 +37,13 @@ This report is a static inventory, not a semantic parity proof. A referenced opt
 | `templates publish` | yes | 0/0 | 0 | 1 |
 | `templates metadata` | yes | 1/1 | 0 | 1 |
 | `templates generate-docs` | yes | 4/4 | 0 | 1 |
-| `exec` | yes | 19/19 | 0 | 1 |
+| `exec` | yes | 20/20 | 0 | 1 |
 
 ## `up`
 
 - Description: Create and run dev container
 - Declared natively: yes
-- Option source references: 45/45
+- Option source references: 46/46
 - Missing option references: none
 - Known gaps: Native runtime now layers Features for image, dockerfile, and Docker Compose configs. Several upstream flags remain unimplemented or are only partially honored.
 
@@ -51,7 +51,7 @@ This report is a static inventory, not a semantic parity proof. A referenced opt
 
 - Description: Set up an existing container as a dev container
 - Declared natively: yes
-- Option source references: 20/20
+- Option source references: 21/21
 - Missing option references: none
 - Known gaps: Lifecycle execution is native, but several upstream setup and dotfiles flags are still missing.
 
@@ -59,7 +59,7 @@ This report is a static inventory, not a semantic parity proof. A referenced opt
 
 - Description: Build a dev container image
 - Declared natively: yes
-- Option source references: 24/24
+- Option source references: 25/25
 - Missing option references: none
 - Known gaps: Native runtime now layers Features for image, dockerfile, and Docker Compose configs. Several upstream build flags are still unimplemented or are only partially honored.
 
@@ -67,7 +67,7 @@ This report is a static inventory, not a semantic parity proof. A referenced opt
 
 - Description: Run user commands
 - Declared natively: yes
-- Option source references: 27/27
+- Option source references: 28/28
 - Missing option references: none
 - Known gaps: Lifecycle execution is native, but several upstream runtime and dotfiles flags are still missing.
 
@@ -75,7 +75,7 @@ This report is a static inventory, not a semantic parity proof. A referenced opt
 
 - Description: Read configuration
 - Declared natively: yes
-- Option source references: 18/18
+- Option source references: 19/19
 - Missing option references: none
 - Known gaps: `--include-features-configuration` resolves local/published Feature sets natively, but still relies on fixture/manual manifests rather than full OCI resolution. Variable substitution support is still narrower than upstream.
 
@@ -91,7 +91,7 @@ This report is a static inventory, not a semantic parity proof. A referenced opt
 
 - Description: Upgrade lockfile
 - Declared natively: yes
-- Option source references: 8/8
+- Option source references: 9/9
 - Missing option references: none
 - Known gaps: Backed by fixture/manual catalog data rather than real upstream registry resolution.
 
@@ -195,6 +195,6 @@ This report is a static inventory, not a semantic parity proof. A referenced opt
 
 - Description: Execute a command on a running dev container
 - Declared natively: yes
-- Option source references: 19/19
+- Option source references: 20/20
 - Missing option references: none
 - Known gaps: Core exec path is native, but upstream option coverage is still narrower.

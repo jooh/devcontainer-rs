@@ -7,11 +7,34 @@ use crate::commands::common;
 use crate::process_runner::{self, ProcessRequest, ProcessResult};
 
 pub(crate) fn engine_request(args: &[String], engine_args: Vec<String>) -> ProcessRequest {
+    let mut request_args = docker_args(args);
+    request_args.extend(engine_args.iter().cloned());
     let mut request =
-        common::runtime_process_request(args, effective_engine_program(args), engine_args, None);
-    let request_args = request.args.clone();
-    apply_buildkit_env(args, &request_args, &mut request);
+        common::runtime_process_request(args, effective_engine_program(args), request_args, None);
+    apply_buildkit_env(args, &engine_args, &mut request);
     request
+}
+
+/// Collect literal Docker global arguments without treating their contents as options.
+fn docker_args(args: &[String]) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        if arg == "--" {
+            break;
+        }
+        if arg == "--docker-arg" {
+            if let Some(value) = args.get(index + 1) {
+                values.push(value.clone());
+                index += 2;
+                continue;
+            }
+        } else if let Some(value) = arg.strip_prefix("--docker-arg=") {
+            values.push(value.to_string());
+        }
+        index += 1;
+    }
+    values
 }
 
 pub(crate) fn run_engine(
@@ -42,15 +65,7 @@ pub(crate) fn compose_request(args: &[String], compose_args: Vec<String>) -> Pro
     } else if default_compose_subcommand_available(args) {
         let mut args_with_subcommand = vec!["compose".to_string()];
         args_with_subcommand.extend(compose_args);
-        let mut request = common::runtime_process_request(
-            args,
-            effective_engine_program(args),
-            args_with_subcommand,
-            None,
-        );
-        let request_args = request.args.clone();
-        apply_buildkit_env(args, &request_args, &mut request);
-        request
+        engine_request(args, args_with_subcommand)
     } else {
         let mut request =
             common::runtime_process_request(args, "docker-compose".to_string(), compose_args, None);
@@ -138,19 +153,16 @@ fn cli_boolean_value(value: &str) -> Option<bool> {
 }
 
 fn default_compose_subcommand_available(args: &[String]) -> bool {
-    let request = common::runtime_process_request(
+    run_engine(
         args,
-        effective_engine_program(args),
         vec![
             "compose".to_string(),
             "version".to_string(),
             "--short".to_string(),
         ],
-        None,
-    );
-    process_runner::run_process(&request)
-        .map(|result| result.status_code == 0)
-        .unwrap_or(false)
+    )
+    .map(|result| result.status_code == 0)
+    .unwrap_or(false)
 }
 
 fn normalize_process_error(args: &[String], request: &ProcessRequest, error: io::Error) -> String {
@@ -244,6 +256,73 @@ mod tests {
         is_wslc, normalize_process_error, pull_always_requested, run_compose, run_engine,
         run_engine_streaming, stderr_or_stdout,
     };
+
+    /// Prefix engine invocations without interpreting Docker argument values as CLI flags.
+    #[test]
+    fn engine_request_preserves_repeated_docker_arguments_and_buildkit_settings() {
+        let request = engine_request(
+            &[
+                "--docker-arg=--session".into(),
+                "--docker-arg".into(),
+                "a b".into(),
+                "--docker-arg=".into(),
+                "--docker-arg=--".into(),
+                "--docker-arg=001".into(),
+                "--docker-arg=a=b".into(),
+                "--buildkit".into(),
+                "never".into(),
+            ],
+            vec!["build".into(), "some context".into()],
+        );
+        assert_eq!(
+            request.args,
+            [
+                "--session",
+                "a b",
+                "",
+                "--",
+                "001",
+                "a=b",
+                "build",
+                "some context"
+            ]
+        );
+        assert_eq!(
+            request.env.get("DOCKER_BUILDKIT").map(String::as_str),
+            Some("0")
+        );
+    }
+
+    /// Docker global arguments must not reach a separately configured Compose executable.
+    #[test]
+    fn standalone_compose_does_not_receive_docker_arguments() {
+        let request = compose_request(
+            &[
+                "--docker-compose-path".into(),
+                "custom-compose".into(),
+                "--docker-arg=--session".into(),
+            ],
+            vec!["build".into()],
+        );
+        assert_eq!(request.program, "custom-compose");
+        assert_eq!(request.args, ["build"]);
+    }
+
+    /// Ignore child payload arguments after a separator and tolerate incomplete internal input.
+    #[test]
+    fn docker_arguments_stop_at_the_payload_separator() {
+        let request = engine_request(
+            &[
+                "--docker-arg=first".into(),
+                "--".into(),
+                "--docker-arg=child".into(),
+            ],
+            vec!["ps".into()],
+        );
+        assert_eq!(request.args, ["first", "ps"]);
+        let request = engine_request(&["--docker-arg".into()], vec!["ps".into()]);
+        assert_eq!(request.args, ["ps"]);
+    }
 
     #[test]
     fn pull_always_requested_honors_the_cli_boolean_vocabulary_and_last_value() {

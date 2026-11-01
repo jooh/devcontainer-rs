@@ -1,11 +1,11 @@
 {
-	"upstreamCommit": "5dc7533314b5ba7ec3875c30143dfe1aec644870",
+	"upstreamCommit": "a190a3f86fe20b582c25c4dcb7bbf5fdb739ab26",
 	"sourcePath": "upstream/src/spec-node/devContainersSpecCLI.ts",
 	"summary": {
 		"commandPathsTotal": 20,
 		"commandPathsDeclared": 20,
-		"optionsTotal": 206,
-		"optionsReferenced": 206,
+		"optionsTotal": 213,
+		"optionsReferenced": 213,
 		"optionsMissing": 0
 	},
 	"globalOptions": [
@@ -34,8 +34,8 @@
 			"description": "Create and run dev container",
 			"declared": true,
 			"optionSummary": {
-				"total": 45,
-				"referenced": 45,
+				"total": 46,
+				"referenced": 46,
 				"missing": 0
 			},
 			"options": [
@@ -115,6 +115,16 @@
 					"name": "default-user-env-probe",
 					"sourceReferenced": true,
 					"evidence": [
+						"cmd/devcontainer/src/runtime/exec.rs"
+					]
+				},
+				{
+					"name": "docker-arg",
+					"sourceReferenced": true,
+					"evidence": [
+						"cmd/devcontainer/src/cli.rs",
+						"cmd/devcontainer/src/commands/configuration/read.rs",
+						"cmd/devcontainer/src/runtime/engine.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
 				},
@@ -417,8 +427,8 @@
 			"description": "Set up an existing container as a dev container",
 			"declared": true,
 			"optionSummary": {
-				"total": 20,
-				"referenced": 20,
+				"total": 21,
+				"referenced": 21,
 				"missing": 0
 			},
 			"options": [
@@ -464,6 +474,15 @@
 					"name": "default-user-env-probe",
 					"sourceReferenced": true,
 					"evidence": [
+						"cmd/devcontainer/src/runtime/exec.rs"
+					]
+				},
+				{
+					"name": "docker-arg",
+					"sourceReferenced": true,
+					"evidence": [
+						"cmd/devcontainer/src/cli.rs",
+						"cmd/devcontainer/src/runtime/engine.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
 				},
@@ -580,8 +599,8 @@
 			"description": "Build a dev container image",
 			"declared": true,
 			"optionSummary": {
-				"total": 24,
-				"referenced": 24,
+				"total": 25,
+				"referenced": 25,
 				"missing": 0
 			},
 			"options": [
@@ -625,6 +644,16 @@
 						"cmd/devcontainer/src/commands/configuration/read.rs",
 						"cmd/devcontainer/src/commands/configuration/upgrade.rs",
 						"cmd/devcontainer/src/runtime/container.rs",
+						"cmd/devcontainer/src/runtime/exec.rs"
+					]
+				},
+				{
+					"name": "docker-arg",
+					"sourceReferenced": true,
+					"evidence": [
+						"cmd/devcontainer/src/cli.rs",
+						"cmd/devcontainer/src/commands/configuration/read.rs",
+						"cmd/devcontainer/src/runtime/engine.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
 				},
@@ -801,8 +830,8 @@
 			"description": "Run user commands",
 			"declared": true,
 			"optionSummary": {
-				"total": 27,
-				"referenced": 27,
+				"total": 28,
+				"referenced": 28,
 				"missing": 0
 			},
 			"options": [
@@ -848,6 +877,15 @@
 					"name": "default-user-env-probe",
 					"sourceReferenced": true,
 					"evidence": [
+						"cmd/devcontainer/src/runtime/exec.rs"
+					]
+				},
+				{
+					"name": "docker-arg",
+					"sourceReferenced": true,
+					"evidence": [
+						"cmd/devcontainer/src/cli.rs",
+						"cmd/devcontainer/src/runtime/engine.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
 				},
@@ -1023,8 +1061,8 @@
 			"description": "Read configuration",
 			"declared": true,
 			"optionSummary": {
-				"total": 18,
-				"referenced": 18,
+				"total": 19,
+				"referenced": 19,
 				"missing": 0
 			},
 			"options": [
@@ -1055,6 +1093,16 @@
 						"cmd/devcontainer/src/commands/configuration/read.rs",
 						"cmd/devcontainer/src/runtime/container/discovery.rs",
 						"cmd/devcontainer/src/runtime/context.rs",
+						"cmd/devcontainer/src/runtime/exec.rs"
+					]
+				},
+				{
+					"name": "docker-arg",
+					"sourceReferenced": true,
+					"evidence": [
+						"cmd/devcontainer/src/cli.rs",
+						"cmd/devcontainer/src/commands/configuration/read.rs",
+						"cmd/devcontainer/src/runtime/engine.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
 				},
@@ -1282,8 +1330,8 @@
 			"description": "Upgrade lockfile",
 			"declared": true,
 			"optionSummary": {
-				"total": 8,
-				"referenced": 8,
+				"total": 9,
+				"referenced": 9,
 				"missing": 0
 			},
 			"options": [
@@ -1293,6 +1341,14 @@
 					"evidence": [
 						"cmd/devcontainer/src/commands/configuration/read.rs",
 						"cmd/devcontainer/src/commands/configuration/upgrade.rs"
+					]
+				},
+				{
+					"name": "docker-arg",
+					"sourceReferenced": true,
+					"evidence": [
+						"cmd/devcontainer/src/cli.rs",
+						"cmd/devcontainer/src/commands/configuration/read.rs"
 					]
 				},
 				{
@@ -1801,8 +1857,8 @@
 			"description": "Execute a command on a running dev container",
 			"declared": true,
 			"optionSummary": {
-				"total": 19,
-				"referenced": 19,
+				"total": 20,
+				"referenced": 20,
 				"missing": 0
 			},
 			"options": [
@@ -1841,6 +1897,15 @@
 					"name": "default-user-env-probe",
 					"sourceReferenced": true,
 					"evidence": [
+						"cmd/devcontainer/src/runtime/exec.rs"
+					]
+				},
+				{
+					"name": "docker-arg",
+					"sourceReferenced": true,
+					"evidence": [
+						"cmd/devcontainer/src/cli.rs",
+						"cmd/devcontainer/src/runtime/engine.rs",
 						"cmd/devcontainer/src/runtime/exec.rs"
 					]
 				},

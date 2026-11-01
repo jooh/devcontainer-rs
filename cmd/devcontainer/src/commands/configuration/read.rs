@@ -111,6 +111,10 @@ pub(super) fn should_use_native_read_configuration(args: &[String]) -> bool {
     let mut index = 0;
     while index < args.len() {
         let arg = &args[index];
+        if arg.starts_with("--docker-arg=") {
+            index += 1;
+            continue;
+        }
         if !arg.starts_with("--") {
             return false;
         }

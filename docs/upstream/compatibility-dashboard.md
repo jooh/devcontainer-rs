@@ -1,6 +1,6 @@
 # Native Compatibility Dashboard
 
-- Pinned upstream commit: `5dc7533314b5ba7ec3875c30143dfe1aec644870`
+- Pinned upstream commit: `a190a3f86fe20b582c25c4dcb7bbf5fdb739ab26`
 - Pinned spec commit: `c95ffeed1d059abfe9ffbe79762dc2fa4e7c2421`
 - Command matrix source: `docs/upstream/command-matrix.json`
 - Native parity inventory: `docs/upstream/parity-inventory.md`
@@ -8,7 +8,7 @@
 ## Current snapshot
 
 - Declared upstream command paths present natively: `20/20`
-- Upstream options with a native source reference in mapped Rust sources: `206/206`
+- Upstream options with a native source reference in mapped Rust sources: `213/213`
 - The parity inventory is a static source-evidence report. It is intended to identify obvious gaps and track drift, not to claim semantic parity by itself.
 
 ## Highest-Impact Gaps
