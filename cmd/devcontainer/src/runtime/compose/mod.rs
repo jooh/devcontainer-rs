@@ -4,12 +4,13 @@ mod args;
 mod override_file;
 mod project;
 mod service;
+mod yaml;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use saphyr::{MappingOwned as Mapping, ScalarOwned, YamlOwned as YamlValue};
 use serde_json::Value;
-use serde_yaml::{Mapping, Value as YamlValue};
 
 use crate::commands::common;
 use crate::commands::configuration;
@@ -239,19 +240,18 @@ fn pull_compose_images_with_override(
     if result.status_code != 0 {
         return Err(engine::stderr_or_stdout(&result));
     }
-    let compose_config: YamlValue = serde_yaml::from_str(&result.stdout)
+    let compose_config: YamlValue = yaml::from_str(&result.stdout)
         .map_err(|error| format!("Unable to parse resolved Compose configuration: {error}"))?;
-    let services = compose_config
-        .as_mapping()
+    let services = yaml::as_mapping(&compose_config)
         .and_then(|root| yaml_field(root, "services"))
-        .and_then(YamlValue::as_mapping)
+        .and_then(yaml::as_mapping)
         .ok_or_else(|| "Resolved Compose configuration does not define services".to_string())?;
     let services_to_pull = remote_service_closure(services, selected_services)?;
     let mut pulled_images = HashSet::new();
     for service in services_to_pull {
         let definition = services
-            .get(YamlValue::String(service))
-            .and_then(YamlValue::as_mapping)
+            .get(&YamlValue::Value(ScalarOwned::String(service)))
+            .and_then(yaml::as_mapping)
             .expect("remote service closure only returns defined services");
         let image = yaml_field(definition, "image")
             .and_then(YamlValue::as_str)
@@ -304,16 +304,16 @@ fn compose_profiled_services(spec: &ComposeSpec) -> Result<Vec<String>, String> 
     let mut profiled_services = HashSet::new();
     for compose_file in &spec.files {
         let raw = std::fs::read_to_string(compose_file).map_err(|error| error.to_string())?;
-        let parsed: YamlValue = serde_yaml::from_str(&raw).map_err(|error| error.to_string())?;
-        let Some(services) = parsed
-            .as_mapping()
+        let parsed: YamlValue = yaml::from_str(&raw)?;
+        let Some(services) = yaml::as_mapping(&parsed)
             .and_then(|root| yaml_field(root, "services"))
-            .and_then(YamlValue::as_mapping)
+            .and_then(yaml::as_mapping)
         else {
             continue;
         };
         for (service, definition) in services {
-            let (Some(service), Some(definition)) = (service.as_str(), definition.as_mapping())
+            let (Some(service), Some(definition)) =
+                (service.as_str(), yaml::as_mapping(definition))
             else {
                 continue;
             };
@@ -340,11 +340,11 @@ fn compose_profiles_state(profiles: &YamlValue) -> Option<bool> {
     match profiles {
         YamlValue::Sequence(profiles) if !profiles.is_empty() => Some(true),
         YamlValue::Sequence(_) => None,
-        YamlValue::Tagged(tagged) if tagged.tag == "!reset" => {
-            Some(compose_profiles_state(&tagged.value).unwrap_or(false))
+        YamlValue::Tagged(tag, value) if tag.handle == "!" && tag.suffix == "reset" => {
+            Some(compose_profiles_state(value).unwrap_or(false))
         }
-        YamlValue::Tagged(tagged) => compose_profiles_state(&tagged.value),
-        YamlValue::Null => Some(false),
+        YamlValue::Tagged(_, value) => compose_profiles_state(value),
+        YamlValue::Value(ScalarOwned::Null) => Some(false),
         _ => None,
     }
 }
@@ -410,8 +410,8 @@ fn visit_remote_service(
         return Ok(());
     }
     let definition = services
-        .get(YamlValue::String(service.to_string()))
-        .and_then(YamlValue::as_mapping)
+        .get(&YamlValue::Value(ScalarOwned::String(service.to_string())))
+        .and_then(yaml::as_mapping)
         .ok_or_else(|| {
             format!("Unable to locate compose service `{service}` in resolved configuration")
         })?;
@@ -449,7 +449,7 @@ fn compose_service_dependencies(definition: &Mapping) -> Vec<String> {
         }
     }
     for field in ["links", "volumes_from"] {
-        if let Some(values) = yaml_field(definition, field).and_then(YamlValue::as_sequence) {
+        if let Some(values) = yaml_field(definition, field).and_then(yaml::as_sequence) {
             dependencies.extend(values.iter().filter_map(YamlValue::as_str).filter_map(
                 |reference| {
                     let service = reference.split(':').next()?;
@@ -470,7 +470,7 @@ fn compose_service_dependencies(definition: &Mapping) -> Vec<String> {
 }
 
 fn yaml_field<'a>(mapping: &'a Mapping, field: &str) -> Option<&'a YamlValue> {
-    mapping.get(YamlValue::String(field.to_string()))
+    mapping.get(&YamlValue::Value(ScalarOwned::String(field.to_string())))
 }
 
 pub(crate) fn service_logs(

@@ -1,7 +1,7 @@
 //! Unit tests for compose runtime helpers.
 
+use saphyr::{ScalarOwned, YamlOwned as YamlValue};
 use serde_json::json;
-use serde_yaml::Value as YamlValue;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -15,12 +15,12 @@ use super::project::{
 use super::service::{
     compose_image_name_separator, inspect_service_definition, parse_semver_prefix,
 };
-use super::uses_compose_config;
 use super::{
     build_service, compose_profiled_services, compose_profiles_state, compose_service_dependencies,
     load_compose_spec, remote_service_closure, resolve_container_id,
     resolve_container_id_including_stopped, up_service, ComposeSpec,
 };
+use super::{uses_compose_config, yaml};
 use crate::runtime::context::ResolvedConfig;
 use crate::test_support::{
     init_git_repo, process_env_guard, unique_temp_dir, write_executable_script, ProcessEnvGuard,
@@ -2031,19 +2031,22 @@ fn build_service_builds_feature_image_successfully() {
 
 #[test]
 fn compose_profile_states_cover_resets_tags_null_and_invalid_shapes() {
-    let reset: YamlValue = serde_yaml::from_str("!reset []").expect("reset profiles");
+    let reset: YamlValue = yaml::from_str("!reset []").expect("reset profiles");
     assert_eq!(compose_profiles_state(&reset), Some(false));
 
-    let tagged: YamlValue = serde_yaml::from_str("!override [debug]").expect("tagged profiles");
+    let tagged: YamlValue = yaml::from_str("!override [debug]").expect("tagged profiles");
     assert_eq!(compose_profiles_state(&tagged), Some(true));
 
     assert_eq!(
         compose_profiles_state(&YamlValue::Sequence(Vec::new())),
         None
     );
-    assert_eq!(compose_profiles_state(&YamlValue::Null), Some(false));
     assert_eq!(
-        compose_profiles_state(&YamlValue::String("debug".to_string())),
+        compose_profiles_state(&YamlValue::Value(ScalarOwned::Null)),
+        Some(false)
+    );
+    assert_eq!(
+        compose_profiles_state(&YamlValue::Value(ScalarOwned::String("debug".to_string()))),
         None
     );
 }
@@ -2086,13 +2089,17 @@ fn compose_profiled_services_merge_files_and_ignore_invalid_entries() {
 
 #[test]
 fn remote_service_closure_handles_cycles_and_reports_missing_dependencies() {
-    let cyclic: YamlValue = serde_yaml::from_str(
+    let cyclic: YamlValue = yaml::from_str(
         "services:\n  app:\n    image: example/app\n    depends_on: [db]\n  db:\n    image: postgres:16\n    depends_on: [app]\n",
     )
     .expect("cyclic compose config");
     let services = cyclic
         .as_mapping()
-        .and_then(|root| root.get(YamlValue::String("services".to_string())))
+        .and_then(|root| {
+            root.get(&YamlValue::Value(ScalarOwned::String(
+                "services".to_string(),
+            )))
+        })
         .and_then(YamlValue::as_mapping)
         .expect("services");
     assert_eq!(
@@ -2101,13 +2108,16 @@ fn remote_service_closure_handles_cycles_and_reports_missing_dependencies() {
         vec!["db".to_string(), "app".to_string()]
     );
 
-    let missing: YamlValue = serde_yaml::from_str(
-        "services:\n  app:\n    image: example/app\n    depends_on: [missing]\n",
-    )
-    .expect("missing dependency compose config");
+    let missing: YamlValue =
+        yaml::from_str("services:\n  app:\n    image: example/app\n    depends_on: [missing]\n")
+            .expect("missing dependency compose config");
     let services = missing
         .as_mapping()
-        .and_then(|root| root.get(YamlValue::String("services".to_string())))
+        .and_then(|root| {
+            root.get(&YamlValue::Value(ScalarOwned::String(
+                "services".to_string(),
+            )))
+        })
         .and_then(YamlValue::as_mapping)
         .expect("services");
     let error = remote_service_closure(services, Some(&["app".to_string()]))
@@ -2120,7 +2130,7 @@ fn remote_service_closure_handles_cycles_and_reports_missing_dependencies() {
 
 #[test]
 fn compose_service_dependencies_support_all_compose_reference_shapes() {
-    let value: YamlValue = serde_yaml::from_str(
+    let value: YamlValue = yaml::from_str(
         "depends_on: invalid\nlinks:\n  - cache:alias\n  - container:external\n  - ''\n  - 42\nvolumes_from:\n  - worker:ro\nipc: service:ipc-service\nnetwork_mode: service:network-service\npid: service:pid-service\n",
     )
     .expect("service definition");
