@@ -1,5 +1,5 @@
 {
-	"upstreamCommit": "5dc7533314b5ba7ec3875c30143dfe1aec644870",
+	"upstreamCommit": "a190a3f86fe20b582c25c4dcb7bbf5fdb739ab26",
 	"suites": [
 		{
 			"upstreamTest": "upstream/src/test/cli.build.test.ts",
@@ -11,6 +11,16 @@
 				"cmd/devcontainer/tests/runtime_build_smoke/features.rs"
 			],
 			"notes": "Native build coverage is broad, but the upstream CLI build matrix is still larger."
+		},
+		{
+			"upstreamTest": "upstream/src/test/cli.docker-arg.test.ts",
+			"status": "partial",
+			"nativeTests": [
+				"cmd/devcontainer/tests/docker_arg_smoke.rs",
+				"cmd/devcontainer/src/runtime/engine.rs",
+				"cmd/devcontainer/src/runtime/exec.rs"
+			],
+			"notes": "Public CLI tests verify literal prefixes across runtime commands and the Compose plugin with a checking engine wrapper; real Docker endpoint integration remains in upstream."
 		},
 		{
 			"upstreamTest": "upstream/src/test/cli.exec.buildKit.1.test.ts",

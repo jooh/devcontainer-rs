@@ -76,7 +76,7 @@ function parseOptionNames(functionName, sourceCache, importMap) {
 	}
 
 	const names = new Set();
-	const objectOptionRegex = /'([^']+)':\s*\{/g;
+	const objectOptionRegex = /'([^']+)':\s*(?:\{|[A-Za-z_$][\w$]*\s*[,}])/g;
 	let match;
 	while ((match = objectOptionRegex.exec(block)) !== null) {
 		names.add(match[1]);
@@ -180,7 +180,7 @@ function generateCommandMatrix() {
 	const subcommands = commands.filter(command => command.group);
 
 	return {
-		upstreamCommit: runGit(['rev-parse', 'HEAD:upstream']),
+		upstreamCommit: runGit(['-C', 'upstream', 'rev-parse', 'HEAD']),
 		sourcePath: path.relative(repositoryRoot, upstreamCliPath),
 		globalOptions: parseGlobalOptionNames(source),
 		topLevel,

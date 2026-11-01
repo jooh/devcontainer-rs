@@ -274,6 +274,10 @@ jobs:
           sudo apt-get "${apt_options[@]}" update
           sudo apt-get "${apt_options[@]}" install -y podman podman-compose
 
+      - name: Set up Compose build workaround
+        if: matrix.runner == 'docker'
+        uses: ./upstream/.github/actions/setup-compose
+
       - name: Runtime version
         run: |
           if [[ "${{ matrix.runner }}" == "podman" ]]; then

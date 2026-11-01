@@ -1,5 +1,5 @@
 {
   "submodulePath": "upstream",
-  "pinnedCommit": "5dc7533314b5ba7ec3875c30143dfe1aec644870",
-  "compatibilityContract": "This repository targets upstream/ at commit 5dc7533314b5ba7ec3875c30143dfe1aec644870."
+  "pinnedCommit": "a190a3f86fe20b582c25c4dcb7bbf5fdb739ab26",
+  "compatibilityContract": "This repository targets upstream/ at commit a190a3f86fe20b582c25c4dcb7bbf5fdb739ab26."
 }

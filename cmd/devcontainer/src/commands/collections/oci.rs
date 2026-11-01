@@ -198,16 +198,15 @@ fn parse_oci_reference_value(input: &str) -> OciReference {
             .expect("OCI resource contains a registry and repository");
         (registry.to_string(), repository.to_string())
     };
-    let suffix = input
+    let (tagged_resource, digest) = input
+        .rsplit_once('@')
+        .map_or((input, None), |(resource, digest)| {
+            (resource, Some(digest.to_string()))
+        });
+    let tag = tagged_resource
         .strip_prefix(&reference_without_selector)
-        .unwrap_or("");
-    let (tag, digest) = if let Some(digest) = suffix.strip_prefix('@') {
-        (None, Some(digest.to_string()))
-    } else if let Some(tag) = suffix.strip_prefix(':') {
-        (Some(tag.to_string()), None)
-    } else {
-        (None, None)
-    };
+        .and_then(|suffix| suffix.strip_prefix(':'))
+        .map(str::to_string);
 
     OciReference {
         original: input.to_string(),
@@ -413,7 +412,11 @@ fn artifact_from_manifest(
         resource: parsed.resource.clone(),
         registry: parsed.registry.clone(),
         repository: parsed.repository.clone(),
-        tag: Some(manifest_reference).filter(|reference| !reference.starts_with("sha256:")),
+        tag: if parsed.digest.is_some() {
+            parsed.tag.clone()
+        } else {
+            Some(manifest_reference).filter(|reference| !reference.starts_with("sha256:"))
+        },
         reference_digest: parsed.digest.clone(),
         manifest_digest,
         manifest,
@@ -1446,9 +1449,9 @@ fn sha256_digest(bytes: &[u8]) -> String {
 }
 
 fn reference_without_selector(reference: &str) -> String {
-    if let Some(index) = reference.find('@') {
-        return reference[..index].to_string();
-    }
+    let reference = reference
+        .rsplit_once('@')
+        .map_or(reference, |(resource, _)| resource);
     let last_slash = reference.rfind('/').unwrap_or(0);
     if let Some(index) = reference.rfind(':').filter(|index| *index > last_slash) {
         return reference[..index].to_string();
@@ -2652,6 +2655,52 @@ mod tests {
             "https://example.com/feature.tgz"
         ));
         assert!(!is_registry_qualified_reference("file:///tmp/feature"));
+    }
+
+    /// Strip both selectors while retaining tag metadata and resolving by digest.
+    #[test]
+    fn parses_tag_and_digest_without_corrupting_registry_repository_paths() {
+        for registry in ["mcr.microsoft.com", "localhost:5000"] {
+            let reference = format!("{registry}/devcontainers/go:2.3.1@sha256:abc");
+            let parsed = parse_oci_reference(&reference).expect("tag and digest reference");
+            assert_eq!(parsed.registry, registry);
+            assert_eq!(parsed.repository, "devcontainers/go");
+            assert_eq!(parsed.resource, format!("{registry}/devcontainers/go"));
+            assert_eq!(parsed.tag.as_deref(), Some("2.3.1"));
+            assert_eq!(parsed.digest.as_deref(), Some("sha256:abc"));
+            assert_eq!(
+                super::registry_manifest_reference(&parsed, &FakeTransport::default())
+                    .expect("digest selector"),
+                "sha256:abc"
+            );
+        }
+    }
+
+    /// Fetch the digest URL even when the reference also carries a different tag.
+    #[test]
+    fn tag_and_digest_resolution_uses_digest_and_preserves_tag_metadata() {
+        let transport = FakeTransport::default();
+        let manifest = json!({
+            "schemaVersion": 2,
+            "layers": [],
+            "annotations": {"dev.containers.metadata": "{\"id\":\"fake\",\"version\":\"1.0.0\"}"},
+        });
+        let response = manifest_response(&manifest);
+        let digest = response.headers["docker-content-digest"].clone();
+        let reference = parse_oci_reference(&format!(
+            "registry.example:5000/acme/fake:other-tag@{digest}"
+        ))
+        .expect("tag and digest");
+        transport.add(
+            &format!("https://registry.example:5000/v2/acme/fake/manifests/{digest}"),
+            response,
+        );
+        let artifact = resolve_feature_artifact_for_reference(&reference, None, &transport)
+            .expect("digest manifest");
+        assert_eq!(artifact.resource, "registry.example:5000/acme/fake");
+        assert_eq!(artifact.tag.as_deref(), Some("other-tag"));
+        assert_eq!(artifact.manifest_digest, digest);
+        assert_eq!(feature_ref_json(&artifact)["tag"], "other-tag");
     }
 
     #[test]
