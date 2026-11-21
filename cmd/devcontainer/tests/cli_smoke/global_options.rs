@@ -131,3 +131,28 @@ fn equivalent_duplicate_boolean_globals_are_accepted() {
     assert_eq!(utf8_stdout(&output), format!("{VERSION}\n"));
     assert_eq!(utf8_stderr(&output), "");
 }
+
+#[test]
+fn up_errors_include_oci_auth_diagnostics() {
+    let output = devcontainer_command(None)
+        .args(["up", "--no-lockfile", "--frozen-lockfile"])
+        .output()
+        .expect("up command should run");
+    assert_eq!(output.status.code(), Some(1));
+    let payload: Value = serde_json::from_slice(&output.stdout).expect("json error stdout");
+    assert_eq!(payload["outcome"], "error");
+    assert!(payload["message"]
+        .as_str()
+        .expect("message")
+        .contains("lockfile"));
+    assert_eq!(
+        payload["ociAuthDiagnostics"],
+        serde_json::json!({
+            "authLookupWouldBeBlocked": false,
+            "authLookupBlockedKinds": [],
+            "authLookupBlockedReasons": [],
+            "registryRedirectWouldPreventCredentialForwarding": false,
+            "authServerRedirect": false,
+        })
+    );
+}

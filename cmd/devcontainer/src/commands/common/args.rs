@@ -1,7 +1,7 @@
 //! Shared command-line parsing and runtime option helpers.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 #[cfg(not(test))]
 use std::env;
 use std::fs;
@@ -33,17 +33,24 @@ pub(crate) const DEVCONTAINER_MOUNT_GIT_WORKTREE_COMMON_DIR: &str =
 pub(crate) const DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY: &str =
     "DEVCONTAINER_WORKSPACE_MOUNT_CONSISTENCY";
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct OciAuthDiagnostics {
     pub(crate) auth_lookup_would_be_blocked: bool,
+    auth_lookup_blocked_kinds: BTreeSet<&'static str>,
+    auth_lookup_blocked_reasons: BTreeSet<&'static str>,
     pub(crate) registry_redirect_would_prevent_credential_forwarding: bool,
     pub(crate) auth_server_redirect: bool,
     attempted: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum OciAuthDiagnostic {
-    AuthLookupWouldBeBlocked,
+    AuthLookupWouldBeBlocked {
+        kind: &'static str,
+        reason: &'static str,
+        registry: String,
+        realm_origin: String,
+    },
     RegistryRedirectWouldPreventCredentialForwarding,
     AuthServerRedirect,
 }
@@ -63,7 +70,7 @@ impl Drop for OciAuthOptionsGuard {
             *current.borrow_mut() = std::mem::take(&mut self.previous);
         });
         CURRENT_OCI_AUTH_DIAGNOSTICS.with(|current| {
-            *current.borrow_mut() = self.previous_diagnostics;
+            *current.borrow_mut() = std::mem::take(&mut self.previous_diagnostics);
         });
     }
 }
@@ -161,10 +168,15 @@ pub(crate) fn record_oci_auth_diagnostic(diagnostic: OciAuthDiagnostic) {
         let mut current = current.borrow_mut();
         current.attempted = true;
         let (flag, message) = match diagnostic {
-            OciAuthDiagnostic::AuthLookupWouldBeBlocked => (
-                &mut current.auth_lookup_would_be_blocked,
-                "Authentication lookup would be blocked by OCI auth hardening.",
-            ),
+            OciAuthDiagnostic::AuthLookupWouldBeBlocked { kind, reason, registry, realm_origin } => {
+                current.auth_lookup_would_be_blocked = true;
+                let new_kind = current.auth_lookup_blocked_kinds.insert(kind);
+                let new_reason = current.auth_lookup_blocked_reasons.insert(reason);
+                if new_kind || new_reason {
+                    eprintln!("[httpOci] OCI auth diagnostics: Authentication lookup for {kind} from registry '{registry}' to realm origin '{realm_origin}' would be blocked by OCI auth hardening ({reason}).");
+                }
+                return;
+            },
             OciAuthDiagnostic::RegistryRedirectWouldPreventCredentialForwarding => (
                 &mut current.registry_redirect_would_prevent_credential_forwarding,
                 "A registry redirect would prevent forwarding registry credentials with OCI auth hardening.",
@@ -183,10 +195,12 @@ pub(crate) fn record_oci_auth_diagnostic(diagnostic: OciAuthDiagnostic) {
 
 pub(crate) fn oci_auth_diagnostics_json() -> Option<Value> {
     CURRENT_OCI_AUTH_DIAGNOSTICS.with(|current| {
-        let current = *current.borrow();
+        let current = current.borrow();
         current.attempted.then(|| {
             serde_json::json!({
                 "authLookupWouldBeBlocked": current.auth_lookup_would_be_blocked,
+                "authLookupBlockedKinds": current.auth_lookup_blocked_kinds,
+                "authLookupBlockedReasons": current.auth_lookup_blocked_reasons,
                 "registryRedirectWouldPreventCredentialForwarding": current.registry_redirect_would_prevent_credential_forwarding,
                 "authServerRedirect": current.auth_server_redirect,
             })
@@ -696,8 +710,18 @@ mod tests {
     fn oci_auth_diagnostics_are_shared_deduplicated_and_attached_to_json() {
         with_oci_auth_options(OciAuthOptions::default(), || {
             mark_oci_auth_attempted();
-            record_oci_auth_diagnostic(OciAuthDiagnostic::AuthLookupWouldBeBlocked);
-            record_oci_auth_diagnostic(OciAuthDiagnostic::AuthLookupWouldBeBlocked);
+            record_oci_auth_diagnostic(OciAuthDiagnostic::AuthLookupWouldBeBlocked {
+                kind: "feature",
+                reason: "httpRealm",
+                registry: "registry.example".to_string(),
+                realm_origin: "http://auth.example".to_string(),
+            });
+            record_oci_auth_diagnostic(OciAuthDiagnostic::AuthLookupWouldBeBlocked {
+                kind: "feature",
+                reason: "httpRealm",
+                registry: "registry.example".to_string(),
+                realm_origin: "http://auth.example".to_string(),
+            });
             record_oci_auth_diagnostic(
                 OciAuthDiagnostic::RegistryRedirectWouldPreventCredentialForwarding,
             );
@@ -709,6 +733,8 @@ mod tests {
                 payload["ociAuthDiagnostics"],
                 json!({
                     "authLookupWouldBeBlocked": true,
+                    "authLookupBlockedKinds": ["feature"],
+                    "authLookupBlockedReasons": ["httpRealm"],
                     "registryRedirectWouldPreventCredentialForwarding": true,
                     "authServerRedirect": true,
                 })
@@ -718,6 +744,55 @@ mod tests {
         let mut unrelated_payload = json!({"outcome":"success"});
         attach_oci_auth_diagnostics(&mut unrelated_payload);
         assert!(unrelated_payload.get("ociAuthDiagnostics").is_none());
+    }
+
+    #[test]
+    fn blocked_lookup_details_are_sorted_unique_snapshots_and_scoped() {
+        with_oci_auth_options(OciAuthOptions::default(), || {
+            mark_oci_auth_attempted();
+            let empty = super::oci_auth_diagnostics_json().unwrap();
+            assert_eq!(empty["authLookupBlockedKinds"], json!([]));
+            assert_eq!(empty["authLookupBlockedReasons"], json!([]));
+            for (kind, reason) in [
+                ("template", "parentDomain"),
+                ("image", "httpRealm"),
+                ("feature", "differentPort"),
+                ("feature", "differentHost"),
+                ("template", "parentDomain"),
+            ] {
+                record_oci_auth_diagnostic(OciAuthDiagnostic::AuthLookupWouldBeBlocked {
+                    kind,
+                    reason,
+                    registry: "registry.example".to_string(),
+                    realm_origin: "https://auth.example".to_string(),
+                });
+            }
+            let snapshot = super::oci_auth_diagnostics_json().unwrap();
+            assert_eq!(
+                snapshot["authLookupBlockedKinds"],
+                json!(["feature", "image", "template"])
+            );
+            assert_eq!(
+                snapshot["authLookupBlockedReasons"],
+                json!([
+                    "differentHost",
+                    "differentPort",
+                    "httpRealm",
+                    "parentDomain"
+                ])
+            );
+            assert_eq!(empty["authLookupBlockedKinds"], json!([]));
+            with_oci_auth_options(OciAuthOptions::default(), || {
+                assert_eq!(super::oci_auth_diagnostics_json(), None);
+                mark_oci_auth_attempted();
+                assert_eq!(
+                    super::oci_auth_diagnostics_json().unwrap()["authLookupBlockedKinds"],
+                    json!([])
+                );
+            });
+            assert_eq!(super::oci_auth_diagnostics_json(), Some(snapshot));
+        });
+        assert_eq!(super::oci_auth_diagnostics_json(), None);
     }
 
     #[test]

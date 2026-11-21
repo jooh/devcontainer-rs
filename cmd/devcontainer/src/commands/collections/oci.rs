@@ -534,6 +534,18 @@ struct ParsedHttpUrl {
     hostname: String,
 }
 
+fn auth_lookup_blocked_reason(registry: &ParsedHttpUrl, realm: &ParsedHttpUrl) -> &'static str {
+    if realm.scheme != "https" {
+        "httpRealm"
+    } else if realm.hostname == registry.hostname {
+        "differentPort"
+    } else if registry.hostname.ends_with(&format!(".{}", realm.hostname)) {
+        "parentDomain"
+    } else {
+        "differentHost"
+    }
+}
+
 pub(crate) fn parse_cross_origin_auth_hosts(
     entries: &[String],
 ) -> Result<HashMap<String, HashSet<String>>, String> {
@@ -912,25 +924,28 @@ fn fetch_bearer_token_for_registry_url(
         &auth_options.allowed_cross_origin_auth_hosts,
     );
     if !realm_allowed {
-        common::record_oci_auth_diagnostic(common::OciAuthDiagnostic::AuthLookupWouldBeBlocked);
-    }
-    if auth_options.hardening && !realm_allowed {
-        let challenge_registry = parse_http_url(registry_url)
-            .map(|url| url.authority)
-            .unwrap_or_else(|_| registry.to_string());
-        let hint = parse_http_url(realm)
-            .ok()
-            .filter(|realm| realm.scheme == "https")
-            .map(|realm| {
+        let registry_url = parse_http_url(registry_url)?;
+        let realm_url = parse_http_url(realm)?;
+        let challenge_registry = registry_url.authority.clone();
+        common::record_oci_auth_diagnostic(common::OciAuthDiagnostic::AuthLookupWouldBeBlocked {
+            kind: "feature",
+            reason: auth_lookup_blocked_reason(&registry_url, &realm_url),
+            registry: registry_url.authority,
+            realm_origin: format!("{}://{}", realm_url.scheme, realm_url.authority),
+        });
+        if auth_options.hardening {
+            let hint = if realm_url.scheme == "https" {
                 format!(
                     " Use '--allow-cross-origin-auth-host {challenge_registry}={}' to trust this registry-to-auth-host mapping.",
-                    realm.authority
+                    realm_url.authority
                 )
-            })
-            .unwrap_or_default();
-        return Err(format!(
-            "Registry '{challenge_registry}' requested authentication from untrusted realm '{realm}'.{hint}"
-        ));
+            } else {
+                String::new()
+            };
+            return Err(format!(
+                "Registry '{challenge_registry}' requested authentication from untrusted realm '{realm}'.{hint}"
+            ));
+        }
     }
     let scope = parameters.get("scope").map(String::as_str);
     let token_url = token_service_url(realm, &service, scope)?;
@@ -3402,6 +3417,110 @@ esac
     }
 
     #[test]
+    fn blocked_lookup_reasons_match_upstream_precedence() {
+        for (registry, realm, expected) in [
+            (
+                "https://registry.example/v2/",
+                "http://registry.example/token",
+                "httpRealm",
+            ),
+            (
+                "https://registry.example/v2/",
+                "http://auth.example/token",
+                "httpRealm",
+            ),
+            (
+                "https://registry.example/v2/",
+                "https://registry.example:8443/token",
+                "differentPort",
+            ),
+            (
+                "https://gitlab.example:5050/v2/",
+                "https://gitlab.example/jwt/auth",
+                "differentPort",
+            ),
+            (
+                "https://registry.gitlab.example/v2/",
+                "https://gitlab.example/jwt/auth",
+                "parentDomain",
+            ),
+            (
+                "https://REGISTRY.GITLAB.EXAMPLE/v2/",
+                "https://GITLAB.EXAMPLE/jwt/auth",
+                "parentDomain",
+            ),
+            (
+                "https://notgitlab.example/v2/",
+                "https://gitlab.example/jwt/auth",
+                "differentHost",
+            ),
+            (
+                "https://docker.example/v2/",
+                "https://docker-auth.example/auth",
+                "differentHost",
+            ),
+            (
+                "https://registry.example/v2/",
+                "https://registry.example.attacker.example/token",
+                "differentHost",
+            ),
+        ] {
+            assert_eq!(
+                super::auth_lookup_blocked_reason(
+                    &super::parse_http_url(registry).unwrap(),
+                    &super::parse_http_url(realm).unwrap()
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn hardened_lookup_records_details_before_refusing_token_request() {
+        let transport = FakeTransport::default();
+        crate::commands::common::with_oci_auth_options(
+            crate::commands::common::OciAuthOptions {
+                hardening: true,
+                allowed_cross_origin_auth_hosts: Vec::new(),
+            },
+            || {
+                for realm in [
+                    "https://registry.example:8443/token",
+                    "http://auth.example/token",
+                    "https://example/token",
+                    "https://auth.example/token",
+                ] {
+                    let challenge = format!("Bearer realm=\"{realm}\"");
+                    let error = super::fetch_bearer_token_for_registry_url(
+                        &transport,
+                        "registry.example",
+                        "https://registry.example/v2/",
+                        &challenge,
+                        None,
+                        None,
+                        true,
+                    )
+                    .unwrap_err();
+                    assert!(error.contains("untrusted realm"));
+                }
+                let diagnostics = crate::commands::common::oci_auth_diagnostics_json().unwrap();
+                assert_eq!(diagnostics["authLookupWouldBeBlocked"], true);
+                assert_eq!(diagnostics["authLookupBlockedKinds"], json!(["feature"]));
+                assert_eq!(
+                    diagnostics["authLookupBlockedReasons"],
+                    json!([
+                        "differentHost",
+                        "differentPort",
+                        "httpRealm",
+                        "parentDomain"
+                    ])
+                );
+            },
+        );
+        assert!(transport.seen_authorization.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn registry_auth_retries_basic_and_reports_malformed_bearer_challenges() {
         let mut env_guard = crate::test_support::process_env_guard();
         env_guard.set_var("DEVCONTAINERS_OCI_AUTH", "registry.example.com|user|secret");
@@ -3797,6 +3916,8 @@ esac
                     crate::commands::common::oci_auth_diagnostics_json(),
                     Some(json!({
                         "authLookupWouldBeBlocked": true,
+                        "authLookupBlockedKinds": ["feature"],
+                        "authLookupBlockedReasons": ["httpRealm"],
                         "registryRedirectWouldPreventCredentialForwarding": true,
                         "authServerRedirect": true,
                     }))
