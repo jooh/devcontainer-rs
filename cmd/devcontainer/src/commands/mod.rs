@@ -42,9 +42,7 @@ fn dispatch_with_options(command: &str, args: &[String]) -> DispatchResult {
         "build" => DispatchResult::Complete(print_json_result_with_oci_auth_diagnostics(
             runtime::run_build(args),
         )),
-        "up" => DispatchResult::Complete(print_json_result_with_oci_auth_diagnostics(
-            runtime::run_up(args),
-        )),
+        "up" => DispatchResult::Complete(print_up_result(runtime::run_up(args))),
         "set-up" => DispatchResult::Complete(print_json_result(runtime::run_set_up(args))),
         "run-user-commands" => {
             DispatchResult::Complete(print_json_result(runtime::run_user_commands(args)))
@@ -67,6 +65,24 @@ fn print_json_result(result: Result<Value, String>) -> ExitCode {
         }
         Err(error) => {
             eprintln!("{error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn print_up_result(result: Result<Value, String>) -> ExitCode {
+    common::mark_oci_auth_attempted();
+    match result {
+        Ok(payload) => print_json_result(Ok(payload)),
+        Err(error) => {
+            eprintln!("{error}");
+            let mut payload = serde_json::json!({
+                "outcome": "error",
+                "message": error,
+                "description": "An error occurred setting up the container.",
+            });
+            common::attach_oci_auth_diagnostics(&mut payload);
+            println!("{payload}");
             ExitCode::from(1)
         }
     }

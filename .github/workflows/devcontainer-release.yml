@@ -26,7 +26,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Compute next patch version
+      - name: Compute release version
         id: version
         shell: bash
         run: |
@@ -42,6 +42,8 @@ jobs:
 
           IFS='.' read -r major minor patch <<< "$base_version"
           next_version="${major}.${minor}.$((patch + 1))"
+          manifest_version="$(sed -nE 's/^version = "([^"]+)"/\1/p' cmd/devcontainer/Cargo.toml | head -n 1)"
+          next_version="$(printf '%s\n' "$manifest_version" "$next_version" | sort -V | tail -n 1)"
           next_tag="${TAG_PREFIX}${next_version}"
 
           echo "version=${next_version}" >> "$GITHUB_OUTPUT"

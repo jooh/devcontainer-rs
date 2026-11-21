@@ -1,5 +1,5 @@
 {
-	"upstreamCommit": "a190a3f86fe20b582c25c4dcb7bbf5fdb739ab26",
+	"upstreamCommit": "0d38c68a2132655de219062ec7859fbef94ff255",
 	"sourcePath": "upstream/src/spec-node/devContainersSpecCLI.ts",
 	"globalOptions": [
 		"allow-cross-origin-auth-host",

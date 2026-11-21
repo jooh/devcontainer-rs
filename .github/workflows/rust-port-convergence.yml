@@ -27,13 +27,17 @@ jobs:
           node-version: '20.x'
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          components: clippy, rustfmt, llvm-tools-preview
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v6
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.1
 
       - name: Install cargo-deny
         uses: taiki-e/install-action@cargo-deny
