@@ -1,5 +1,5 @@
 {
-	"upstreamCommit": "a190a3f86fe20b582c25c4dcb7bbf5fdb739ab26",
+	"upstreamCommit": "0d38c68a2132655de219062ec7859fbef94ff255",
 	"suites": [
 		{
 			"upstreamTest": "upstream/src/test/cli.build.test.ts",
@@ -311,7 +311,7 @@
 			"nativeTests": [
 				"cmd/devcontainer/src/commands/collections/oci.rs"
 			],
-			"notes": "Native OCI coverage validates hardened same-origin and trusted cross-origin token realms, origin-bound credential forwarding, cross-origin Basic suppression, shadow diagnostics, refresh-token POST with anonymous retry, query encoding, and redirect refusal for hardened token requests. Cached bearer-token reuse and redirect-without-challenge coverage remain partial.",
+			"notes": "Native OCI coverage validates hardened same-origin and trusted cross-origin token realms, origin-bound credential forwarding, cross-origin Basic suppression, shadow diagnostics with sorted unique lookup kinds and blocked reasons, reason precedence, hardening rejection diagnostics, refresh-token POST with anonymous retry, query encoding, and redirect refusal for hardened token requests. Cached bearer-token reuse and redirect-without-challenge coverage remain partial.",
 			"unportedScenarios": [
 				"cached bearer-token reuse and invalidation, including redirected challenges that must not populate the original registry cache",
 				"an explicit cross-origin registry redirect that returns successfully without an authentication challenge"

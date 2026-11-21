@@ -2,7 +2,7 @@
 
 Generated from the pinned upstream CLI command matrix and static source evidence in the Rust implementation.
 
-- Upstream commit: `a190a3f86fe20b582c25c4dcb7bbf5fdb739ab26`
+- Upstream commit: `0d38c68a2132655de219062ec7859fbef94ff255`
 - Source: `upstream/src/spec-node/devContainersSpecCLI.ts`
 - Declared upstream command paths present natively: `20/20`
 - Upstream options with a native source reference in mapped files: `213/213`
