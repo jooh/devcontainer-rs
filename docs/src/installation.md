@@ -7,9 +7,12 @@ runtime. Choose one installation method below.
 ## Homebrew
 
 ```bash
-brew install jooh/devcontainer-rs/devcontainer-rs
+brew install jooh/tap/devcontainer-rs
 devcontainer --version
 ```
+
+The tap is [`jooh/homebrew-tap`](https://github.com/jooh/homebrew-tap),
+which Homebrew names `jooh/tap`.
 
 ## Python tools
 

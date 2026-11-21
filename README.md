@@ -23,11 +23,11 @@ npx @devcontainer-rs/cli --version
 Install it with Homebrew:
 
 ```bash
-brew install jooh/devcontainer-rs/devcontainer-rs
+brew install jooh/tap/devcontainer-rs
 devcontainer --version
 ```
 
-Homebrew resolves `jooh/devcontainer-rs` from the tap repository
+Homebrew resolves `jooh/tap` from the tap repository
 `jooh/homebrew-tap`.
 
 ## Stable Runtime Environment Defaults
