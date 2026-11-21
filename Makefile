@@ -73,6 +73,7 @@ docs-build:
 	$(MDBOOK) build docs
 
 docs-check: docs-build
+	node build/sync-site-brand.js --check
 	cargo build --manifest-path $(RUST_MANIFEST) --locked
 	node build/generate-native-cli-reference.js --check
 	$(LYCHEE) --offline --include-fragments --no-progress --no-ignore --root-dir '$(abspath target/site)' 'target/site/devcontainer-rs/**/*.html'

@@ -237,6 +237,12 @@ repository's Pages source to **GitHub Actions**, with no custom domain: the proj
 site inherits the personal site's domain at `/devcontainer-rs/`. The personal
 website has its own build and does not need to fetch or copy this output.
 
+The shared visual styling and local fonts are pinned from the website repository.
+Run `node build/sync-site-brand.js <full-website-commit-sha>` to update them, then
+review the preview and commit the assets with `docs/theme/site-brand.json`. Normal
+builds run offline; `make docs-check` verifies the pinned files have not drifted.
+Keep mdBook-specific layout and dark-mode rules in `docs/theme/custom.css`.
+
 ### Implementation notes
 
 - Architecture, command flow, and runtime module ownership: `docs/architecture.md`
