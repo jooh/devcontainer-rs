@@ -46,6 +46,8 @@ ARG GIT_SHA256=457fdb04dc8728e007d4688695e6912e6f680727920f2a40bf11eacc17505357
 ARG UV_VERSION=0.12.3
 ARG CARGO_DENY_VERSION=0.20.2
 ARG CARGO_LLVM_COV_VERSION=0.8.7
+ARG MDBOOK_VERSION=0.5.4
+ARG LYCHEE_VERSION=0.24.2
 
 RUN set -eux \
 	&& apt-get update \
@@ -68,6 +70,8 @@ RUN set -eux \
 	&& rustup component add llvm-tools-preview \
 	&& cargo install --locked --version "${CARGO_DENY_VERSION}" cargo-deny \
 	&& cargo install --locked --version "${CARGO_LLVM_COV_VERSION}" cargo-llvm-cov \
+	&& cargo install --locked --version "${MDBOOK_VERSION}" mdbook \
+	&& cargo install --locked --version "${LYCHEE_VERSION}" lychee \
 	&& chown -R "${USERNAME}:${USERNAME}" /usr/local/cargo /usr/local/rustup
 
 USER ${USERNAME}
