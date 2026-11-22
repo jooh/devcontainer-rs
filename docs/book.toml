@@ -1,0 +1,23 @@
+[book]
+title = "devcontainer-rs"
+authors = ["Johan Carlin"]
+language = "en"
+src = "src"
+description = "Installation, usage, and command reference for the native Rust Dev Containers CLI."
+
+[build]
+build-dir = "../target/site/devcontainer-rs"
+create-missing = false
+
+[output.html]
+theme = "theme"
+additional-css = ["theme/custom.css"]
+default-theme = "light"
+preferred-dark-theme = "coal"
+no-section-label = true
+git-repository-url = "https://github.com/jooh/devcontainer-rs"
+edit-url-template = "https://github.com/jooh/devcontainer-rs/edit/main/docs/{path}"
+site-url = "/devcontainer-rs/"
+
+[output.html.print]
+enable = false

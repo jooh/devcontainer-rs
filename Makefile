@@ -3,6 +3,10 @@
 	rust-clippy \
 	rust-check \
 	rust-doc \
+	docs-build \
+	docs-check \
+	docs-reference \
+	docs-serve \
 	rust-tests \
 	cargo-deny-check \
 	rust-coverage \
@@ -41,11 +45,13 @@
 RUST_MANIFEST := cmd/devcontainer/Cargo.toml
 RELEASE_BINARY := ./cmd/devcontainer/target/release/devcontainer
 CARGO_LLVM_COV ?= cargo llvm-cov
+MDBOOK ?= mdbook
+LYCHEE ?= lychee
 ACTIONLINT := uv tool run --from actionlint-py actionlint
 SHELLCHECK := uv tool run --from shellcheck-py shellcheck
 SHELLCHECK_FILES := $(shell git ls-files -- '*.sh' '.githooks/pre-commit' ':(exclude)upstream/**' ':(exclude)spec/**' ':(exclude)target/**' ':(exclude)node_modules/**')
 
-tests: rust-fmt rust-tests rust-clippy rust-check rust-doc rust-coverage cargo-deny-check actionlint-check shellcheck build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check check-upstream-submodule command-matrix-drift-check check-cli-reference schema-drift-check parity-harness no-node-runtime npm-wrapper-check npm-publish-script-check npm-package-smoke artifact-smoke-workflow-check tap-check homebrew-distribution-check npm-publish-workflow-check parity-artifact-tests check-parity-inventory check-cli-metadata check-compatibility-dashboard check-upstream-test-coverage check-devcontainer-config devcontainer-provision-smoke upstream-compatibility
+tests: rust-fmt rust-tests rust-clippy rust-check rust-doc rust-coverage cargo-deny-check actionlint-check shellcheck build-release standalone-artifact-smoke pypi-wheel-smoke native-only-startup-contract acceptance-fixtures-check check-upstream-submodule command-matrix-drift-check check-cli-reference schema-drift-check parity-harness no-node-runtime npm-wrapper-check npm-publish-script-check npm-package-smoke artifact-smoke-workflow-check tap-check homebrew-distribution-check npm-publish-workflow-check parity-artifact-tests check-parity-inventory check-cli-metadata check-compatibility-dashboard check-upstream-test-coverage check-devcontainer-config devcontainer-provision-smoke upstream-compatibility docs-check
 
 rust-fmt:
 	cargo fmt --manifest-path $(RUST_MANIFEST) --all -- --check
@@ -58,6 +64,22 @@ rust-check:
 
 rust-doc:
 	cargo doc --manifest-path $(RUST_MANIFEST) --locked --no-deps --document-private-items
+
+docs-reference:
+	cargo build --manifest-path $(RUST_MANIFEST) --locked
+	node build/generate-native-cli-reference.js
+
+docs-build:
+	$(MDBOOK) build docs
+
+docs-check: docs-build
+	node build/sync-site-brand.js --check
+	cargo build --manifest-path $(RUST_MANIFEST) --locked
+	node build/generate-native-cli-reference.js --check
+	$(LYCHEE) --offline --include-fragments --no-progress --no-ignore --root-dir '$(abspath target/site)' 'target/site/devcontainer-rs/**/*.html'
+
+docs-serve:
+	$(MDBOOK) serve docs --open
 
 rust-tests:
 	cargo test --manifest-path $(RUST_MANIFEST) --locked

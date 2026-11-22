@@ -8,6 +8,9 @@ This repository hosts a native Rust implementation of the Dev Containers CLI, wi
 
 The shipped runtime is the Rust binary in `cmd/devcontainer`. Node is kept only for lightweight compatibility tooling such as upstream/spec drift checks, generated compatibility inventories, and the parity smoke harness.
 
+The [user guide](https://www.johancarlin.com/devcontainer-rs/) covers installation,
+usage, enhancements over upstream, and the generated native CLI reference.
+
 ## Install
 
 Run the CLI without adding it permanently to your environment:
@@ -20,11 +23,11 @@ npx @devcontainer-rs/cli --version
 Install it with Homebrew:
 
 ```bash
-brew install jooh/devcontainer-rs/devcontainer-rs
+brew install jooh/tap/devcontainer-rs
 devcontainer --version
 ```
 
-Homebrew resolves `jooh/devcontainer-rs` from the tap repository
+Homebrew resolves `jooh/tap` from the tap repository
 `jooh/homebrew-tap`.
 
 ## Stable Runtime Environment Defaults
@@ -211,6 +214,36 @@ npm run check-spec-drift
 If a pinned submodule revision changes, update the matching generated baseline files in `docs/upstream/`.
 
 ## Contributor notes
+
+### User documentation
+
+The four-page user guide lives in `docs/src/` and is built with
+[mdBook](https://rust-lang.github.io/mdBook/). Install the versions used by CI:
+
+```bash
+cargo install mdbook --version 0.5.4 --locked
+cargo install lychee --version 0.24.2 --locked
+```
+
+The dev container includes these tools. Update the relevant guide page alongside
+behavior changes, and run `make docs-reference` after
+changing command help. `make docs-check` builds the static site, checks the
+reference against the compiled binary, and checks local links and anchors.
+Use `make docs-serve` for a local preview.
+
+The Documentation workflow builds pull requests and uploads `documentation-site`
+for review. Pushes to `main` publish `target/site/devcontainer-rs/` through GitHub Pages. Set this
+repository's Pages source to **GitHub Actions**, with no custom domain: the project
+site inherits the personal site's domain at `/devcontainer-rs/`. The personal
+website has its own build and does not need to fetch or copy this output.
+
+The shared visual styling and local fonts are pinned from the website repository.
+Run `node build/sync-site-brand.js <full-website-commit-sha>` to update them, then
+review the preview and commit the assets with `docs/theme/site-brand.json`. Normal
+builds run offline; `make docs-check` verifies the pinned files have not drifted.
+Keep mdBook-specific layout and dark-mode rules in `docs/theme/custom.css`.
+
+### Implementation notes
 
 - Architecture, command flow, and runtime module ownership: `docs/architecture.md`
 - Generated upstream command reference: `docs/upstream/command-reference.md`

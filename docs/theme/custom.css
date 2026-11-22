@@ -1,0 +1,65 @@
+:root {
+    --content-max-width: 820px;
+    --sidebar-target-width: 250px;
+    --mono-font: var(--site-mono-font);
+}
+.light {
+    --bg: var(--site-bg);
+    --fg: var(--site-text);
+    --sidebar-bg: var(--site-nav-bg);
+    --sidebar-fg: var(--site-nav-text);
+    --sidebar-active: var(--site-heading);
+    --sidebar-header-border-color: #cccccc;
+    --links: var(--site-link);
+    --inline-code-color: #c7254e;
+    --quote-bg: var(--site-code-bg);
+    --quote-border: var(--site-border);
+    --table-border-color: var(--site-border);
+    --table-header-bg: var(--site-nav-bg);
+    --table-alternate-bg: #fafafa;
+}
+.coal, .navy, .ayu, .rust {
+    --site-bg: var(--bg);
+    --site-text: var(--fg);
+    --site-heading: var(--fg);
+    --site-link: var(--links);
+    --site-nav-bg: var(--sidebar-bg);
+    --site-nav-text: var(--sidebar-fg);
+    --site-border: var(--table-border-color);
+    --site-code-bg: var(--quote-bg);
+    --site-code-text: var(--fg);
+    --site-code-border: var(--table-border-color);
+}
+body {
+    font-family: var(--site-font);
+    font-size: 1.6rem;
+    line-height: 1.6;
+}
+.page { margin-block-start: 0; }
+#mdbook-menu-bar-hover-placeholder { height: 0; }
+.site-header { margin-inline: calc(0px - var(--page-padding)); }
+.content h1, .content h2, .content h3 {
+    color: var(--site-heading);
+    font-weight: 400;
+    line-height: 1.15;
+}
+.content h1 { margin-top: 24px; font-size: 3.6rem; }
+.content h2 { margin-top: 32px; font-size: 2.8rem; }
+.content pre {
+    padding: 16px 20px;
+    border: 1px solid var(--site-code-border);
+    border-radius: var(--site-code-radius);
+    font-size: 1.4rem;
+    background: var(--site-code-bg);
+}
+.content pre > code { padding: 0; }
+.content pre code.language-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.content table { margin: 24px 0; font-size: 1.4rem; }
+.content table th, .content table td { padding: 10px 12px; }
+.sidebar .chapter li a.active { font-weight: 700; }
+@media (max-width: 600px) {
+    .site-header .site-name { font-size: 1.6rem; }
+    .site-header nav { font-size: 1.4rem; }
+    .content h1 { font-size: 3rem; }
+    .content h2 { font-size: 2.4rem; }
+}

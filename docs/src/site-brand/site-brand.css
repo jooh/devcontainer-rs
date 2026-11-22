@@ -1,0 +1,83 @@
+@font-face {
+    font-family: "Source Sans Pro";
+    font-style: normal;
+    font-weight: 300;
+    font-display: swap;
+    src: url("fonts/source-sans-pro-latin-300-normal.woff2") format("woff2");
+}
+@font-face {
+    font-family: "Source Sans Pro";
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url("fonts/source-sans-pro-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+    font-family: "Source Sans Pro";
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url("fonts/source-sans-pro-latin-700-normal.woff2") format("woff2");
+}
+@font-face {
+    font-family: "Source Sans Pro";
+    font-style: italic;
+    font-weight: 400;
+    font-display: swap;
+    src: url("fonts/source-sans-pro-latin-400-italic.woff2") format("woff2");
+}
+:root {
+    --site-font: "Source Sans Pro", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --site-mono-font: Menlo, Monaco, Consolas, "Courier New", monospace;
+    --site-bg: #ffffff;
+    --site-text: #555555;
+    --site-heading: #333333;
+    --site-link: #158cba;
+    --site-border: #e7e7e7;
+    --site-nav-bg: #f8f8f8;
+    --site-nav-text: #666666;
+    --site-code-bg: #f5f5f5;
+    --site-code-text: #333333;
+    --site-code-border: #cccccc;
+    --site-code-radius: 4px;
+    --site-header-height: 54px;
+}
+.site-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: var(--site-header-height);
+    padding: 0 24px;
+    border-bottom: 4px solid var(--site-border);
+    background: var(--site-nav-bg);
+    font-family: var(--site-font);
+}
+.site-header a {
+    color: var(--site-nav-text);
+    text-decoration: none;
+    white-space: nowrap;
+}
+.site-header .site-name {
+    color: var(--site-heading);
+    font-size: 1.8rem;
+    font-weight: 400;
+}
+.site-header nav {
+    display: flex;
+    gap: 24px;
+    font-size: 1.6rem;
+}
+.site-header a[aria-current],
+.site-header a:hover,
+.site-header a:focus-visible {
+    color: var(--site-heading);
+}
+.site-header a:focus-visible {
+    outline: 2px solid var(--site-link);
+    outline-offset: 4px;
+}
+@media (max-width: 600px) {
+    .site-header { padding: 0 12px; }
+    .site-header nav { gap: 16px; }
+}
