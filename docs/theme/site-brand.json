@@ -1,9 +1,9 @@
 {
   "repository": "jooh/jooh.github.io",
-  "revision": "426b548e5ae93511e8bbcafc15681922b83c34fc",
+  "revision": "47a85398b3758637020b53770f07519ac190a9af",
   "path": "content/extra/site-brand",
   "files": {
-    "site-brand.css": "d8a9962a2dec81a620c827e5289f90c7c1642761e4092fa28492ac4137cf4654",
+    "site-brand.css": "84e150a935d2d922c528eae1591f77040b498e4200ace4094b58fcf2e67eadff",
     "LICENSE": "18aabf190848725e2576eefb5c29ba06aac1029d02132252a7f312eac2e50cf3",
     "fonts/source-sans-pro-latin-300-normal.woff2": "c3de27b2cbd6deda629c9b442700cf54c0dda74e494b1c75a57d822068a047f8",
     "fonts/source-sans-pro-latin-400-normal.woff2": "7b348b30ea1fe43857e68fc462c29e5c6e63c97666af75135c4396a272e54762",
