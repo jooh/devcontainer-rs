@@ -523,7 +523,11 @@ fn build_exports_only_the_terminal_feature_stage() {
     assert_eq!(payload["outcome"], "success");
     assert_eq!(payload["imageName"], "example/native-build:feature-output");
 
-    let invocations = harness.read_engine_argv();
+    let invocations = harness
+        .read_engine_argv()
+        .into_iter()
+        .filter(|argv| argv.first().is_some_and(|arg| arg == "build"))
+        .collect::<Vec<_>>();
     assert_eq!(invocations.len(), 2, "{invocations:?}");
     assert_eq!(
         invocations[0],
@@ -559,6 +563,8 @@ fn build_exports_only_the_terminal_feature_stage() {
             "BUILDKIT_INLINE_CACHE=1".to_string(),
             "--output".to_string(),
             "type=oci,dest=/tmp/native-feature-output.tar".to_string(),
+            "--build-arg".to_string(),
+            "_DEV_CONTAINERS_IMAGE_USER=root".to_string(),
             feature_context.display().to_string(),
         ]
     );

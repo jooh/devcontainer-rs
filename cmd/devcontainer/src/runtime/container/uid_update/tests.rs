@@ -12,10 +12,10 @@ use crate::runtime::context::ResolvedConfig;
 
 use super::{
     command_stdout, inspect_image_details_for_uid_update_once,
-    inspect_image_details_without_variant, parse_image_inspect_details, prepare_up_image,
-    prepare_up_image_for_platform, should_update_remote_user_uid, uid_update_base_image,
-    uid_update_details, uid_update_local_image_name, uid_update_run_args_user,
-    unique_uid_update_build_context, UID_UPDATE_DOCKERFILE,
+    inspect_image_details_without_variant, inspect_image_user, parse_image_inspect_details,
+    prepare_up_image, prepare_up_image_for_platform, should_update_remote_user_uid,
+    uid_update_base_image, uid_update_details, uid_update_local_image_name,
+    uid_update_run_args_user, unique_uid_update_build_context, UID_UPDATE_DOCKERFILE,
 };
 
 #[test]
@@ -974,4 +974,71 @@ fn from_args_without_default(dockerfile: &str) -> Vec<String> {
     }
 
     offenders
+}
+
+#[test]
+fn feature_image_user_preserves_named_numeric_and_group_users() {
+    for user in ["developer", "1234", "developer:1234", "root"] {
+        let fixture = FakeEngineFixture::new();
+        fixture.write(
+            "image-inspect.stdout",
+            &image_inspect_output(user, Some("linux/amd64")),
+        );
+        assert_eq!(
+            inspect_image_user(&fixture.args(), "example/base").expect("image user"),
+            user
+        );
+    }
+}
+
+#[test]
+fn feature_image_user_defaults_empty_user_to_root() {
+    let fixture = FakeEngineFixture::new();
+    fixture.write("image-inspect.stdout", "\nlinux/amd64\n");
+    assert_eq!(
+        inspect_image_user(&fixture.args(), "example/base").expect("default user"),
+        "root"
+    );
+}
+
+#[test]
+fn feature_image_user_pulls_missing_base_image() {
+    let fixture = FakeEngineFixture::new();
+    fixture.write("image-inspect.exit", "1\n");
+    fixture.write("image-inspect.stderr", "No such image: example/base\n");
+    fixture.write(
+        "image-inspect-after-pull.stdout",
+        &image_inspect_output("developer:1234", Some("linux/amd64")),
+    );
+    assert_eq!(
+        inspect_image_user(&fixture.args(), "example/base").expect("pulled user"),
+        "developer:1234"
+    );
+    assert!(fixture.invocations().contains("pull example/base"));
+}
+
+#[test]
+fn feature_image_user_reports_missing_image_after_pull() {
+    let fixture = FakeEngineFixture::new();
+    fixture.write("image-inspect.exit", "1\n");
+    fixture.write("image-inspect.stderr", "No such image: example/base\n");
+    fixture.write("image-inspect-after-pull.exit", "1\n");
+    fixture.write(
+        "image-inspect-after-pull.stderr",
+        "No such image: example/base\n",
+    );
+    assert!(inspect_image_user(&fixture.args(), "example/base")
+        .expect_err("missing image")
+        .contains("No such image"));
+}
+
+#[test]
+fn feature_image_user_propagates_inspection_errors() {
+    let fixture = FakeEngineFixture::new();
+    fixture.write("image-inspect.exit", "1\n");
+    fixture.write("image-inspect.stderr", "permission denied\n");
+    assert_eq!(
+        inspect_image_user(&fixture.args(), "example/base").expect_err("inspection failure"),
+        "permission denied"
+    );
 }

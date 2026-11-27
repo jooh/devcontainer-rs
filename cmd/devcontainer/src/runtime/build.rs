@@ -9,6 +9,7 @@ use crate::commands::common;
 use crate::commands::configuration;
 
 use super::compose;
+use super::container;
 use super::context::ResolvedConfig;
 use super::engine;
 use super::paths::{resolve_relative, unique_temp_path};
@@ -182,15 +183,20 @@ pub(crate) fn build_feature_image(
     installations: &[configuration::FeatureInstallation],
     pull_base_image: bool,
 ) -> Result<String, String> {
+    if pull_base_image {
+        pull_source_image_if_requested(args, base_image)?;
+    }
+    let image_user = container::inspect_image_user(args, base_image)?;
     let build_context_dir = unique_feature_build_dir();
     fs::create_dir_all(&build_context_dir).map_err(|error| error.to_string())?;
     let dockerfile_path =
         write_feature_dockerfile(args, &build_context_dir, base_image, installations)?;
     let mut engine_args =
         engine_build_args(args, image_name, &dockerfile_path, BuildStage::Terminal);
-    if pull_base_image {
-        engine_args.push("--pull".to_string());
-    }
+    engine_args.extend([
+        "--build-arg".to_string(),
+        format!("_DEV_CONTAINERS_IMAGE_USER={image_user}"),
+    ]);
     engine_args.push(build_context_dir.display().to_string());
 
     let result = engine::run_engine(args, engine_args);
@@ -245,7 +251,7 @@ fn write_feature_dockerfile(
     installations: &[configuration::FeatureInstallation],
 ) -> Result<PathBuf, String> {
     let dockerfile_path = build_context_dir.join("Dockerfile");
-    let mut dockerfile = format!("{}FROM {base_image}\n", dockerfile_prefix(args));
+    let mut dockerfile = format!("{}FROM {base_image}\nUSER root\n", dockerfile_prefix(args));
     for (index, installation) in installations.iter().enumerate() {
         let feature_name = configuration::feature_installation_name(installation);
         let destination = format!("feature-{index}-{feature_name}");
@@ -269,6 +275,7 @@ fn write_feature_dockerfile(
             shell_single_quote(&command)
         ));
     }
+    dockerfile.push_str("ARG _DEV_CONTAINERS_IMAGE_USER=root\nUSER $_DEV_CONTAINERS_IMAGE_USER\n");
     fs::write(&dockerfile_path, dockerfile).map_err(|error| error.to_string())?;
     Ok(dockerfile_path)
 }
@@ -712,7 +719,10 @@ mod tests {
             "example/featured:test"
         );
         let log = fs::read_to_string(log).expect("engine log");
-        let builds = log.lines().collect::<Vec<_>>();
+        let builds = log
+            .lines()
+            .filter(|line| line.starts_with("build "))
+            .collect::<Vec<_>>();
         assert_eq!(builds.len(), 2, "{log}");
         assert!(builds[0].contains("--pull"), "{log}");
         assert!(!builds[1].contains("--pull"), "{log}");
@@ -747,9 +757,9 @@ mod tests {
 
         build_image(&resolved, &args).expect("feature image");
         let log = fs::read_to_string(log).expect("engine log");
-        assert_eq!(log.lines().count(), 1, "{log}");
+        assert!(log.contains("pull debian:bookworm"), "{log}");
         assert!(log.contains("build --tag example/featured:test"), "{log}");
-        assert!(log.contains("--pull"), "{log}");
+        assert!(!log.contains("--pull"), "{log}");
     }
 
     #[test]
@@ -1166,6 +1176,10 @@ exit 0
             &format!(
                 r#"#!/bin/sh
 set -eu
+if [ "$1" = image ]; then
+  printf 'developer:1234\nlinux/amd64\n'
+  exit 0
+fi
 dockerfile=
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "--file" ]; then
@@ -1192,7 +1206,16 @@ exit 0
 
         assert_eq!(image, "example/featured:test");
         let dockerfile = fs::read_to_string(captured).expect("captured dockerfile");
-        assert!(dockerfile.contains("FROM debian:bookworm"), "{dockerfile}");
+        assert!(
+            dockerfile.contains("FROM debian:bookworm\nUSER root\n"),
+            "{dockerfile}"
+        );
+        assert!(
+            dockerfile.ends_with(
+                "ARG _DEV_CONTAINERS_IMAGE_USER=root\nUSER $_DEV_CONTAINERS_IMAGE_USER\n"
+            ),
+            "{dockerfile}"
+        );
         assert!(
             dockerfile.contains(r#"FEATUREFLAG='"'"'enabled'"'"' ./install.sh"#),
             "{dockerfile}"
@@ -1252,6 +1275,7 @@ exit 0
                 r#"#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> '{}'
+if [ "$1" = image ]; then exit 0; fi
 last=
 for arg in "$@"; do
   last="$arg"

@@ -236,6 +236,35 @@ fn is_updatable_user(user: &str) -> bool {
     user != "root" && !user.chars().all(|character| character.is_ascii_digit())
 }
 
+/// Resolve the base image user, pulling an uncached image when necessary.
+pub(crate) fn inspect_image_user(args: &[String], image_name: &str) -> Result<String, String> {
+    let inspect_args = vec![
+        "image".to_string(),
+        "inspect".to_string(),
+        "--format".to_string(),
+        "{{.Config.User}}".to_string(),
+        image_name.to_string(),
+    ];
+    let mut result = engine::run_engine(args, inspect_args.clone())?;
+    if result.status_code != 0
+        && is_missing_local_image_inspect_error(&engine::stderr_or_stdout(&result))
+    {
+        pull_image_for_uid_update(args, image_name)?;
+        result = engine::run_engine(args, inspect_args)?;
+    }
+    if result.status_code != 0 {
+        return Err(engine::stderr_or_stdout(&result));
+    }
+    Ok(result
+        .stdout
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|user| !user.is_empty())
+        .unwrap_or("root")
+        .to_string())
+}
+
 fn inspect_image_details_for_uid_update(
     args: &[String],
     configuration: &Value,
