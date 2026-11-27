@@ -307,8 +307,10 @@ jobs:
         uses: ./upstream/.github/actions/setup-compose
 
       - name: Runtime version
+        env:
+          CONTAINER_RUNNER: ${{ matrix.runner }}
         run: |
-          if [[ "${{ matrix.runner }}" == podman* ]]; then
+          if [[ "$CONTAINER_RUNNER" == podman* ]]; then
             podman version
             podman-compose version
           else
