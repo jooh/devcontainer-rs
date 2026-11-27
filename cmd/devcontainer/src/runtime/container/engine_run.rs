@@ -165,9 +165,16 @@ fn start_container_with_metadata(
         engine_args.push("all".to_string());
     }
     engine_args.push(image_name.to_string());
-    engine_args.push("/bin/sh".to_string());
-    engine_args.push("-lc".to_string());
-    engine_args.push("while sleep 1000; do :; done".to_string());
+    if resolved
+        .configuration
+        .get("overrideCommand")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+    {
+        engine_args.push("/bin/sh".to_string());
+        engine_args.push("-lc".to_string());
+        engine_args.push("while sleep 1000; do :; done".to_string());
+    }
 
     let result = engine::run_engine(args, engine_args)?;
     if result.status_code != 0 {
@@ -476,6 +483,67 @@ exit 0
             "3"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// Check whether startup preserves or replaces the image command.
+    #[test]
+    fn start_container_honors_override_command() {
+        for (setting, should_override) in [(Some(false), false), (Some(true), true), (None, true)] {
+            let root = unique_temp_dir("devcontainer-override-command-test");
+            fs::create_dir_all(&root).expect("root dir");
+            let fake_engine = root.join("docker");
+            let invocation_log = root.join("invocations.log");
+            write_executable_script(
+                &fake_engine,
+                &format!(
+                    r#"#!/bin/sh
+set -eu
+case "$1" in
+  -v) printf 'Docker version test\n' ;;
+  run)
+    printf '%s\n' "$@" > "{invocation_log}"
+    printf 'created-container\n'
+    ;;
+  *) exit 2 ;;
+esac
+"#,
+                    invocation_log = invocation_log.display()
+                ),
+            );
+            let mut configuration = json!({"image": "example/service:latest"});
+            if let Some(setting) = setting {
+                configuration["overrideCommand"] = json!(setting);
+            }
+            let resolved = resolved_config(&root, configuration);
+
+            let container_id = start_container(
+                &resolved,
+                &engine_args(&fake_engine),
+                "example/service:latest",
+                "/workspace",
+            )
+            .expect("container starts");
+
+            assert_eq!(container_id, "created-container");
+            let invocation = fs::read_to_string(&invocation_log).expect("invocation log");
+            let arguments: Vec<_> = invocation.lines().collect();
+            let image_index = arguments
+                .iter()
+                .position(|argument| *argument == "example/service:latest")
+                .expect("image argument");
+            let command = &arguments[image_index + 1..];
+            if should_override {
+                assert_eq!(
+                    command,
+                    ["/bin/sh", "-lc", "while sleep 1000; do :; done"],
+                    "overrideCommand={setting:?}"
+                );
+            } else {
+                assert!(command.is_empty(), "image CMD was replaced: {command:?}");
+                assert!(!arguments.contains(&"--entrypoint"));
+            }
+            let _ = fs::remove_dir_all(root);
+        }
     }
 
     #[test]
