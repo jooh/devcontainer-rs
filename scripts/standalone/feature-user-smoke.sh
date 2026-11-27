@@ -38,7 +38,11 @@ for source in image dockerfile; do
     source_config='"build":{"dockerfile":"Dockerfile"}'
   fi
   printf '{%s,"remoteUser":"root","features":{"./root-feature":{}}}\n' "$source_config" > "$workspace/.devcontainer/devcontainer.json"
-  "$binary" build --workspace-folder "$workspace" --image-name "$feature_image" --docker-path "$engine" --omit-syntax-directive > "$workspace/result.json"
+  if ! "$binary" build --workspace-folder "$workspace" --image-name "$feature_image" --docker-path "$engine" --omit-syntax-directive > "$workspace/result.json"; then
+    cat "$workspace/result.json" >&2
+    exit 1
+  fi
+  # shellcheck disable=SC2016
   "$engine" run --rm --entrypoint /bin/sh "$feature_image" -c 'test "$(id -u)" = 1234 && test "$(cat /usr/local/share/feature-root-marker)" = "installed as root"'
   actual_user="$("$engine" image inspect --format '{{.Config.User}}' "$feature_image")"
   if [[ "$actual_user" != developer:1234 ]]; then
