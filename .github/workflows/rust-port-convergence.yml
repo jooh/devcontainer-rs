@@ -244,15 +244,20 @@ jobs:
 
   real-engine-lifecycle-smoke:
     name: Real Engine Lifecycle Smoke
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.host }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: docker
+            host: ubuntu-latest
             smoke_target: real-engine-lifecycle-smoke-docker
           - runner: podman
+            host: ubuntu-latest
             smoke_target: real-engine-lifecycle-smoke-podman
+          - runner: podman-4.9.4
+            host: ubuntu-24.04
+            smoke_target: real-engine-podman-device-smoke
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -263,7 +268,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Podman Compose
-        if: matrix.runner == 'podman'
+        if: startsWith(matrix.runner, 'podman')
         run: |
           # ubuntu-24.04 hosted runners prefer an Azure mirror and only fall
           # back after each request times out. Remove that mirror when the
@@ -279,13 +284,31 @@ jobs:
           sudo apt-get "${apt_options[@]}" update
           sudo apt-get "${apt_options[@]}" install -y podman podman-compose
 
+      - name: Setup Go for Podman 4.9.4
+        if: matrix.runner == 'podman-4.9.4'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.12'
+          cache: false
+
+      - name: Build and select Podman 4.9.4
+        if: matrix.runner == 'podman-4.9.4'
+        run: |
+          sudo apt-get install -y gcc make pkg-config libgpgme-dev libseccomp-dev libsystemd-dev libbtrfs-dev
+          source_dir="$RUNNER_TEMP/podman-4.9.4"
+          git clone --depth 1 --branch v4.9.4 https://github.com/containers/podman.git "$source_dir"
+          test "$(git -C "$source_dir" rev-parse HEAD)" = 3aceae8ace3c7e3c5591900db32d188cf60be535
+          make -C "$source_dir" bin/podman
+          sudo install -m 0755 "$source_dir/bin/podman" /usr/bin/podman
+          test "$(podman --version)" = 'podman version 4.9.4'
+
       - name: Set up Compose build workaround
         if: matrix.runner == 'docker'
         uses: ./upstream/.github/actions/setup-compose
 
       - name: Runtime version
         run: |
-          if [[ "${{ matrix.runner }}" == "podman" ]]; then
+          if [[ "${{ matrix.runner }}" == podman* ]]; then
             podman version
             podman-compose version
           else
