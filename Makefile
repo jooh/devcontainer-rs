@@ -14,6 +14,7 @@
 	shellcheck \
 	build-release \
 	real-engine-feature-user-smoke \
+	real-engine-podman-device-smoke \
 	real-engine-lifecycle-smoke \
 	real-engine-lifecycle-smoke-docker \
 	real-engine-lifecycle-smoke-podman \
@@ -103,6 +104,9 @@ build-release:
 real-engine-feature-user-smoke: build-release
 	./scripts/standalone/feature-user-smoke.sh $(RELEASE_BINARY)
 
+real-engine-podman-device-smoke: build-release
+	./scripts/standalone/podman-device-smoke.sh $(RELEASE_BINARY)
+
 real-engine-lifecycle-smoke: real-engine-lifecycle-smoke-docker real-engine-lifecycle-smoke-podman
 
 real-engine-lifecycle-smoke-docker: build-release
@@ -112,6 +116,7 @@ real-engine-lifecycle-smoke-docker: build-release
 real-engine-lifecycle-smoke-podman: build-release
 	./scripts/standalone/real-engine-smoke.sh $(RELEASE_BINARY) --docker-path podman --docker-compose-path podman-compose
 	./scripts/standalone/feature-user-smoke.sh $(RELEASE_BINARY) podman
+	./scripts/standalone/podman-device-smoke.sh $(RELEASE_BINARY)
 
 standalone-artifact-smoke: build-release
 	./scripts/standalone/smoke.sh $(RELEASE_BINARY)

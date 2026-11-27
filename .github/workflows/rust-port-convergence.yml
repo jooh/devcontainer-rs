@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - main
+      - test/109-podman-device
 
 permissions:
   contents: read
